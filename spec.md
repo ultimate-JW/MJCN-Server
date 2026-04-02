@@ -292,7 +292,8 @@ erDiagram
 | name | CharField(50) | O | 실명 |
 | major | CharField(100) | O | 전공 |
 | grade | IntegerField | O | 학년 (1~4) |
-| semester | IntegerField | O | 학기 (1 or 2) |
+| semester | IntegerField | O | 1: 1학기 / 2: 여름방학 / 3: 2학기 / 4: 겨울방학 |
+| graduation_year | IntegerField(null) | | 졸업 희망 연도 |
 | is_email_verified | BooleanField | O | 이메일 인증 여부 |
 | notification_enabled | BooleanField | O | 알림 수신 여부 (기본 True) |
 
@@ -327,8 +328,9 @@ erDiagram
 | day_of_week | CharField | 요일 |
 | start_time | TimeField | 시작 시간 |
 | end_time | TimeField | 종료 시간 |
-| room | CharField(blank) | 강의실 |
 | professor | CharField(blank) | 교수명 |
+| room | CharField(blank) | 강의실 |
+| building | CharField(blank) | 강의실 위치 |
 
 #### EmailVerification
 
@@ -337,6 +339,7 @@ erDiagram
 | user | FK(User) | |
 | token | UUIDField | 인증 토큰 |
 | created_at | DateTimeField | 생성 시각 |
+| expires_at | DateTimeField | 만료 시각 |
 | is_used | BooleanField | 사용 여부 |
 
 ### 4.2 chat 앱
@@ -347,7 +350,8 @@ erDiagram
 |------|------|------|
 | user | FK(User) | |
 | title | CharField | 채팅방 제목 (첫 질문 기반 AI 요약) |
-| category | CharField | 자동 분류 (공지/공모전/취업·진로/취미/기타) |
+| category | CharField | 자동 분류 (학교생활/수강신청/취업·진로/공모전/교내공지) |
+| last_message_preview | CharField(200, blank=True) | 마지막 메시지 미리보기 |
 | created_at | DateTimeField | |
 | updated_at | DateTimeField | |
 
@@ -377,15 +381,13 @@ erDiagram
 |------|------|------|
 | course_code | CharField(unique) | 과목번호 |
 | name | CharField | 과목명 |
-| department | CharField | 개설 학과 |
+| college | CharField | 대학(예: 반도체·ICT대학) |
+| department | CharField | 학부(예: 컴퓨터정보통신공학부) |
+| major | CharField | 전공(예: 컴퓨터공학전공) |
 | category | CharField | 전공필수/전공선택/교양필수/교양선택 |
 | credits | IntegerField | 학점 |
 | year | IntegerField | 개설 연도 |
 | semester | IntegerField | 개설 학기 |
-| day_of_week | CharField(blank) | 요일 |
-| start_time | TimeField(null) | 시작 시간 |
-| end_time | TimeField(null) | 종료 시간 |
-| room | CharField(blank) | 강의실 |
 | professor | CharField(blank) | 교수명 |
 
 #### CoursePrerequisite (선후수 관계)
@@ -394,6 +396,17 @@ erDiagram
 |------|------|------|
 | course | FK(Course) | 대상 과목 |
 | prerequisite | FK(Course) | 선수 과목 |
+
+#### CourseSchedule (과목 스케쥴 정보)
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| course | FK(Course) | 대상 과목 |
+| day_of_week | CharField | 요일(월/화/수/목/금 중 하나) |
+| start_time | TimeField | 시작 시간 |
+| end_time | TimeField | 종료 시간 |
+| building | CharField(blank=True) | 강의실 위치(명진당/창조관/5공학관 등) |
+| room | CharField(blank=True) | 강의실 번호 |
 
 #### GraduationRequirement (졸업요건)
 
@@ -404,6 +417,21 @@ erDiagram
 | category | CharField | 전공필수/전공선택/교양필수/... |
 | required_credits | IntegerField | 필요 학점 |
 | total_required | IntegerField | 총 졸업 학점 |
+
+#### AcademicCalendar (학사일정)
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| year | IntegerField | 연도 |
+| semester | IntegerField | 학기 (1 or 2) |
+| pre_registration_start | DateField(null) | 미리담기 시작일 |
+| pre_registration_end | DateField(null) | 미리담기 종료일 |
+| registration_start | DateField(null) | 수강신청 시작일 |
+| registration_end | DateField(null) | 수강신청 종료일 |
+| adjustment_start | DateField(null) | 수강신청 정정 시작일 |
+| adjustment_end | DateField(null) | 수강신청 정정 종료일 |
+| semester_start | DateField(null) | 학기 시작일 |
+| semester_end | DateField(null) | 종강일 |
 
 ### 4.4 notices 앱
 
@@ -416,7 +444,7 @@ erDiagram
 | content | TextField | 내용 |
 | url | URLField | 원문 링크 |
 | published_at | DateTimeField | 게시일 |
-| deadline | DateField(null) | 마감일 (있는 경우) |
+| end_date | DateField(null) | 마감일 (있는 경우) |
 | created_at | DateTimeField | 수집 시각 |
 | tags | JSONField(default=list) | 자동 태깅 키워드 |
 
@@ -430,8 +458,10 @@ erDiagram
 | organizer | CharField | 주최 |
 | description | TextField | 설명 |
 | url | URLField | 원문 링크 |
-| deadline | DateField | 마감일 |
+| start_date | DateField(null) | 시작일 (있는 경우) |
+| end_date | DateField(null) | 마감일 |
 | categories | JSONField(default=list) | 분야 태그 |
+| is_active | BooleanField(default=True) | 활성 여부 |
 | created_at | DateTimeField | 수집 시각 |
 
 ### 4.6 notifications 앱
@@ -443,21 +473,21 @@ erDiagram
 | user | FK(User) | |
 | title | CharField | 알림 제목 |
 | message | TextField | 알림 내용 |
-| notification_type | CharField | notice/contest/course/system |
-| related_id | IntegerField(null) | 관련 객체 ID (프론트에서 화면 이동용) |
-| is_read | BooleanField | 읽음 여부 |
-| is_pushed | BooleanField | FCM 전송 여부 |
-| created_at | DateTimeField | |
+| notification_type | CharField | 알림 종류 (notice/contest/course/system) |
+| related_id | IntegerField(null) | 관련 객체 ID (notification_type에 따라 다른 테이블 ID, 프론트 화면 이동용) |
+| is_read | BooleanField(default=False) | 읽음 여부 |
+| is_pushed | BooleanField(default=False) | FCM 전송 여부 |
+| created_at | DateTimeField | 알림 생성 시각 |
 
 #### FCMDevice (디바이스 토큰)
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| user | FK(User) | |
+| user | FK(User) | 디바이스 소유 사용자 |
 | registration_token | TextField | FCM 등록 토큰 |
 | is_active | BooleanField | 활성 여부 |
-| created_at | DateTimeField | |
-| updated_at | DateTimeField | |
+| created_at | DateTimeField | 등록 시각 |
+| updated_at | DateTimeField | 마지막 갱신 시각 |
 
 ---
 
@@ -471,13 +501,26 @@ erDiagram
 - 가입 후 인증 메일 발송 (UUID 토큰 링크)
 - 인증 완료 전까지 로그인 불가
 
+#### 유효성 검사 규칙
+
+**이메일**
+- 이메일 형식 준수 (example@domain.com)
+- 중복 이메일 가입 불가
+
+**비밀번호**
+- 8자 이상 20자 이하
+- 영문 + 숫자 조합 필수
+- 이메일과 동일한 비밀번호 불가
+
 #### 5.1.2 프로필 설정 (가입 후 온보딩)
 
-- **필수 입력**: 이름, 전공, 학년, 학기, 관심분야(선택형 1개 이상)
-- **선택 입력**: 수강이력, 현재 수강과목, 관심분야(자유 텍스트)
+- **필수 입력**: 이름, 전공, 학년, 학기(1학기/여름방학/2학기/겨울방학), 관심분야(선택형 1개 이상)
+- **선택 입력**: 수강이력, 현재 수강과목, 관심분야(자유 텍스트), 졸업 희망 연도
+- 졸업 희망 연도 미입력 시 입학 연도 기준 4년 후 2학기(8학기) 졸업으로 자동 계산
+
 - 관심분야 선택형 목록 (직업군 위주):
-  - IT/개발, 디자인, 마케팅/광고, 금융/회계, 교육, 공공/행정,
-    의료/바이오, 미디어/콘텐츠, 연구/R&D, 기타
+  - IT/개발, 디자인, 마케팅/광고, 금융/회계, 교육, 공기업/공공기관,
+    의료/바이오, 미디어/콘텐츠, 건축/공간, 스포츠/예술, 연구/R&D, 기타
 
 #### 5.1.3 로그인 / 로그아웃
 
@@ -487,60 +530,77 @@ erDiagram
 
 ### 5.2 AI 비서 - 띵똥이 (chat)
 
-#### 5.2.1 대화형 인터페이스
+#### 5.2.1 화면 구성
 
-- 메시지 전송 API → AI 응답 반환
-- 새 채팅방 생성 또는 기존 채팅방에 메시지 추가
-- 새 채팅방 생성 시 제목은 빈 값, 첫 메시지 전송 후 AI가 질문 내용을 요약하여 제목 자동 저장
+- **상단 영역**: 새 채팅 시작
+  - 빠른 질문 버튼 제공 (예: 최근 7일간 교내 공지 요약, 공모전 키워드 등)
+  - 메시지 입력창
+- **하단 영역**: 이전 대화 목록
+  - 카테고리 필터 탭: 전체/수강신청/학교생활/취업·진로/공모전
+  - 각 항목: 채팅방 제목 + 마지막 메시지 미리보기
+
+#### 5.2.2 대화형 인터페이스
+
+- 메시지 전송 시 자동으로 새 채팅방 생성
+- 첫 메시지 기반으로 AI가 채팅방 제목 자동 생성
+- 기존 채팅방 선택 시 대화 이어서 진행
 - AI 컨텍스트: 사용자 프로필 + 대화 히스토리 + 학교 데이터
 
-#### 5.2.2 텍스트 전송
+#### 5.2.3 텍스트 전송
 
 - POST 요청으로 메시지 전송
+- 첫 메시지인 경우: 채팅방 자동 생성 + AI에 제목 요약 요청 → ChatRoom.title 업데이트
 - AI API 호출 → 응답 저장 → JSON 응답 반환
-- 첫 메시지인 경우: AI에 제목 요약 요청 → ChatRoom.title 업데이트
 
-#### 5.2.3 첨부파일 전송
+#### 5.2.4 첨부파일 전송
 
-- 이미지, 동영상, 문서 첨부 가능
+- 이미지, 동영상 첨부 가능
 - 파일 업로드 후 AI에 함께 전달 (멀티모달 지원 시)
-- 지원 형식: jpg/png/gif, mp4, pdf/docx
+- 지원 형식: jpg/png/gif, mp4
 - 파일 크기 제한: 10MB
 
-#### 5.2.4 정보 추천 (PUSH 알림) - notifications 앱과 연계
+#### 5.2.5 정보 추천 (PUSH 알림) - notifications 앱과 연계
 
-- **맞춤형 공지사항 추천**: 새 공지 등록시 + 마감일 전날
-- **맞춤형 수강과목 추천**: 수강신청 공지 등록시 + 수강신청일 전날 + 미리담기 전날
-- **맞춤형 공모전 추천**: 새 공모전 등록시 + 마감일 전날
-- **교내 지원사업 능동 노출**: 홍보 부족 장학금/지원사업을 사용자 데이터 기반으로 선별하여 능동 알림
-- 추천 로직: 사용자 관심분야/전공과 공지·공모전 태그 매칭, **관련도 상위 3개 이상 추천**
+- **맞춤형 공지사항 추천**: 새 공지 등록 시 + 마감일 3일 전 + 마감 전날
+- **맞춤형 수강과목 추천**: 수강신청 공지 등록 시 + 각 대학별(대학/전공/학부) 수강신청일 전날 + 미리담기 전날
+- **맞춤형 공모전 추천**: 새 공모전 등록 시 + 마감일 3일 전 + 마감 전날
+- **교내 지원사업 능동 노출**: 사용자 개인정보 기반 교내 지원 사업 등록 시 + 마감일 3일 전 + 마감 전날
+- 추천 로직: 사용자 관심분야/전공과 공지·공모전 태그 매칭하여 **관련도 상위 3개 이상 추천**
+- **졸업요건 알림**: 졸업까지 남은 학점이 부족할 때
 
-#### 5.2.5 상황별 가이딩 (학사 흐름 기반)
+#### 5.2.6 상황별 가이딩 (학사 흐름 기반)
 
-- 수강신청 시기, 학기 종료, 미리담기 등 주요 학사 이벤트 시점에 맞춤형 가이드 자동 제공
-- 예: 수강신청 2주 전 → 추천 과목 알림, 학기 종료 → 다음학기 커리큘럼 제안
+- 수강신청 시기, 학기 종료, 수강신청 미리담기 등 주요 학사 이벤트 시점에 맞춤형 가이드 자동 제공
+- 예: 수강신청 2주 전 → 추천 과목 알림, 학기 종료 후 → 다음학기 커리큘럼 제안
 - 가이딩 트리거는 학사 일정 데이터 기반 스케줄링
 
 ### 5.3 수강/졸업 관리 (courses)
 
 #### 5.3.1 다음학기 수강과목 추천
 
-- 입력: 사용자 수강이력 + 전공 + 학년/학기 + 관심분야
-- 고려사항: 졸업요건 충족, 필수교양 이수, 선후수 과목
-- 출력: 전공/교양 분리된 추천 목록
-- 과목 정보: 과목명, 과목번호, 시간, 강의실, 교수명
+- **입력**: 사용자 수강이력 + 전공 + 학년/학기
+- **고려사항**: 졸업요건 충족, 선후수 과목, 남은 학기 수를 고려하여
+  전공필수/전공선택/교양필수/교양선택 균형있게 배분
+- **출력**
+  - 전공(필수/선택) / 교양(필수/선택) 분리
+  - 과목정보 포함 내용: 과목명, 과목번호, 시간, 강의실, 교수명 포함
 
 #### 5.3.2 전체 커리큘럼 추천
 
-- 현재 학기부터 졸업까지의 전체 수강 로드맵
-- **2안 이상의 커리큘럼을 제시** (정량적 기준)
-- 학기별 추천 과목 리스트
+- **입력**: 사용자 수강이력 + 전공 + 학년/학기 + 졸업 희망 연도
+- **고려사항**: 졸업요건 충족, 선후수 과목, 전공필수/전공선택/교양필수/교양선택 균형있게 배분
+- 현재 학기 수강 중인 경우 다음 학기부터 추천 시작
+- 계절학기는 기본 추천에서 제외, 사용자 요청 시 포함 가능
+- **최소 2안 이상, 최대 5안 이하의 커리큘럼 제시**
+- **출력**: 졸업까지 남은 학기별 추천 과목 리스트
+  - 전공(필수/선택) / 교양(필수/선택) 분리
+  - 과목정보 포함 내용: 과목명, 과목번호, 시간, 강의실, 교수명 포함
 
 #### 5.3.3 이수현황 분석
 
-- 카테고리별 이수학점 / 필요학점 표시
-- 전공필수, 전공선택, 교양필수, 교양선택, 일반선택, 총학점
-- 졸업까지 남은 학점 계산
+- 아래 카테고리별 이수학점 / 필요학점 / 잔여학점 표시
+  - 전공필수, 전공선택, 교양필수, 교양선택, 일반선택, 총학점
+- 졸업까지 남은 총 학점 계산
 
 ### 5.4 통합 정보 제공 - 공지사항 (notices)
 
