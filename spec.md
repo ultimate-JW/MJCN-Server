@@ -1,7 +1,7 @@
 # MJCN - 명지대학교 학생 AI 비서 서비스
 
 > 명지대학교 캡스톤디자인 프로젝트
-> 최종 수정일: 2026-03-29
+> 최종 수정일: 2026-04-03
 > 기능명세서 v1.0 기반
 
 ---
@@ -126,6 +126,7 @@ erDiagram
         string major
         int grade
         int semester
+        int graduation_year
         bool is_email_verified
         bool notification_enabled
     }
@@ -157,8 +158,9 @@ erDiagram
         string day_of_week
         time start_time
         time end_time
-        string room
         string professor
+        string room
+        string building
     }
 
     EmailVerification {
@@ -166,6 +168,7 @@ erDiagram
         int user_id FK
         uuid token UK
         datetime created_at
+        datetime expires_at
         bool is_used
     }
 
@@ -174,6 +177,7 @@ erDiagram
         int user_id FK
         string title
         string category
+        string last_message_preview
         datetime created_at
         datetime updated_at
     }
@@ -198,15 +202,13 @@ erDiagram
         int id PK
         string course_code UK
         string name
+        string college
         string department
+        string major
         string category
         int credits
         int year
         int semester
-        string day_of_week
-        time start_time
-        time end_time
-        string room
         string professor
     }
 
@@ -214,6 +216,30 @@ erDiagram
         int id PK
         int course_id FK
         int prerequisite_id FK
+    }
+
+    CourseSchedule {
+        int id PK
+        int course_id FK
+        string day_of_week
+        time start_time
+        time end_time
+        string building
+        string room
+    }
+
+    AcademicCalendar {
+        int id PK
+        int year
+        int semester
+        date pre_registration_start
+        date pre_registration_end
+        date registration_start
+        date registration_end
+        date adjustment_start
+        date adjustment_end
+        date semester_start
+        date semester_end
     }
 
     GraduationRequirement {
@@ -232,7 +258,7 @@ erDiagram
         text content
         url url
         datetime published_at
-        date deadline
+        date end_date
         datetime created_at
         json tags
     }
@@ -243,8 +269,10 @@ erDiagram
         string organizer
         text description
         url url
-        date deadline
+        date start_date
+        date end_date
         json categories
+        bool is_active
         datetime created_at
     }
 
@@ -280,6 +308,7 @@ erDiagram
     ChatMessage ||--o{ ChatAttachment : "has"
     Course ||--o{ CoursePrerequisite : "is target"
     Course ||--o{ CoursePrerequisite : "is prerequisite"
+    Course ||--o{ CourseSchedule : "has"
 ```
 
 ### 4.1 accounts 앱
