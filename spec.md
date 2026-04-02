@@ -115,6 +115,173 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 
 ## 4. 데이터 모델
 
+### 전체 ER Diagram
+
+```mermaid
+erDiagram
+    User {
+        int id PK
+        string email UK
+        string name
+        string major
+        int grade
+        int semester
+        bool is_email_verified
+        bool notification_enabled
+    }
+
+    InterestArea {
+        int id PK
+        int user_id FK
+        string category
+        text custom_text
+    }
+
+    CourseHistory {
+        int id PK
+        int user_id FK
+        string course_name
+        string course_code
+        int year
+        int semester
+        string grade_received
+        string category
+        int credits
+    }
+
+    CurrentCourse {
+        int id PK
+        int user_id FK
+        string course_name
+        string course_code
+        string day_of_week
+        time start_time
+        time end_time
+        string room
+        string professor
+    }
+
+    EmailVerification {
+        int id PK
+        int user_id FK
+        uuid token UK
+        datetime created_at
+        bool is_used
+    }
+
+    ChatRoom {
+        int id PK
+        int user_id FK
+        string title
+        string category
+        datetime created_at
+        datetime updated_at
+    }
+
+    ChatMessage {
+        int id PK
+        int room_id FK
+        string role
+        text content
+        datetime created_at
+    }
+
+    ChatAttachment {
+        int id PK
+        int message_id FK
+        file file
+        string file_type
+        string original_name
+    }
+
+    Course {
+        int id PK
+        string course_code UK
+        string name
+        string department
+        string category
+        int credits
+        int year
+        int semester
+        string day_of_week
+        time start_time
+        time end_time
+        string room
+        string professor
+    }
+
+    CoursePrerequisite {
+        int id PK
+        int course_id FK
+        int prerequisite_id FK
+    }
+
+    GraduationRequirement {
+        int id PK
+        string department
+        int admission_year
+        string category
+        int required_credits
+        int total_required
+    }
+
+    Notice {
+        int id PK
+        string source
+        string title
+        text content
+        url url
+        datetime published_at
+        date deadline
+        datetime created_at
+        json tags
+    }
+
+    Contest {
+        int id PK
+        string title
+        string organizer
+        text description
+        url url
+        date deadline
+        json categories
+        datetime created_at
+    }
+
+    Notification {
+        int id PK
+        int user_id FK
+        string title
+        text message
+        string notification_type
+        int related_id
+        bool is_read
+        bool is_pushed
+        datetime created_at
+    }
+
+    FCMDevice {
+        int id PK
+        int user_id FK
+        text registration_token
+        bool is_active
+        datetime created_at
+        datetime updated_at
+    }
+
+    User ||--o{ InterestArea : "has"
+    User ||--o{ CourseHistory : "has"
+    User ||--o{ CurrentCourse : "has"
+    User ||--o{ EmailVerification : "has"
+    User ||--o{ ChatRoom : "owns"
+    User ||--o{ Notification : "receives"
+    User ||--o{ FCMDevice : "registers"
+    ChatRoom ||--o{ ChatMessage : "contains"
+    ChatMessage ||--o{ ChatAttachment : "has"
+    Course ||--o{ CoursePrerequisite : "is target"
+    Course ||--o{ CoursePrerequisite : "is prerequisite"
+```
+
 ### 4.1 accounts 앱
 
 #### User (AbstractUser 확장)
@@ -143,7 +310,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 |------|------|------|
 | user | FK(User) | |
 | course_name | CharField | 과목명 |
-| course_code | CharField | 학수번호 |
+| course_code | CharField | 과목번호 |
 | year | IntegerField | 수강 연도 |
 | semester | IntegerField | 수강 학기 |
 | grade_received | CharField(blank) | 취득 성적 |
@@ -156,7 +323,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 |------|------|------|
 | user | FK(User) | |
 | course_name | CharField | 과목명 |
-| course_code | CharField | 학수번호 |
+| course_code | CharField | 과목번호 |
 | day_of_week | CharField | 요일 |
 | start_time | TimeField | 시작 시간 |
 | end_time | TimeField | 종료 시간 |
@@ -179,7 +346,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | user | FK(User) | |
-| title | CharField | 채팅방 제목 (자동 생성) |
+| title | CharField | 채팅방 제목 (첫 질문 기반 AI 요약) |
 | category | CharField | 자동 분류 (공지/공모전/취업·진로/취미/기타) |
 | created_at | DateTimeField | |
 | updated_at | DateTimeField | |
@@ -208,7 +375,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| course_code | CharField(unique) | 학수번호 |
+| course_code | CharField(unique) | 과목번호 |
 | name | CharField | 과목명 |
 | department | CharField | 개설 학과 |
 | category | CharField | 전공필수/전공선택/교양필수/교양선택 |
@@ -244,7 +411,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| source | CharField | 출처 (학사공지/일반공지/행사공지/장학공지) |
+| source | CharField | 출처 (학사공지/일반공지/행사공지/장학공지/오픈톡) |
 | title | CharField | 제목 |
 | content | TextField | 내용 |
 | url | URLField | 원문 링크 |
@@ -324,12 +491,14 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 
 - 메시지 전송 API → AI 응답 반환
 - 새 채팅방 생성 또는 기존 채팅방에 메시지 추가
+- 새 채팅방 생성 시 제목은 빈 값, 첫 메시지 전송 후 AI가 질문 내용을 요약하여 제목 자동 저장
 - AI 컨텍스트: 사용자 프로필 + 대화 히스토리 + 학교 데이터
 
 #### 5.2.2 텍스트 전송
 
 - POST 요청으로 메시지 전송
 - AI API 호출 → 응답 저장 → JSON 응답 반환
+- 첫 메시지인 경우: AI에 제목 요약 요청 → ChatRoom.title 업데이트
 
 #### 5.2.3 첨부파일 전송
 
@@ -356,10 +525,10 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 
 #### 5.3.1 다음학기 수강과목 추천
 
-- 입력: 사용자 수강이력 + 전공 + 학년/학기
+- 입력: 사용자 수강이력 + 전공 + 학년/학기 + 관심분야
 - 고려사항: 졸업요건 충족, 필수교양 이수, 선후수 과목
 - 출력: 전공/교양 분리된 추천 목록
-- 과목 정보: 과목명, 학수번호, 시간, 강의실, 교수명
+- 과목 정보: 과목명, 과목번호, 시간, 강의실, 교수명
 
 #### 5.3.2 전체 커리큘럼 추천
 
@@ -377,7 +546,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 
 #### 5.4.1 전체보기
 
-- 학사공지, 일반공지, 행사공지, 장학공지 통합 리스트
+- 학사공지, 일반공지, 행사공지, 장학공지, 오픈톡 통합 리스트
 - 형식: `[출처] 제목`
 - 검색 기능 (제목, 내용 검색)
 - 페이지네이션
@@ -386,6 +555,21 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 
 - 사용자 프로필(전공, 관심분야) 기반 필터링
 - 전체보기 ↔ 맞춤형 보기 토글 전환
+
+#### 5.4.3 공지 유형 자동 분류
+
+- LLM을 통해 공지 유형을 자동 분류 (별도 API 호출)
+- **정보형**: 단순 안내 공지 (등록금 안내, 장학금 안내, 프로그램 모집 등)
+- **행동형**: 학생이 반드시 조치해야 하는 공지 (이수구분 확인, 수강신청 정정, 폐강과목 등)
+- 분류 결과에 따라 카드 구조화 프롬프트가 달라짐
+
+#### 5.4.4 공지 요약 및 카드 구조화
+
+- 크롤링된 공지를 AI가 자동 처리:
+  1. 유형 분류 (정보형/행동형)
+  2. 100자 이내 한 문장 요약 생성
+  3. 카드 형태 JSON 구조화 (행동형 → 상세 버전, 정보형 → 간결 버전)
+- 프롬프트 상세 내용은 **9.1절** 참조
 
 ### 5.5 통합 정보 제공 - 공모전 (contests)
 
@@ -645,13 +829,195 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 - OpenAI API 사용
 - 시스템 프롬프트에 사용자 프로필 정보 주입
 - 대화 히스토리를 컨텍스트로 전달
-- 채팅방 카테고리 자동 분류용 별도 호출
+- 채팅방 제목 요약 + 카테고리 자동 분류용 별도 호출 (첫 메시지 전송 시)
 - 사용자 맞춤형 추천을 위한 프롬프트 설계 및 응답 최적화
+
+#### 9.1.1 공지사항 처리 파이프라인
+
+크롤링된 공지 원문을 3단계 LLM 호출로 처리:
+
+```
+공지 원문
+  → [1차] 유형 분류 (정보형/행동형) — 별도 API 호출
+  → [2차] 요약 생성 (100자 이내 한 문장) — 별도 API 호출
+  → [3차] 카드 구조화 — 유형별 프롬프트 분기
+       - 행동형 → 상세 버전 (이모지 제목, 음슴체, 행동 카드 필수)
+       - 정보형 → 간결 버전 (존댓말, 이모지 없음, 정보 중심)
+  → DB 저장
+```
+
+#### 9.1.2 공지 유형 분류
+
+| 유형 | 설명 | 예시 |
+|------|------|------|
+| 정보형 | 단순 안내 공지 | 등록금 안내, 장학금 안내, 프로그램 모집 |
+| 행동형 | 학생이 반드시 조치해야 하는 공지 | 이수구분 확인, 수강신청 정정, 폐강과목 공지 |
+
+- LLM에 공지 원문을 입력하여 유형을 자동 판단
+- 분류 결과(`정보형` 또는 `행동형`)를 후속 프롬프트의 `{type}` 변수로 전달
+
+#### 9.1.3 공지 요약 프롬프트
+
+```text
+공지 내용을 공백 포함 최대 100자 이내로 요약해.
+
+다음 조건을 반드시 지켜:
+1. 공지가 무엇에 대한 내용인지 한 문장으로 설명
+2. 사용자가 해야 할 행동이 있는 경우 반드시 포함
+3. 기간/기한이 있다면 반드시 포함
+4. 불필요한 설명 없이 핵심만 간결하게 작성
+5. 종결은 음슴체(~임, ~필요, ~권장 등)로 작성
+6. 톤앤매너는 친절하지만 가볍지 않게, 빠르게 이해되도록
+7. 이모지 사용 금지
+
+출력은 한 문장만 반환해.
+```
+
+#### 9.1.4 공지 카드 구조화 프롬프트 — 행동형 (상세 버전)
+
+행동형 공지에 사용. 이모지 제목 + 음슴체 스타일.
+
+```text
+너는 대학 공지 내용을 사용자에게 보기 쉽게 정리하는 AI야.
+
+입력으로 공지 내용과 공지 유형(type: 정보형 또는 행동형)이 주어진다.
+
+공지 내용을 분석해서 핵심 정보를 카드 형태로 구조화해.
+
+[기본 규칙]
+1. 반드시 JSON 형식으로 반환
+2. 카드 형태로 정보를 구성
+3. 각 카드는 "title"과 "items"를 가진다
+4. items는 짧고 간결한 문장으로 작성
+5. 불필요한 설명은 제거하고 핵심만 남긴다
+6. 중복 내용은 제거한다
+
+[스타일 규칙]
+1. title은 "이모지 + 명사형 한글 제목"으로 작성
+   - 존댓말(~입니다, ~하세요 등) 사용 금지
+   - 문장형 금지, 명사형으로 간결하게 작성
+   예:
+   "👤 대상 확인"
+   "📌 등록 기간"
+   "⚠️ 주의사항"
+   "🔍 확인 방법"
+
+2. items는 음슴체(~임, ~필요, ~권장 등) 스타일로 작성
+   예:
+   - MSI 접속 필요
+   - 이수구분 확인 필요
+   - 오류 시 교학팀 문의 필요
+
+3. 한 줄은 최대 1문장으로 간결하게 작성
+
+[유형별 규칙]
+- 행동형:
+  → "🚨 지금 해야 할 행동" 카드를 반드시 포함하고 가장 먼저 배치
+- 정보형:
+  → 행동 카드 없이 정보 중심으로 구성
+
+[문의 카드 규칙]
+- 공지 내용에 부서명, 전화번호, 이메일 등 문의 정보가 포함된 경우
+  → 반드시 마지막 카드로 "📞 문의" 카드 생성
+- 문의 카드에는 연락처만 포함 (불필요한 설명 제외)
+
+[카드 구성 원칙]
+공지 내용을 의미 단위로 나누어 카드로 구성해.
+
+각 카드는 하나의 주제만 담아야 하며,
+사용자가 빠르게 이해할 수 있도록 제목을 명확하게 작성해.
+
+[카드 제목 생성 기준]
+공지 내용에 맞게 자유롭게 생성하되,
+다음과 같은 형태를 참고해:
+
+- 대상 확인
+- 등록 기간
+- 변경 내용
+- 신청 방법
+- 확인 방법
+- 납부 방법
+- 주의사항
+- 문의
+
+※ 위는 예시이며, 반드시 이 목록에 제한되지 않는다.
+※ 공지 내용에 맞는 가장 자연스럽고 적절한 제목을 생성해야 한다.
+
+[출력 형식]
+{
+  "cards": [
+    {
+      "title": "이모지 + 제목",
+      "items": ["내용1", "내용2"]
+    }
+  ]
+}
+
+공지 유형:
+{type}
+
+공지 내용:
+{공지 원문}
+```
+
+#### 9.1.5 공지 카드 구조화 프롬프트 — 정보형 (간결 버전)
+
+정보형 공지에 사용. 존댓말 + 이모지 없음.
+
+```text
+너는 대학 공지 내용을 사용자에게 보기 쉽게 정리하는 AI야.
+입력으로 공지 내용과 공지 유형(type: 정보형 또는 행동형)이 주어진다.
+공지 내용을 분석해서 핵심 정보를 카드 형태로 구조화해.
+
+[규칙]
+1. 반드시 JSON 형식으로 반환
+2. 카드 형태로 정보를 구성
+3. 각 카드는 "title"과 "items"를 가진다
+4. items는 짧고 명확한 문장으로 작성 (존댓말, 간결하게)
+5. 불필요한 설명은 제거하고 핵심만 남긴다
+6. 중복 내용은 제거한다
+
+[유형별 규칙]
+
+- 행동형:
+  → "지금 해야 할 행동" 카드를 반드시 포함하고 가장 먼저 배치
+  → 사용자가 해야 할 행동을 명확하게 작성
+
+- 정보형:
+  → 행동 카드 없이 정보 중심으로 구성
+
+[카드 구성 가이드]
+공지 내용에 따라 아래 중 적절한 것만 선택해서 구성:
+- 대상
+- 기간
+- 변경 내용
+- 신청 방법 / 이용 방법
+- 확인 방법
+- 납부 방법
+- 주의사항
+- 문의처
+
+[출력 형식]
+{
+  "cards": [
+    {
+      "title": "카드 제목",
+      "items": ["내용1", "내용2"]
+    }
+  ]
+}
+
+공지 유형:
+{type}
+
+공지 내용:
+{공지 원문}
+```
 
 ### 9.2 크롤링 대상
 
 - 명지대학교 공지사항 페이지 (학사, 일반, 장학)
-- ~~알림톡 (DB 미확보로 보류, 추후 추가 가능)~~
+- 카카오톡 오픈톡 (이전 데이터 CSV import, management command로 1회성 시딩 → Notice에 source="오픈톡"으로 저장)
 - 공모전 사이트 (링커리어, 씽굿, 위비티 등)
 
 ### 9.3 FCM (Firebase Cloud Messaging)
@@ -685,6 +1051,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 ### Phase 2 - 데이터 수집 (2주)
 
 - [ ] notices 앱: 공지사항 모델 + Serializer + 크롤러 + management command
+- [ ] 오픈톡 CSV import management command (1회성 시딩)
 - [ ] contests 앱: 공모전 모델 + Serializer + 크롤러
 - [ ] courses 앱: 과목/졸업요건 모델 + Serializer + 시드 데이터
 - [ ] 크롤링 스케줄러 설정
@@ -702,6 +1069,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 - [ ] AI API 연동 (services.py) + 메시지 전송 API
 - [ ] 첨부파일 업로드 API (multipart)
 - [ ] 채팅방 목록/폴더별 조회/삭제 API
+- [ ] 채팅방 제목 자동 생성 로직 (첫 질문 AI 요약)
 - [ ] 채팅방 카테고리 자동 분류 로직
 
 ### Phase 5 - 알림 + 마무리 (2주)
