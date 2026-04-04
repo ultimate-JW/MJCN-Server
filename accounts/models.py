@@ -31,7 +31,7 @@ class User(AbstractUser):
     notification_enabled = models.BooleanField(default=True, verbose_name='전체 알림')
     notification_chat = models.BooleanField(default=True, verbose_name='AI 채팅 알림')
     notification_notice = models.BooleanField(default=True, verbose_name='공지 알림')
-    notification_contest = models.BooleanField(default=True, verbose_name='공모전 알림')
+    notification_information = models.BooleanField(default=True, verbose_name='정보 알림')
     kakao_id = models.CharField(max_length=100, null=True, blank=True, unique=True, verbose_name='카카오 ID')
 
     USERNAME_FIELD = 'email'
