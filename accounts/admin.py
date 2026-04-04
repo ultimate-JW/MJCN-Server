@@ -12,7 +12,7 @@ class UserAdmin(BaseUserAdmin):
     fieldsets = (
         (None, {'fields': ('email', 'password')}),
         ('개인정보', {'fields': ('name', 'major', 'grade', 'semester', 'graduation_year', 'kakao_id')}),
-        ('설정', {'fields': ('is_email_verified', 'notification_enabled')}),
+        ('설정', {'fields': ('is_email_verified', 'notification_enabled', 'notification_chat', 'notification_notice', 'notification_information')}),
         ('권한', {'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')}),
     )
     add_fieldsets = (
