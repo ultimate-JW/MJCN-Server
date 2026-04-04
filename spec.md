@@ -1,7 +1,7 @@
 # MJCN - 명지대학교 학생 AI 비서 서비스
 
 > 명지대학교 캡스톤디자인 프로젝트
-> 최종 수정일: 2026-04-03
+> 최종 수정일: 2026-04-05
 > 기능명세서 v1.0 기반
 
 ---
@@ -130,6 +130,7 @@ erDiagram
         int graduation_year
         bool is_email_verified
         bool notification_enabled
+        string kakao_id UK
     }
 
     InterestArea {
@@ -167,7 +168,8 @@ erDiagram
     EmailVerification {
         int id PK
         int user_id FK
-        uuid token UK
+        string code
+        string purpose
         datetime created_at
         datetime expires_at
         bool is_used
@@ -208,8 +210,8 @@ erDiagram
         string major
         string category
         int credits
-        int year
-        int semester
+        int year_open
+        int semester_open
         string professor
     }
 
