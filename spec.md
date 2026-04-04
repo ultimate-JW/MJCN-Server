@@ -419,6 +419,30 @@ erDiagram
 | semester | IntegerField | 개설 학기 |
 | professor | CharField(blank) | 교수명 |
 
+#### 학과 분류 체계 (college → department → major)
+
+Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구조를 따른다.
+`department`, `major` 필드는 `null=True, blank=True`로 설정한다.
+
+| 뎁스 | 필드명 | 예시 |
+|------|--------|------|
+| 1뎁스 | college (대학) | 반도체·ICT대학 |
+| 2뎁스 | department (학부/학과) | 컴퓨터정보통신공학부 |
+| 3뎁스 | major (전공) | 컴퓨터공학전공 |
+
+**엣지 케이스 (null 처리) — 전체 목록**
+
+| 대학 | department | major | 케이스 유형 | UI 동작 |
+|------|------------|-------|------------|---------|
+| 반도체·ICT대학 | 반도체공학부 | null | 단일학부 (전공 세분화 없음) | 전공 선택 스텝 스킵 |
+| 반도체·ICT대학 | 산업경영공학과 | null | 단일학과 (학부 없이 학과만 존재) | 전공 선택 스텝 스킵 |
+| 건축대학 | 공간디자인학과 | null | 단일학과 (학부 없이 학과만 존재) | 전공 선택 스텝 스킵 |
+| 아너칼리지 | 자율전공학부 | null | 단일학부 (전공 세분화 없음) | 전공 선택 스텝 스킵 |
+
+- `major`가 null → 프론트에서 전공 선택 3뎁스를 생략하고, department 선택 시 바로 확정
+
+> 전체 분류 목록은 **부록 A. 학과 분류 전체 목록** 참조
+
 #### CoursePrerequisite (선후수 관계)
 
 | 필드 | 타입 | 설명 |
