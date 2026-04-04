@@ -408,18 +408,18 @@ erDiagram
 
 #### Course (과목 정보 - 학교 데이터)
 
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| course_code | CharField(unique) | 과목번호 |
-| name | CharField | 과목명 |
-| college | CharField | 대학(예: 반도체·ICT대학) |
-| department | CharField | 학부(예: 컴퓨터정보통신공학부) |
-| major | CharField | 전공(예: 컴퓨터공학전공) |
-| category | CharField | 전공필수/전공선택/교양필수/교양선택 |
-| credits | IntegerField | 학점 |
-| year | IntegerField | 개설 연도 |
-| semester | IntegerField | 개설 학기 |
-| professor | CharField(blank) | 교수명 |
+| 필드            | 타입 | 설명 |
+|---------------|------|------|
+| course_code   | CharField(unique) | 과목번호 |
+| name          | CharField | 과목명 |
+| college       | CharField | 대학(예: 반도체·ICT대학) |
+| department    | CharField | 학부(예: 컴퓨터정보통신공학부) |
+| major         | CharField | 전공(예: 컴퓨터공학전공) |
+| category      | CharField | 전공필수/전공선택/교양필수/교양선택 |
+| credits       | IntegerField | 학점 |
+| year_open     | IntegerField | 개설 연도 |
+| semester_open | IntegerField | 개설 학기 |
+| professor     | CharField(blank) | 교수명 |
 
 #### 학과 분류 체계 (college → department → major)
 
