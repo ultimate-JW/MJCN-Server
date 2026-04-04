@@ -1,0 +1,248 @@
+from django.contrib.auth import get_user_model
+from rest_framework import status, viewsets, serializers
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError
+
+from .models import InterestArea, CourseHistory, CurrentCourse
+from .serializers import (
+    SignupSerializer, VerifyEmailSerializer, ResendVerificationSerializer,
+    LoginSerializer, LogoutSerializer, KakaoLoginSerializer,
+    PasswordResetRequestSerializer, PasswordResetVerifySerializer, PasswordResetConfirmSerializer,
+    ProfileSerializer, ProfileUpdateSerializer, SettingsSerializer,
+    InterestAreaSerializer, CourseHistorySerializer, CurrentCourseSerializer,
+)
+from .services import send_verification_email, verify_code
+
+User = get_user_model()
+
+
+# ─── 6.1 인증 ───
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def signup(request):
+    serializer = SignupSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    user = serializer.save()
+    send_verification_email(user, purpose='signup')
+    return Response({'detail': '회원가입 완료. 이메일로 전송된 인증 코드를 입력해주세요.'}, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def verify_email(request):
+    serializer = VerifyEmailSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    try:
+        user = User.objects.get(email=serializer.validated_data['email'])
+    except User.DoesNotExist:
+        return Response({'detail': '인증 코드가 일치하지 않습니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    _, error = verify_code(user, serializer.validated_data['code'], purpose='signup')
+    if error:
+        return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.is_email_verified = True
+    user.save()
+    return Response({'detail': '이메일 인증이 완료되었습니다.'})
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def resend_verification(request):
+    serializer = ResendVerificationSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    try:
+        user = User.objects.get(email=serializer.validated_data['email'])
+    except User.DoesNotExist:
+        return Response({'detail': '인증 코드가 발송되었습니다.'})
+
+    send_verification_email(user, purpose='signup')
+    return Response({'detail': '인증 코드가 발송되었습니다.'})
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login_view(request):
+    serializer = LoginSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    email = serializer.validated_data['email']
+    password = serializer.validated_data['password']
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({'detail': '이메일 또는 비밀번호가 올바르지 않습니다.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if not user.check_password(password):
+        return Response({'detail': '이메일 또는 비밀번호가 올바르지 않습니다.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if not user.is_email_verified:
+        return Response({'detail': '이메일 인증을 완료해주세요.'}, status=status.HTTP_403_FORBIDDEN)
+
+    refresh = RefreshToken.for_user(user)
+    return Response({
+        'access': str(refresh.access_token),
+        'refresh': str(refresh),
+    })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def kakao_login(request):
+    serializer = KakaoLoginSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    # TODO: 카카오 OAuth2 연동 구현
+    return Response({'detail': '카카오 로그인은 아직 구현되지 않았습니다.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def logout_view(request):
+    serializer = LogoutSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    try:
+        token = RefreshToken(serializer.validated_data['refresh'])
+        token.blacklist()
+    except TokenError:
+        return Response({'detail': '유효하지 않은 토큰입니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({'detail': '로그아웃되었습니다.'})
+
+
+# ─── 비밀번호 재설정 ───
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def password_reset_request(request):
+    serializer = PasswordResetRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    try:
+        user = User.objects.get(email=serializer.validated_data['email'])
+        if user.kakao_id and not user.has_usable_password():
+            return Response({'detail': '카카오 로그인으로 가입된 계정입니다.'}, status=status.HTTP_400_BAD_REQUEST)
+        send_verification_email(user, purpose='password_reset')
+    except User.DoesNotExist:
+        pass  # 미가입 이메일에도 동일한 응답 (계정 존재 여부 노출 방지)
+
+    return Response({'detail': '인증 코드가 발송되었습니다.'})
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def password_reset_verify(request):
+    serializer = PasswordResetVerifySerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    try:
+        user = User.objects.get(email=serializer.validated_data['email'])
+    except User.DoesNotExist:
+        return Response({'detail': '인증 코드가 일치하지 않습니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    _, error = verify_code(user, serializer.validated_data['code'], purpose='password_reset')
+    if error:
+        return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({'detail': '인증 코드가 확인되었습니다.'})
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def password_reset_confirm(request):
+    serializer = PasswordResetConfirmSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    try:
+        user = User.objects.get(email=serializer.validated_data['email'])
+    except User.DoesNotExist:
+        return Response({'detail': '인증 코드가 일치하지 않습니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    _, error = verify_code(user, serializer.validated_data['code'], purpose='password_reset')
+    if error:
+        return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(serializer.validated_data['new_password'])
+    user.save()
+    return Response({'detail': '비밀번호가 변경되었습니다.'})
+
+
+# ─── 6.2 프로필 / 설정 ───
+
+@api_view(['GET', 'PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def profile(request):
+    user = request.user
+    if request.method == 'GET':
+        return Response(ProfileSerializer(user).data)
+
+    serializer = ProfileUpdateSerializer(user, data=request.data, partial=(request.method == 'PATCH'))
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(ProfileSerializer(user).data)
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def settings_view(request):
+    user = request.user
+    if request.method == 'GET':
+        return Response(SettingsSerializer(user).data)
+
+    serializer = SettingsSerializer(user, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def withdraw(request):
+    request.user.delete()
+    return Response({'detail': '회원 탈퇴가 완료되었습니다.'}, status=status.HTTP_200_OK)
+
+
+# ─── 6.3 관심분야 ───
+
+class InterestAreaViewSet(viewsets.ModelViewSet):
+    serializer_class = InterestAreaSerializer
+    http_method_names = ['get', 'post', 'delete']
+
+    def get_queryset(self):
+        return InterestArea.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        if self.request.user.interests.count() >= 3:
+            raise serializers.ValidationError({'detail': '관심분야는 최대 3개까지 선택 가능합니다.'})
+        serializer.save(user=self.request.user)
+
+
+# ─── 6.4 수강이력 / 현재수강 ───
+
+class CourseHistoryViewSet(viewsets.ModelViewSet):
+    serializer_class = CourseHistorySerializer
+    http_method_names = ['get', 'post', 'put', 'delete']
+
+    def get_queryset(self):
+        return CourseHistory.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class CurrentCourseViewSet(viewsets.ModelViewSet):
+    serializer_class = CurrentCourseSerializer
+    http_method_names = ['get', 'post', 'put', 'delete']
+
+    def get_queryset(self):
+        return CurrentCourse.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)

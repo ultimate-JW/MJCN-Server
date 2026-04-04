@@ -130,6 +130,9 @@ erDiagram
         int graduation_year
         bool is_email_verified
         bool notification_enabled
+        bool notification_chat
+        bool notification_notice
+        bool notification_information
     }
 
     InterestArea {
