@@ -138,4 +138,4 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
 class SettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['notification_enabled']
+        fields = ['notification_enabled', 'notification_chat', 'notification_notice', 'notification_contest']
