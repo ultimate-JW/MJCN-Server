@@ -13,6 +13,7 @@ User = get_user_model()
 class SignupSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
+    password_confirm = serializers.CharField(write_only=True)
 
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
@@ -31,11 +32,14 @@ class SignupSerializer(serializers.Serializer):
         return value
 
     def validate(self, data):
+        if data['password'] != data['password_confirm']:
+            raise serializers.ValidationError({'password_confirm': '비밀번호가 일치하지 않습니다.'})
         if data['email'] == data['password']:
             raise serializers.ValidationError({'password': '이메일과 동일한 비밀번호는 사용할 수 없습니다.'})
         return data
 
     def create(self, validated_data):
+        validated_data.pop('password_confirm')
         return User.objects.create_user(**validated_data)
 
 
@@ -116,8 +120,9 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'email', 'name', 'major', 'grade', 'semester',
-                  'graduation_year', 'is_email_verified', 'notification_enabled',
+        fields = ['id', 'email', 'name', 'grade', 'semester',
+                  'graduation_year', 'graduation_month', 'major',
+                  'is_email_verified', 'notification_enabled',
                   'interests', 'course_histories', 'current_courses']
         read_only_fields = ['id', 'email', 'is_email_verified']
 
@@ -125,7 +130,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 class ProfileUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['name', 'major', 'grade', 'semester', 'graduation_year']
+        fields = ['name', 'grade', 'semester', 'graduation_year', 'graduation_month', 'major']
 
     def validate_name(self, value):
         if value and (len(value) < 2 or len(value) > 10):
