@@ -127,6 +127,7 @@ erDiagram
         int grade
         int semester
         int graduation_year
+        int graduation_month
         string major
         bool is_email_verified
         bool notification_enabled
@@ -331,7 +332,8 @@ User ||--o{ Bookmark : "has"
 | name | CharField(50) | O | 실명 |
 | grade | IntegerField | O | 학년 (1~4) |
 | semester | IntegerField | O | 1: 1학기 / 2: 여름방학 / 3: 2학기 / 4: 겨울방학 |
-| graduation_year | IntegerField(null) | | 졸업 희망 연도 |
+| graduation_year | IntegerField(null) | | 졸업 희망 연도 (예: 2028) |
+| graduation_month | IntegerField(null) | | 졸업 희망 월 (2 또는 8) |
 | major | CharField(100) | O | 전공 |
 | is_email_verified | BooleanField | O | 이메일 인증 여부 |
 | notification_enabled | BooleanField | O | 전체 알림 수신 여부 (기본 True) |
