@@ -102,7 +102,7 @@ class InterestAreaSerializer(serializers.ModelSerializer):
 class CourseHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = CourseHistory
-        fields = ['id', 'course_name', 'year', 'semester',
+        fields = ['id', 'course_name', 'course_code', 'year', 'semester',
                   'grade_received', 'category', 'credits']
 
 

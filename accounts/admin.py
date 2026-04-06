@@ -30,7 +30,7 @@ class InterestAreaAdmin(admin.ModelAdmin):
 
 @admin.register(CourseHistory)
 class CourseHistoryAdmin(admin.ModelAdmin):
-    list_display = ['user', 'course_name', 'year', 'semester']
+    list_display = ['user', 'course_name', 'course_code', 'year', 'semester']
 
 
 @admin.register(CurrentCourse)
