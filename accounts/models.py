@@ -80,7 +80,7 @@ class InterestArea(models.Model):
 class CourseHistory(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='course_histories')
     course_name = models.CharField(max_length=100, verbose_name='과목명')
-    course_code = models.CharField(max_length=30, verbose_name='과목번호')
+    #course_code = models.CharField(max_length=30, verbose_name='과목번호')
     year = models.IntegerField(verbose_name='수강 연도')
     semester = models.IntegerField(verbose_name='수강 학기')
     grade_received = models.CharField(max_length=10, blank=True, verbose_name='취득 성적')
