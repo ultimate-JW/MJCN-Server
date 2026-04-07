@@ -147,7 +147,6 @@ erDiagram
         int id PK
         int user_id FK
         string course_name
-        string course_code
         int year
         int semester
         string grade_received
@@ -359,7 +358,6 @@ User ||--o{ Bookmark : "has"
 |------|------|------|
 | user | FK(User) | |
 | course_name | CharField | 과목명 |
-| course_code | CharField | 과목번호 |
 | year | IntegerField | 수강 연도 |
 | semester | IntegerField | 수강 학기 |
 | grade_received | CharField(blank) | 취득 성적 |
