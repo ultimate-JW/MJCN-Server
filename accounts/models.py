@@ -23,10 +23,11 @@ class User(AbstractUser):
     username = None
     email = models.EmailField(unique=True, verbose_name='이메일')
     name = models.CharField(max_length=50, blank=True, verbose_name='이름')
-    major = models.CharField(max_length=100, blank=True, verbose_name='전공')
     grade = models.IntegerField(null=True, blank=True, verbose_name='학년')
     semester = models.IntegerField(null=True, blank=True, verbose_name='학기')
     graduation_year = models.IntegerField(null=True, blank=True, verbose_name='졸업 희망 연도')
+    graduation_month = models.IntegerField(null=True, blank=True, verbose_name='졸업 희망 월')
+    major = models.CharField(max_length=100, blank=True, verbose_name='전공')
     is_email_verified = models.BooleanField(default=False, verbose_name='이메일 인증 여부')
     notification_enabled = models.BooleanField(default=True, verbose_name='전체 알림')
     notification_chat = models.BooleanField(default=True, verbose_name='AI 채팅 알림')

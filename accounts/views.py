@@ -28,7 +28,7 @@ def signup(request):
     serializer.is_valid(raise_exception=True)
     user = serializer.save()
     send_verification_email(user, purpose='signup')
-    return Response({'detail': '회원가입 완료. 이메일로 전송된 인증 코드를 입력해주세요.'}, status=status.HTTP_201_CREATED)
+    return Response({'detail': '인증 코드를 이메일로 발송했습니다. 이메일을 확인해주세요.'}, status=status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])
