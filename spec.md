@@ -1,7 +1,7 @@
 # MJCN - 명지대학교 학생 AI 비서 서비스
 
 > 명지대학교 캡스톤디자인 프로젝트
-> 최종 수정일: 2026-04-03
+> 최종 수정일: 2026-04-08
 > 기능명세서 v1.0 기반
 
 ---
@@ -77,8 +77,8 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 │   ├── views.py
 │   ├── crawlers.py          # 크롤러
 │   └── urls.py
-├── contests/                # 공모전 통합 조회
-│   ├── models.py            # Contest
+├── information/             # 정보(공모전 등) 통합 조회
+│   ├── models.py            # Information
 │   ├── serializers.py
 │   ├── views.py
 │   ├── crawlers.py          # 크롤러
@@ -107,7 +107,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 | `chat` | AI 대화 API, 채팅방 보관함, 폴더 분류 | 2.1, 5(보관함) |
 | `courses` | 수강과목 추천 API, 커리큘럼, 이수현황 분석 | 3 |
 | `notices` | 공지사항 크롤링/저장, 통합 조회 API, 검색 | 4.1 |
-| `contests` | 공모전 크롤링/저장, 통합 조회 API | 4.2 |
+| `information` | 정보(공모전 등) 크롤링/저장, 통합 조회 API | 4.2 |
 | `notifications` | 알림 생성, 조회 API, 읽음 처리, 스케줄링 | 2.2, 7 |
 | `dashboard` | 메인화면 데이터 집계 API (시간표, 공지, 공모전 등) | 6 |
 | `common` | 공통 권한, 페이지네이션, mixin, 유틸 | - |
