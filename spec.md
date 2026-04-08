@@ -126,6 +126,7 @@ erDiagram
         string name
         int grade
         int semester
+        int admission_year
         int graduation_year
         int graduation_month
         string major
@@ -334,6 +335,7 @@ User ||--o{ Bookmark : "has"
 | name | CharField(50) | O | 실명 |
 | grade | IntegerField | O | 학년 (1~4) |
 | semester | IntegerField | O | 1: 1학기 / 2: 여름방학 / 3: 2학기 / 4: 겨울방학 |
+| admission_year | IntegerField | O | 입학 연도 (예: 2023) |
 | graduation_year | IntegerField(null) | | 졸업 희망 연도 (예: 2028) |
 | graduation_month | IntegerField(null) | | 졸업 희망 월 (2 또는 8) |
 | major | CharField(100) | O | 전공 |
