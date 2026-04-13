@@ -122,7 +122,7 @@ class ProfileSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'email', 'name', 'grade', 'semester', 'admission_year',
                   'graduation_year', 'graduation_month', 'major',
-                  'is_email_verified', 'notification_enabled',
+                  'is_email_verified', 'is_onboarding_completed', 'notification_enabled',
                   'interests', 'course_histories', 'current_courses']
         read_only_fields = ['id', 'email', 'is_email_verified']
 
@@ -131,7 +131,8 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['name', 'grade', 'semester', 'admission_year',
-                  'graduation_year', 'graduation_month', 'major']
+                  'graduation_year', 'graduation_month', 'major',
+                  'is_onboarding_completed']
 
     def validate_name(self, value):
         if value and (len(value) < 2 or len(value) > 10):

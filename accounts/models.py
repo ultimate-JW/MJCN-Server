@@ -30,6 +30,7 @@ class User(AbstractUser):
     admission_year = models.IntegerField(null=True, blank=True, verbose_name='입학 연도')
     major = models.CharField(max_length=100, blank=True, verbose_name='전공')
     is_email_verified = models.BooleanField(default=False, verbose_name='이메일 인증 여부')
+    is_onboarding_completed = models.BooleanField(default=False, verbose_name='온보딩 완료 여부')
     notification_enabled = models.BooleanField(default=True, verbose_name='전체 알림')
     notification_chat = models.BooleanField(default=True, verbose_name='AI 채팅 알림')
     notification_notice = models.BooleanField(default=True, verbose_name='공지 알림')
