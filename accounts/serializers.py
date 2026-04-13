@@ -120,7 +120,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'email', 'name', 'grade', 'semester',
+        fields = ['id', 'email', 'name', 'grade', 'semester', 'admission_year',
                   'graduation_year', 'graduation_month', 'major',
                   'is_email_verified', 'notification_enabled',
                   'interests', 'course_histories', 'current_courses']
@@ -130,7 +130,8 @@ class ProfileSerializer(serializers.ModelSerializer):
 class ProfileUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['name', 'grade', 'semester', 'graduation_year', 'graduation_month', 'major']
+        fields = ['name', 'grade', 'semester', 'admission_year',
+                  'graduation_year', 'graduation_month', 'major']
 
     def validate_name(self, value):
         if value and (len(value) < 2 or len(value) > 10):
@@ -138,6 +139,29 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
         if value and not re.match(r'^[가-힣a-zA-Z]+$', value):
             raise serializers.ValidationError('이름은 한글 또는 영어만 입력 가능합니다.')
         return value
+
+    def validate(self, data):
+        # 졸업 희망 시기: graduation_year와 graduation_month는 세트로 관리
+        # "선택 안 함" = 둘 다 null / 선택 시 = 둘 다 값
+        # PATCH의 경우 일부 필드만 전송될 수 있으므로 병합된 최종 상태로 검증
+        instance = self.instance
+        new_year = data.get(
+            'graduation_year',
+            instance.graduation_year if instance else None,
+        )
+        new_month = data.get(
+            'graduation_month',
+            instance.graduation_month if instance else None,
+        )
+        if (new_year is None) != (new_month is None):
+            raise serializers.ValidationError({
+                'graduation_year': 'graduation_year와 graduation_month는 둘 다 값을 가지거나 둘 다 null이어야 합니다 ("선택 안 함").',
+            })
+        if new_month is not None and new_month not in (2, 8):
+            raise serializers.ValidationError({
+                'graduation_month': 'graduation_month는 2 또는 8만 허용됩니다.',
+            })
+        return data
 
 
 class SettingsSerializer(serializers.ModelSerializer):
