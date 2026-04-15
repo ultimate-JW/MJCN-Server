@@ -92,6 +92,12 @@ class CourseHistory(models.Model):
     class Meta:
         verbose_name = '수강이력'
         verbose_name_plural = '수강이력'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'course_code', 'year', 'semester'],
+                name='unique_course_history_per_term',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.user.email} - {self.course_name}'
