@@ -1,6 +1,8 @@
 import re
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password as django_validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import InterestArea, CourseHistory, CurrentCourse
@@ -39,6 +41,12 @@ class SignupSerializer(serializers.Serializer):
             raise serializers.ValidationError({'password_confirm': '비밀번호가 일치하지 않습니다.'})
         if data['email'] == data['password']:
             raise serializers.ValidationError({'password': '이메일과 동일한 비밀번호는 사용할 수 없습니다.'})
+        # Django 기본 password validators 적용 (common password, 숫자-only,
+        # 사용자 정보 유사성 등). AUTH_PASSWORD_VALIDATORS 설정 참조.
+        try:
+            django_validate_password(data['password'], user=User(email=data['email']))
+        except DjangoValidationError as e:
+            raise serializers.ValidationError({'password': list(e.messages)})
         return data
 
     def create(self, validated_data):
@@ -87,6 +95,12 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
             raise serializers.ValidationError('비밀번호에 숫자가 포함되어야 합니다.')
         if not re.search(r'[^a-zA-Z0-9]', value):
             raise serializers.ValidationError('비밀번호에 특수문자가 포함되어야 합니다.')
+        # Django 기본 password validators 적용 (common password, 숫자-only 등).
+        # user 컨텍스트는 view에서 처리되므로 여기서는 기본 검증만.
+        try:
+            django_validate_password(value)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError(list(e.messages))
         return value
 
 
