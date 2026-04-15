@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
 from .throttles import VerifyEmailPerEmailThrottle
 
@@ -222,8 +223,14 @@ def password_reset_confirm(request):
     if error:
         return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
 
-    user.set_password(serializer.validated_data['new_password'])
-    user.save()
+    with transaction.atomic():
+        user.set_password(serializer.validated_data['new_password'])
+        user.save(update_fields=['password'])
+        # 비밀번호 변경 시 기존에 발급된 refresh token 전부 블랙리스트 처리
+        # (탈취된 세션이 변경 후에도 유효한 채로 남는 문제 방지)
+        for token in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=token)
+
     return Response({'detail': '비밀번호가 변경되었습니다.'})
 
 
