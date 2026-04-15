@@ -120,6 +120,8 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '30/minute',
         'user': '60/minute',
+        # 인증 코드 brute force 방어: 동일 이메일 기준 분당 5회
+        'verify_email': '5/minute',
     },
 }
 
