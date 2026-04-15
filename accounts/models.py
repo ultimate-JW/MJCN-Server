@@ -117,6 +117,12 @@ class CurrentCourse(models.Model):
     class Meta:
         verbose_name = '현재 수강과목'
         verbose_name_plural = '현재 수강과목'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'day_of_week', 'start_time'],
+                name='unique_current_course_per_slot',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.user.email} - {self.course_name}'
