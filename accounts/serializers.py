@@ -94,6 +94,10 @@ class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
 
 
+class WithdrawSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True)
+
+
 # ─── 프로필 ───
 
 class InterestAreaSerializer(serializers.ModelSerializer):

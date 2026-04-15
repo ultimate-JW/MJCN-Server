@@ -20,6 +20,7 @@ from .serializers import (
     PasswordResetRequestSerializer, PasswordResetVerifySerializer, PasswordResetConfirmSerializer,
     ProfileSerializer, ProfileUpdateSerializer, SettingsSerializer,
     InterestAreaSerializer, CourseHistorySerializer, CurrentCourseSerializer,
+    WithdrawSerializer,
 )
 from .services import send_verification_email, verify_code
 
@@ -272,7 +273,20 @@ def settings_view(request):
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def withdraw(request):
-    request.user.delete()
+    # 탈취된 access token으로 즉시 탈퇴되는 것을 막기 위해 비밀번호 재확인.
+    # 카카오 전용 계정처럼 비밀번호가 없는 경우는 password 없이 허용.
+    serializer = WithdrawSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    user = request.user
+    if user.has_usable_password():
+        if not user.check_password(serializer.validated_data['password']):
+            return Response(
+                {'detail': '비밀번호가 올바르지 않습니다.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+    user.delete()
     return Response({'detail': '회원 탈퇴가 완료되었습니다.'}, status=status.HTTP_200_OK)
 
 
