@@ -195,9 +195,9 @@ def password_reset_verify(request):
     serializer = PasswordResetVerifySerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    try:
-        user = User.objects.get(email=serializer.validated_data['email'])
-    except User.DoesNotExist:
+    email = serializer.validated_data['email'].strip().lower()
+    user = User.objects.filter(email__iexact=email).first()
+    if user is None:
         return Response({'detail': '인증 코드가 일치하지 않습니다.'}, status=status.HTTP_400_BAD_REQUEST)
 
     _, error = verify_code(user, serializer.validated_data['code'], purpose='password_reset')
