@@ -118,6 +118,13 @@ def logout_view(request):
 
     try:
         token = RefreshToken(serializer.validated_data['refresh'])
+        # 토큰 소유자와 요청자 일치 검증 (다른 사용자의 refresh 블랙리스트 방지)
+        # JWT payload의 user_id는 문자열로 직렬화될 수 있으므로 문자열 비교
+        if str(token.get('user_id')) != str(request.user.id):
+            return Response(
+                {'detail': '유효하지 않은 토큰입니다.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         token.blacklist()
     except TokenError:
         return Response({'detail': '유효하지 않은 토큰입니다.'}, status=status.HTTP_400_BAD_REQUEST)
