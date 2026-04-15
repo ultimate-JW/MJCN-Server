@@ -99,12 +99,14 @@ def resend_verification(request):
     serializer = ResendVerificationSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    try:
-        user = User.objects.get(email=serializer.validated_data['email'])
-    except User.DoesNotExist:
-        return Response({'detail': '인증 코드가 발송되었습니다.'})
-
-    send_verification_email(user, purpose='signup')
+    # 미가입/이미 인증 완료/SMTP 실패 모두 동일 응답 (계정 존재 여부 노출 방지)
+    email = serializer.validated_data['email'].strip().lower()
+    user = User.objects.filter(email__iexact=email).first()
+    if user and not user.is_email_verified:
+        try:
+            send_verification_email(user, purpose='signup')
+        except SMTPException:
+            pass
     return Response({'detail': '인증 코드가 발송되었습니다.'})
 
 
