@@ -48,7 +48,15 @@ def verify_email(request):
 
     user.is_email_verified = True
     user.save()
-    return Response({'detail': '이메일 인증이 완료되었습니다.'})
+
+    # 인증 완료 시 JWT 토큰 발급 → 프론트가 세션 유지하여
+    # 온보딩 중 앱 종료 후 재접속 시 이어서 진행 가능
+    refresh = RefreshToken.for_user(user)
+    return Response({
+        'detail': '이메일 인증이 완료되었습니다.',
+        'access': str(refresh.access_token),
+        'refresh': str(refresh),
+    })
 
 
 @api_view(['POST'])
