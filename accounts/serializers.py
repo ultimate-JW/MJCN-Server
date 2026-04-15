@@ -115,6 +115,17 @@ class CurrentCourseSerializer(serializers.ModelSerializer):
         fields = ['id', 'course_name', 'course_code', 'day_of_week',
                   'start_time', 'end_time', 'professor', 'room', 'building']
 
+    def validate(self, data):
+        # PUT은 전체, PATCH는 부분 — 병합된 최종 상태로 검증
+        instance = self.instance
+        start = data.get('start_time', instance.start_time if instance else None)
+        end = data.get('end_time', instance.end_time if instance else None)
+        if start is not None and end is not None and start >= end:
+            raise serializers.ValidationError({
+                'end_time': 'end_time은 start_time보다 이후여야 합니다.',
+            })
+        return data
+
 
 class ProfileSerializer(serializers.ModelSerializer):
     interests = InterestAreaSerializer(many=True, read_only=True)
