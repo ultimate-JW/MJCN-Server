@@ -122,6 +122,9 @@ def login_view(request):
 
     user = User.objects.filter(email__iexact=email).first()
     if user is None:
+        # 타이밍 공격 방어: 계정이 없을 때도 해시 연산을 수행하여
+        # 존재/미존재 응답 시간을 비슷하게 맞춤 (Django ModelBackend 패턴)
+        User().set_password(password)
         return Response({'detail': '이메일 또는 비밀번호가 올바르지 않습니다.'}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not user.check_password(password):
