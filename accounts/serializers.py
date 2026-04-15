@@ -108,6 +108,21 @@ class CourseHistorySerializer(serializers.ModelSerializer):
         fields = ['id', 'course_name', 'course_code', 'year', 'semester',
                   'grade_received', 'category', 'credits']
 
+    def validate_credits(self, value):
+        if value < 1 or value > 10:
+            raise serializers.ValidationError('학점은 1 이상 10 이하여야 합니다.')
+        return value
+
+    def validate_semester(self, value):
+        if value not in (1, 2):
+            raise serializers.ValidationError('semester는 1(봄학기) 또는 2(가을학기)만 허용됩니다.')
+        return value
+
+    def validate_year(self, value):
+        if value < 1900 or value > 2100:
+            raise serializers.ValidationError('year는 1900 이상 2100 이하여야 합니다.')
+        return value
+
 
 class CurrentCourseSerializer(serializers.ModelSerializer):
     class Meta:
