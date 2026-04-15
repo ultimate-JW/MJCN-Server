@@ -175,13 +175,16 @@ def password_reset_request(request):
     serializer = PasswordResetRequestSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    try:
-        user = User.objects.get(email=serializer.validated_data['email'])
+    email = serializer.validated_data['email'].strip().lower()
+    user = User.objects.filter(email__iexact=email).first()
+    if user is not None:
         if user.kakao_id and not user.has_usable_password():
             return Response({'detail': '카카오 로그인으로 가입된 계정입니다.'}, status=status.HTTP_400_BAD_REQUEST)
-        send_verification_email(user, purpose='password_reset')
-    except User.DoesNotExist:
-        pass  # 미가입 이메일에도 동일한 응답 (계정 존재 여부 노출 방지)
+        try:
+            send_verification_email(user, purpose='password_reset')
+        except SMTPException:
+            # SMTP 실패도 동일 응답으로 통일 (계정 존재 여부 노출 방지)
+            pass
 
     return Response({'detail': '인증 코드가 발송되었습니다.'})
 
