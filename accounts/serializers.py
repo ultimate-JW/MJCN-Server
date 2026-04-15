@@ -170,6 +170,16 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('이름은 한글 또는 영어만 입력 가능합니다.')
         return value
 
+    def validate_admission_year(self, value):
+        if value is not None and (value < 1900 or value > 2100):
+            raise serializers.ValidationError('admission_year는 1900 이상 2100 이하여야 합니다.')
+        return value
+
+    def validate_graduation_year(self, value):
+        if value is not None and (value < 1900 or value > 2100):
+            raise serializers.ValidationError('graduation_year는 1900 이상 2100 이하여야 합니다.')
+        return value
+
     def validate(self, data):
         # 졸업 희망 시기: graduation_year와 graduation_month는 세트로 관리
         # "선택 안 함" = 둘 다 null / 선택 시 = 둘 다 값
