@@ -16,23 +16,27 @@ def generate_verification_code():
 
 
 def send_verification_email(user, purpose='signup'):
-    # 새 코드 발급 전에 동일 purpose의 기존 미사용 코드를 전부 무효화.
-    # 과거 유출/공유된 코드가 만료 전까지 live 상태로 남는 문제 방지.
-    EmailVerification.objects.filter(
-        user=user,
-        purpose=purpose,
-        is_used=False,
-    ).update(is_used=True)
+    # DB 변경(기존 코드 무효화 + 새 코드 생성)을 하나의 트랜잭션으로 묶어
+    # 중간 실패 시 "기존 코드는 무효화됐는데 새 코드는 없는" 상태 방지.
+    # send_mail은 트랜잭션 밖에서 호출 — 커밋된 후 발송해야 메일 발송 실패 시
+    # DB 롤백으로 기존 유효 코드를 되돌릴 수 있고, 발송만 성공하고 DB 롤백되는
+    # 역전 케이스도 방지.
+    with transaction.atomic():
+        EmailVerification.objects.filter(
+            user=user,
+            purpose=purpose,
+            is_used=False,
+        ).update(is_used=True)
 
-    code = generate_verification_code()
-    expires_at = timezone.now() + timedelta(minutes=3)
+        code = generate_verification_code()
+        expires_at = timezone.now() + timedelta(minutes=3)
 
-    EmailVerification.objects.create(
-        user=user,
-        code=code,
-        purpose=purpose,
-        expires_at=expires_at,
-    )
+        EmailVerification.objects.create(
+            user=user,
+            code=code,
+            purpose=purpose,
+            expires_at=expires_at,
+        )
 
     subject_map = {
         'signup': '[MJCN] 이메일 인증 코드',
