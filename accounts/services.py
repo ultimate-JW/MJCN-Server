@@ -54,9 +54,11 @@ def send_verification_email(user, purpose='signup'):
     return code
 
 
-def verify_code(user, code, purpose='signup'):
+def verify_code(user, code, purpose='signup', consume=True):
     # 동시성 방어: 같은 코드로 동시에 두 요청이 들어올 때
-    # is_used 체크와 업데이트 사이의 race condition 방지
+    # is_used 체크와 업데이트 사이의 race condition 방지.
+    # consume=False: 코드 유효성만 확인하고 소모하지 않음 (verify→confirm
+    # 2단계 플로우 지원용; verify 단계에서 소모되면 confirm이 실패함)
     try:
         with transaction.atomic():
             verification = (
@@ -78,8 +80,9 @@ def verify_code(user, code, purpose='signup'):
             if timezone.now() > verification.expires_at:
                 return None, '인증 코드가 만료되었습니다. 다시 요청해주세요.'
 
-            verification.is_used = True
-            verification.save(update_fields=['is_used'])
+            if consume:
+                verification.is_used = True
+                verification.save(update_fields=['is_used'])
             return verification, None
     except OperationalError:
         # SQLite의 경우 row-level lock 미지원으로 database lock 예외 발생 가능

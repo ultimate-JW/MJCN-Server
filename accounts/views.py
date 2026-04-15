@@ -201,7 +201,9 @@ def password_reset_verify(request):
     if user is None:
         return Response({'detail': '인증 코드가 일치하지 않습니다.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    _, error = verify_code(user, serializer.validated_data['code'], purpose='password_reset')
+    # consume=False: verify 단계에서는 코드를 소모하지 않음.
+    # 소모 시 뒤이은 password_reset_confirm이 실패하여 재설정 플로우가 막힘.
+    _, error = verify_code(user, serializer.validated_data['code'], purpose='password_reset', consume=False)
     if error:
         return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
 
