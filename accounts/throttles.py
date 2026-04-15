@@ -3,14 +3,13 @@ import hashlib
 from rest_framework.throttling import SimpleRateThrottle
 
 
-class VerifyEmailPerEmailThrottle(SimpleRateThrottle):
+class _PerEmailThrottle(SimpleRateThrottle):
     """
-    verify-email 요청을 request body의 email 값 기준으로 throttle.
-    동일 이메일에 대한 인증 코드 brute force 공격을 방어한다.
+    request body의 email 값 기준으로 동작하는 throttle의 공통 베이스.
     IP 기준(AnonRateThrottle)은 여러 IP로 우회 가능하므로, 공격 대상인
     email 자체를 키로 사용해 공격면을 제한한다.
     """
-    scope = 'verify_email'
+    scope = None  # 서브클래스에서 지정
 
     def get_cache_key(self, request, view):
         email = ''
@@ -28,3 +27,17 @@ class VerifyEmailPerEmailThrottle(SimpleRateThrottle):
             'scope': self.scope,
             'ident': ident,
         }
+
+
+class VerifyEmailPerEmailThrottle(_PerEmailThrottle):
+    """verify-email 코드 brute force 방어 (동일 이메일 기준)."""
+    scope = 'verify_email'
+
+
+class PasswordResetPerEmailThrottle(_PerEmailThrottle):
+    """
+    password_reset_verify / password_reset_confirm 코드 brute force 방어.
+    anon 30/min은 IP 기반이라 IP 로테이션 시 6자리 코드가 brute force
+    가능하므로 이메일 기준 추가 throttle 적용.
+    """
+    scope = 'password_reset'

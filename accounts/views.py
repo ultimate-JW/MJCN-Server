@@ -11,7 +11,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
-from .throttles import VerifyEmailPerEmailThrottle
+from .throttles import VerifyEmailPerEmailThrottle, PasswordResetPerEmailThrottle
 
 from .models import InterestArea, CourseHistory, CurrentCourse
 from .serializers import (
@@ -195,6 +195,7 @@ def password_reset_request(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([AnonRateThrottle, PasswordResetPerEmailThrottle])
 def password_reset_verify(request):
     serializer = PasswordResetVerifySerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -215,6 +216,7 @@ def password_reset_verify(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([AnonRateThrottle, PasswordResetPerEmailThrottle])
 def password_reset_confirm(request):
     serializer = PasswordResetConfirmSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)

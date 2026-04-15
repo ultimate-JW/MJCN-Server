@@ -122,6 +122,8 @@ REST_FRAMEWORK = {
         'user': '60/minute',
         # 인증 코드 brute force 방어: 동일 이메일 기준 분당 5회
         'verify_email': '5/minute',
+        # 비밀번호 재설정 코드 brute force 방어: 동일 이메일 기준 분당 5회
+        'password_reset': '5/minute',
     },
 }
 
