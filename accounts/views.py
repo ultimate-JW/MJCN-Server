@@ -279,9 +279,13 @@ class InterestAreaViewSet(viewsets.ModelViewSet):
         return InterestArea.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        if self.request.user.interests.count() >= 3:
-            raise serializers.ValidationError({'detail': '관심분야는 최대 3개까지 선택 가능합니다.'})
-        serializer.save(user=self.request.user)
+        # 동시 요청으로 3개 초과 생성되는 경쟁 조건 방어:
+        # 트랜잭션 내에서 User 행을 잠근 뒤 count → create 순서로 직렬화
+        with transaction.atomic():
+            User.objects.select_for_update().get(pk=self.request.user.pk)
+            if InterestArea.objects.filter(user=self.request.user).count() >= 3:
+                raise serializers.ValidationError({'detail': '관심분야는 최대 3개까지 선택 가능합니다.'})
+            serializer.save(user=self.request.user)
 
 
 # ─── 6.4 수강이력 / 현재수강 ───
