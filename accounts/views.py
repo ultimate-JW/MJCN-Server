@@ -11,6 +11,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
+from .authentication import blacklist_current_access_token
 from .throttles import VerifyEmailPerEmailThrottle, PasswordResetPerEmailThrottle
 
 from .models import InterestArea, CourseHistory, CurrentCourse
@@ -168,6 +169,10 @@ def logout_view(request):
         token.blacklist()
     except TokenError:
         return Response({'detail': '유효하지 않은 토큰입니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 현재 요청에 사용된 access token도 남은 TTL 동안 블랙리스트 처리하여
+    # refresh 무효화 후에도 access token이 만료까지 유효한 채로 남는 문제 방지
+    blacklist_current_access_token(request)
 
     return Response({'detail': '로그아웃되었습니다.'})
 
