@@ -1,5 +1,4 @@
-import random
-import string
+import secrets
 from datetime import timedelta
 
 from django.conf import settings
@@ -11,7 +10,9 @@ from .models import EmailVerification
 
 
 def generate_verification_code():
-    return ''.join(random.choices(string.digits, k=6))
+    # 인증 코드는 암호학적으로 안전한 PRNG로 생성해야 함
+    # (random 모듈은 예측 가능하여 인증/보안 용도에 부적합)
+    return ''.join(str(secrets.randbelow(10)) for _ in range(6))
 
 
 def send_verification_email(user, purpose='signup'):
