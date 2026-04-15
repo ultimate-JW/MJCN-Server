@@ -16,9 +16,12 @@ class SignupSerializer(serializers.Serializer):
     password_confirm = serializers.CharField(write_only=True)
 
     def validate_email(self, value):
-        if User.objects.filter(email=value).exists():
+        # 이메일 정규화: 대소문자 구분 없이 저장/비교하여
+        # 'Abc@mju.ac.kr'과 'abc@mju.ac.kr'을 동일 계정으로 처리
+        normalized = value.strip().lower()
+        if User.objects.filter(email__iexact=normalized).exists():
             raise serializers.ValidationError('이미 사용 중인 이메일입니다.')
-        return value
+        return normalized
 
     def validate_password(self, value):
         if len(value) < 8 or len(value) > 20:

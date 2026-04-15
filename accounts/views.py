@@ -1,4 +1,7 @@
+from smtplib import SMTPException
+
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
 from rest_framework import status, viewsets, serializers
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -26,9 +29,29 @@ User = get_user_model()
 def signup(request):
     serializer = SignupSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    user = serializer.save()
-    send_verification_email(user, purpose='signup')
-    return Response({'detail': '인증 코드를 이메일로 발송했습니다. 이메일을 확인해주세요.'}, status=status.HTTP_201_CREATED)
+
+    try:
+        # User 생성과 이메일 발송을 하나의 트랜잭션으로 묶어
+        # SMTP 실패 시 User도 롤백하여 "계정은 생성됐는데 인증 코드는 못 받은" 상태 방지
+        with transaction.atomic():
+            user = serializer.save()
+            send_verification_email(user, purpose='signup')
+    except IntegrityError:
+        # validate_email 통과 후 save() 시점 사이의 동시 가입 경쟁 조건 방어
+        return Response(
+            {'email': ['이미 사용 중인 이메일입니다.']},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except SMTPException:
+        return Response(
+            {'detail': '인증 코드 발송에 실패했습니다. 잠시 후 다시 시도해주세요.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    return Response(
+        {'detail': '인증 코드를 이메일로 발송했습니다. 이메일을 확인해주세요.'},
+        status=status.HTTP_201_CREATED,
+    )
 
 
 @api_view(['POST'])
