@@ -1,3 +1,5 @@
+import hashlib
+
 from rest_framework.throttling import SimpleRateThrottle
 
 
@@ -17,7 +19,12 @@ class VerifyEmailPerEmailThrottle(SimpleRateThrottle):
         if not email:
             # 이메일이 없으면 throttle 하지 않음 (serializer에서 400으로 걸림)
             return None
+        # raw email 대신 sha256 해시 사용:
+        # 1) memcached 250자 키 제한 초과 방지 (EmailField는 254자까지 허용)
+        # 2) 비-ASCII/공백 등 memcached 키 제약 위반 방지
+        # 3) 캐시 백엔드에 이메일 평문이 남는 privacy 이슈 방지
+        ident = hashlib.sha256(email.encode('utf-8')).hexdigest()
         return self.cache_format % {
             'scope': self.scope,
-            'ident': email,
+            'ident': ident,
         }
