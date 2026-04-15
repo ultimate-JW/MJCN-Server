@@ -64,17 +64,24 @@ def verify_email(request):
     serializer = VerifyEmailSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    try:
-        user = User.objects.get(email=serializer.validated_data['email'])
-    except User.DoesNotExist:
-        return Response({'detail': '인증 코드가 일치하지 않습니다.'}, status=status.HTTP_400_BAD_REQUEST)
+    email = serializer.validated_data['email'].strip().lower()
+    code = serializer.validated_data['code']
 
-    _, error = verify_code(user, serializer.validated_data['code'], purpose='signup')
+    # 계정 enumeration 방지 + 이미 인증된 계정 재인증 차단:
+    # 존재하지 않는 계정, 이미 인증된 계정, 잘못된 코드를 모두 동일 오류로 응답
+    user = User.objects.filter(email__iexact=email).first()
+    if not user or user.is_email_verified:
+        return Response(
+            {'detail': '인증 코드가 일치하지 않습니다.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    _, error = verify_code(user, code, purpose='signup')
     if error:
         return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
 
     user.is_email_verified = True
-    user.save()
+    user.save(update_fields=['is_email_verified'])
 
     # 인증 완료 시 JWT 토큰 발급 → 프론트가 세션 유지하여
     # 온보딩 중 앱 종료 후 재접속 시 이어서 진행 가능
