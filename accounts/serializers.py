@@ -1,6 +1,8 @@
 import re
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password as django_validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import InterestArea, CourseHistory, CurrentCourse
@@ -16,9 +18,12 @@ class SignupSerializer(serializers.Serializer):
     password_confirm = serializers.CharField(write_only=True)
 
     def validate_email(self, value):
-        if User.objects.filter(email=value).exists():
+        # 이메일 정규화: 대소문자 구분 없이 저장/비교하여
+        # 'Abc@mju.ac.kr'과 'abc@mju.ac.kr'을 동일 계정으로 처리
+        normalized = value.strip().lower()
+        if User.objects.filter(email__iexact=normalized).exists():
             raise serializers.ValidationError('이미 사용 중인 이메일입니다.')
-        return value
+        return normalized
 
     def validate_password(self, value):
         if len(value) < 8 or len(value) > 20:
@@ -36,6 +41,12 @@ class SignupSerializer(serializers.Serializer):
             raise serializers.ValidationError({'password_confirm': '비밀번호가 일치하지 않습니다.'})
         if data['email'] == data['password']:
             raise serializers.ValidationError({'password': '이메일과 동일한 비밀번호는 사용할 수 없습니다.'})
+        # Django 기본 password validators 적용 (common password, 숫자-only,
+        # 사용자 정보 유사성 등). AUTH_PASSWORD_VALIDATORS 설정 참조.
+        try:
+            django_validate_password(data['password'], user=User(email=data['email']))
+        except DjangoValidationError as e:
+            raise serializers.ValidationError({'password': list(e.messages)})
         return data
 
     def create(self, validated_data):
@@ -84,11 +95,21 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
             raise serializers.ValidationError('비밀번호에 숫자가 포함되어야 합니다.')
         if not re.search(r'[^a-zA-Z0-9]', value):
             raise serializers.ValidationError('비밀번호에 특수문자가 포함되어야 합니다.')
+        # Django 기본 password validators 적용 (common password, 숫자-only 등).
+        # user 컨텍스트는 view에서 처리되므로 여기서는 기본 검증만.
+        try:
+            django_validate_password(value)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError(list(e.messages))
         return value
 
 
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
+
+
+class WithdrawSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True)
 
 
 # ─── 프로필 ───
@@ -105,12 +126,38 @@ class CourseHistorySerializer(serializers.ModelSerializer):
         fields = ['id', 'course_name', 'course_code', 'year', 'semester',
                   'grade_received', 'category', 'credits']
 
+    def validate_credits(self, value):
+        if value < 1 or value > 10:
+            raise serializers.ValidationError('학점은 1 이상 10 이하여야 합니다.')
+        return value
+
+    def validate_semester(self, value):
+        if value not in (1, 2):
+            raise serializers.ValidationError('semester는 1(봄학기) 또는 2(가을학기)만 허용됩니다.')
+        return value
+
+    def validate_year(self, value):
+        if value < 1900 or value > 2100:
+            raise serializers.ValidationError('year는 1900 이상 2100 이하여야 합니다.')
+        return value
+
 
 class CurrentCourseSerializer(serializers.ModelSerializer):
     class Meta:
         model = CurrentCourse
         fields = ['id', 'course_name', 'course_code', 'day_of_week',
                   'start_time', 'end_time', 'professor', 'room', 'building']
+
+    def validate(self, data):
+        # PUT은 전체, PATCH는 부분 — 병합된 최종 상태로 검증
+        instance = self.instance
+        start = data.get('start_time', instance.start_time if instance else None)
+        end = data.get('end_time', instance.end_time if instance else None)
+        if start is not None and end is not None and start >= end:
+            raise serializers.ValidationError({
+                'end_time': 'end_time은 start_time보다 이후여야 합니다.',
+            })
+        return data
 
 
 class ProfileSerializer(serializers.ModelSerializer):
@@ -139,6 +186,16 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('이름은 2자 이상 10자 이하여야 합니다.')
         if value and not re.match(r'^[가-힣a-zA-Z]+$', value):
             raise serializers.ValidationError('이름은 한글 또는 영어만 입력 가능합니다.')
+        return value
+
+    def validate_admission_year(self, value):
+        if value is not None and (value < 1900 or value > 2100):
+            raise serializers.ValidationError('admission_year는 1900 이상 2100 이하여야 합니다.')
+        return value
+
+    def validate_graduation_year(self, value):
+        if value is not None and (value < 1900 or value > 2100):
+            raise serializers.ValidationError('graduation_year는 1900 이상 2100 이하여야 합니다.')
         return value
 
     def validate(self, data):

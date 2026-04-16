@@ -105,7 +105,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'accounts.authentication.BlacklistCheckJWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -120,6 +120,10 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '30/minute',
         'user': '60/minute',
+        # 인증 코드 brute force 방어: 동일 이메일 기준 분당 5회
+        'verify_email': '5/minute',
+        # 비밀번호 재설정 코드 brute force 방어: 동일 이메일 기준 분당 5회
+        'password_reset': '5/minute',
     },
 }
 
@@ -131,6 +135,33 @@ SIMPLE_JWT = {
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
 }
+
+# Cache
+#
+# ★ 운영 배포 전 필독 ★
+# CACHES 설정이 없으면 Django는 LocMemCache(프로세스 로컬 메모리)를
+# 기본값으로 쓴다. 이 경우 멀티 워커(gunicorn -w N 등) 환경에서
+# accounts.authentication의 access token 블랙리스트가 워커 간 공유되지
+# 않아 로그아웃이 무효화된다(자세한 설명은 accounts/authentication.py
+# 상단 주석 참고).
+#
+# 운영 환경에서는 반드시 아래 중 하나로 교체할 것:
+#
+# [권장] Redis (pip install redis 필요)
+# CACHES = {
+#     'default': {
+#         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+#         'LOCATION': os.environ['REDIS_URL'],  # redis://host:6379/1
+#     }
+# }
+#
+# [차선] DatabaseCache (Redis 인프라가 없을 때, createcachetable 필요)
+# CACHES = {
+#     'default': {
+#         'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+#         'LOCATION': 'django_cache',
+#     }
+# }
 
 # CORS
 
