@@ -59,6 +59,7 @@ flowchart LR
 
 ### 구조도 피드백
 #### 수정 전
+
 ```mermaid
 flowchart TB
     subgraph Presentation["Presentation Layer"]
@@ -100,6 +101,8 @@ flowchart TB
     ORM --> RDB
     AUTH -.블랙리스트 조회.-> CACHEBE
 ```
+---
+
 ### 수정 후
 
 ---
