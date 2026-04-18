@@ -80,6 +80,9 @@ flowchart LR
 - 최종적으로 JSON 형태로 응답 반환
 
 ### 구조도 피드백
+- 기존 구조: Django 내부 처리 흐름을 상세하게 나열하는 방향 (Framework 중심)
+- 제안 구조: 요청 단위의 처리 과정을 단순화하여 핵심 흐름만 표현 (Process 중심)
+
 #### 수정 전
 
 ```mermaid
@@ -163,8 +166,8 @@ sequenceDiagram
 - Data Layer에서 데이터 저장 및 조회
 
 ### 구조도 피드백
-- 기존 구조: Django 내부 구조를 설명하는 방향(Framework 중심)
-- 제안 구조: 서비스 기준 아키텍처(기능 중심)
+- 기존 구조: Django 내부 구성(Middleware, DRF 등) 위주라 흐름 파악이 어려움
+- 제안 구조: API, Business, AI, Data 기준으로 단순화하여 이해하기 쉽게 변경
 
 #### 수정 전
 
