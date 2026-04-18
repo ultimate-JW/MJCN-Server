@@ -104,7 +104,36 @@ flowchart TB
 ---
 
 ### 수정 후
+```mermaid
+flowchart TB
+    subgraph Client["Client Layer"]
+        APP["모바일 앱"]
+    end
 
+    subgraph API["API Layer"]
+        DJ["Django + DRF"]
+    end
+
+    subgraph Business["Business Logic Layer"]
+        BL["비즈니스 로직 처리 (공지 필터링, 사용자 상태 반영)"]
+    end
+
+    subgraph AI["AI Service Layer"]
+        AIS["AI 처리 (질의응답, 추천, 요약)"]
+    end
+
+    subgraph Data["Data Layer"]
+        DB[("RDB")]
+        CACHE["Cache"]
+    end
+
+    APP --> DJ
+    DJ --> BL
+    BL --> AIS
+    BL --> DB
+    AIS --> DB
+    BL --> CACHE
+```
 ---
 
 ## 4. 요청 처리 흐름 (Request Flow)
@@ -155,7 +184,7 @@ sequenceDiagram
     end
 ```
 #### 수정 후
-```
+```mermaid
 sequenceDiagram
     autonumber
     participant C as 클라이언트
@@ -171,14 +200,15 @@ sequenceDiagram
     AUTH-->>API: 인증 결과
 
     API->>BL: 요청 전달
-    BL->>DB: 데이터 조회 / 저장
+    BL->>DB: 데이터 조회/저장
 
     alt AI 기능 요청
-        BL->>AI: 질의 / 추천 요청
+        BL->>AI: 질의/추천 요청
         AI-->>BL: 결과 반환
     end
 
     BL-->>API: 처리 결과
     API-->>C: JSON 응답
 ```
+
 ---
