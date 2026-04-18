@@ -221,20 +221,20 @@ flowchart TB
     end
 
     subgraph API["API Layer"]
-        DJ["Django + DRF"]
+        DJ["Django + DRF\n(Request 처리 / Validation)"]
     end
 
     subgraph Business["Business Logic Layer"]
-        BL["비즈니스 로직 처리 (공지 필터링, 사용자 상태 반영)"]
+        BL["핵심 로직 처리\n(공지 필터링, 사용자 상태 반영)"]
     end
 
     subgraph AI["AI Service Layer"]
-        AIS["AI 처리 (질의응답, 추천, 요약)"]
+        AIS["AI 처리\n(질의응답, 추천, 요약)"]
     end
 
     subgraph Data["Data Layer"]
         DB[("RDB")]
-        CACHE["Cache"]
+        CACHE["Cache (Redis)"]
     end
 
     APP --> DJ
