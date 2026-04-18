@@ -149,6 +149,7 @@ sequenceDiagram
 
     BL-->>API: 처리 결과
     API-->>C: JSON 응답
+```
 
 ---
 
