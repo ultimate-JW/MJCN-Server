@@ -101,37 +101,7 @@ flowchart TB
     AUTH -.블랙리스트 조회.-> CACHEBE
 ```
 ### 수정 후
-```
-flowchart TB
-    subgraph Client["Client Layer"]
-        APP["모바일 앱"]
-    end
 
-    subgraph API["API Layer"]
-        DJ["Django + DRF"]
-    end
-
-    subgraph Business["Business Logic Layer"]
-        BL["비즈니스 로직 처리<br/>(공지 필터링, 사용자 상태 반영)"]
-    end
-
-    subgraph AI["AI Service Layer"]
-        AIS["AI 처리<br/>(질의응답, 추천, 요약)"]
-    end
-
-    subgraph Data["Data Layer"]
-        DB[("RDB")]
-        CACHE["Cache"]
-    end
-
-    APP --> DJ
-    DJ --> BL
-    BL --> AIS
-    BL --> DB
-    AIS --> DB
-    BL --> DB
-    BL --> CACHE
-```
 ---
 
 ## 4. 요청 처리 흐름 (Request Flow)
