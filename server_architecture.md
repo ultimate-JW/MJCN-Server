@@ -121,7 +121,7 @@ sequenceDiagram
 ### 구조도 설명
 - API, Business, AI, Data 기준으로 단순화하여 이해하기 쉽게 변경
 
-#### 수정 후
+### 발표 최종 버전
 ```mermaid
 flowchart TB
     subgraph Client["Client Layer"]
