@@ -39,9 +39,6 @@
 - DB와 캐시를 통해 데이터 관리
 - 카카오 로그인, 이메일 같은 외부 서비스와 연동됨
 
-### 구조도 피드백
-- 특별히 없음
-
 ```mermaid
 flowchart LR
     subgraph Clients["클라이언트"]
@@ -79,54 +76,10 @@ flowchart LR
 - 필요 시 AI 서비스를 호출하여 결과를 생성
 - 최종적으로 JSON 형태로 응답 반환
 
-### 구조도 피드백
-- 기존 구조: Django 내부 처리 흐름을 상세하게 나열하는 방향 (Framework 중심)
-- 제안 구조: 요청 단위의 처리 과정을 단순화하여 핵심 흐름만 표현 (Process 중심)
+### 구조도 설명
+- 요청 단위의 처리 과정을 단순화하여 핵심 흐름만 표현 (Process 중심)
 
-#### 수정 전
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as 클라이언트
-    participant MW as Middleware
-    participant AU as JWT Auth<br/>(BlacklistCheck)
-    participant CA as Cache<br/>(블랙리스트)
-    participant PE as Permission<br/>/ Throttle
-    participant V as View
-    participant SE as Serializer
-    participant OR as ORM
-    participant DB as RDB
-
-    C->>MW: HTTPS 요청<br/>Authorization: Bearer {access}
-    MW->>AU: JWT 검증
-    AU->>CA: jti 블랙리스트 조회
-    CA-->>AU: hit / miss
-    alt 블랙리스트 hit
-        AU-->>C: 401 InvalidToken
-    else 정상
-        AU->>PE: 인증 완료
-        PE->>PE: IsAuthenticated · Throttle 검사
-        alt Throttle 초과
-            PE-->>C: 429 Too Many Requests
-        else 통과
-            PE->>V: dispatch
-            V->>SE: 요청 데이터 검증
-            SE-->>V: validated_data
-            V->>OR: queryset / save
-            OR->>DB: SQL
-            DB-->>OR: rows
-            OR-->>V: model 인스턴스
-            V->>SE: 응답 직렬화
-            SE-->>V: JSON
-            V-->>C: 200 / 201 / 204
-        end
-    end
-```
-
----
-
-### 수정 후
+### 발표 최종 버전
 ```mermaid
 sequenceDiagram
     autonumber
@@ -165,53 +118,8 @@ sequenceDiagram
 - AI Service Layer에서 추천 및 질의응답 처리
 - Data Layer에서 데이터 저장 및 조회
 
-### 구조도 피드백
-- 기존 구조: Django 내부 구성(Middleware, DRF 등) 위주라 흐름 파악이 어려움
-- 제안 구조: API, Business, AI, Data 기준으로 단순화하여 이해하기 쉽게 변경
-
-#### 수정 전
-
-```mermaid
-flowchart TB
-    subgraph Presentation["Presentation Layer"]
-        URLS["URL Router<br/>(CapstoneDesign/urls.py)"]
-        SWAGGER["drf-spectacular<br/>(API 문서)"]
-    end
-
-    subgraph MW["Middleware Layer"]
-        SEC["SecurityMiddleware"]
-        CORS["CorsMiddleware"]
-        CSRF["CsrfViewMiddleware"]
-        AUTHMW["AuthenticationMiddleware"]
-    end
-
-    subgraph DRF["DRF Layer"]
-        AUTH["BlacklistCheckJWTAuthentication<br/>(Custom JWT + 블랙리스트)"]
-        PERM["IsAuthenticated / IsOwner"]
-        THROT["Throttle<br/>(anon 30/m, user 60/m,<br/>verify_email 5/m)"]
-        PAGIN["StandardPagination"]
-    end
-
-    subgraph Apps["Application Layer (Django Apps)"]
-        ACC["accounts<br/>views / serializers / services"]
-        CRS["courses<br/>views / serializers"]
-        COM["common<br/>permissions / pagination"]
-    end
-
-    subgraph Data["Data Layer"]
-        ORM["Django ORM"]
-        RDB[("RDB")]
-        CACHEBE["Cache Backend"]
-    end
-
-    URLS --> MW
-    SWAGGER --> URLS
-    MW --> DRF
-    DRF --> Apps
-    Apps --> ORM
-    ORM --> RDB
-    AUTH -.블랙리스트 조회.-> CACHEBE
-```
+### 구조도 설명
+- API, Business, AI, Data 기준으로 단순화하여 이해하기 쉽게 변경
 
 #### 수정 후
 ```mermaid
