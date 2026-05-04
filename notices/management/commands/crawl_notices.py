@@ -19,9 +19,17 @@ class Command(BaseCommand):
             default=None,
             help='특정 source만 실행 (예: academic general). 미지정 시 전체.',
         )
+        parser.add_argument(
+            '--max-pages',
+            type=int,
+            default=None,
+            help='크롤링할 목록 페이지 수. 미지정 시 크롤러 기본값(보통 1).'
+                 ' 초기 백필 시 큰 값을 지정.',
+        )
 
     def handle(self, *args, **options):
         crawler_classes = get_crawlers(options.get('source'))
+        max_pages = options.get('max_pages')
 
         if not crawler_classes:
             self.stdout.write(self.style.WARNING(
@@ -32,7 +40,14 @@ class Command(BaseCommand):
         total_created = total_updated = total_failed = 0
 
         for crawler_cls in crawler_classes:
-            crawler = crawler_cls()
+            kwargs = {}
+            if max_pages is not None:
+                kwargs['max_pages'] = max_pages
+            try:
+                crawler = crawler_cls(**kwargs)
+            except TypeError:
+                # max_pages를 받지 않는 베이스 크롤러 호환
+                crawler = crawler_cls()
             try:
                 # 한 사이트가 죽어도 다른 사이트는 계속 돌도록 격리 (spec 9.2)
                 result = crawler.run()
