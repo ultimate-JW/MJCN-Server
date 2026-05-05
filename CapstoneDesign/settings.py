@@ -177,6 +177,16 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0',
 }
 
+# OpenAI (공지사항 AI 처리 파이프라인 — spec 9.1)
+
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+# 단계별 본문 truncate 한도 (문자 수 기준 — 한국어는 토큰 ≈ 1.5~2자/토큰).
+# gpt-4o-mini context window는 충분히 크지만 비용/응답속도 위해 자름.
+OPENAI_NOTICE_CONTENT_MAX_CHARS = int(os.getenv('OPENAI_NOTICE_CONTENT_MAX_CHARS', '4000'))
+OPENAI_REQUEST_TIMEOUT = int(os.getenv('OPENAI_REQUEST_TIMEOUT', '30'))
+OPENAI_MAX_RETRIES = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
+
 # Email
 
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
