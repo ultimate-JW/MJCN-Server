@@ -17,11 +17,21 @@ class Notice(models.Model):
     source = models.CharField(max_length=30, choices=SOURCE_CHOICES)
     title = models.CharField(max_length=300)
     content = models.TextField(blank=True, default='')
+    # VLM 전처리(spec 9.1.6) 결과 저장. 본문이 이미지로만 구성된 공지에 대해
+    # gpt-4o-mini Vision으로 추출한 텍스트.
+    extracted_content = models.TextField(blank=True, default='')
+    # 본문(div.artclView) 내 이미지 URL 절대경로 배열. VLM 입력용.
+    image_urls = models.JSONField(default=list, blank=True)
     url = models.URLField(max_length=500)
     published_at = models.DateTimeField()
     end_date = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     tags = models.JSONField(default=list, blank=True)
+
+    @property
+    def effective_content(self) -> str:
+        """AI 파이프라인 입력용 본문 (extracted_content 있으면 우선 사용)."""
+        return self.extracted_content or self.content
 
     class Meta:
         db_table = 'notices_notice'

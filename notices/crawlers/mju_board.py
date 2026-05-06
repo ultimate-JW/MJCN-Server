@@ -14,7 +14,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Iterable, Optional
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from django.utils import timezone
 
@@ -105,8 +105,22 @@ class MJUNoticeBoardCrawler(BaseNoticeCrawler):
         # 본문: div.artclView (없으면 빈 문자열)
         body_el = soup.select_one('div.artclView')
         content = ''
+        image_urls: list[str] = []
         if body_el:
             content = self.normalize_text(body_el.get_text(' ', strip=True))
+            # 본문 영역의 <img> URL 절대경로로 수집 (spec 9.1.6 VLM 입력용).
+            # 한글 등 비-ASCII 문자는 percent-encoding으로 정규화해야
+            # OpenAI VLM이 fetch 가능. 같은 이미지 dedupe (순서 보존).
+            seen: set[str] = set()
+            for img in body_el.select('img'):
+                src = (img.get('src') or '').strip()
+                if not src:
+                    continue
+                abs_url = self._encode_url(urljoin(BASE_URL, src))
+                if abs_url in seen:
+                    continue
+                seen.add(abs_url)
+                image_urls.append(abs_url)
 
         # 상세 페이지에 더 정확한 제목이 있으면 그것을 사용
         detail_title = None
@@ -124,9 +138,22 @@ class MJUNoticeBoardCrawler(BaseNoticeCrawler):
             content=content,
             end_date=None,  # 본문에서 마감일 추출은 후속 AI 파이프라인에서 처리
             tags=[],
+            image_urls=image_urls,
         )
 
     # ---- 유틸 ----
+
+    @staticmethod
+    def _encode_url(url: str) -> str:
+        """URL의 path/query에 한글이 포함된 경우 percent-encoding으로 정규화.
+
+        OpenAI 등 외부 서비스에서 image_url을 fetch할 때 RFC 3986 이외 문자가
+        들어있으면 실패하므로 안전하게 인코딩해서 저장.
+        """
+        parts = urlsplit(url)
+        path = quote(parts.path, safe='/%')
+        query = quote(parts.query, safe='=&%')
+        return urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
 
     @staticmethod
     def _parse_date(text: str) -> Optional[datetime]:

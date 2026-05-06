@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 def compute_content_hash(content: str) -> str:
-    """Notice.content의 sha256 — 재처리 트리거 비교 키."""
+    """파이프라인 입력 본문의 sha256 — 재처리 트리거 비교 키.
+
+    Notice.effective_content (extracted_content 우선, 없으면 content) 기준.
+    """
     return hashlib.sha256((content or '').encode('utf-8')).hexdigest()
 
 
@@ -52,7 +55,9 @@ def process_notice(
     """
     result, _ = NoticeAIResult.objects.get_or_create(notice=notice)
 
-    current_hash = compute_content_hash(notice.content)
+    # AI 입력은 extracted_content 우선 (spec 9.1.6 VLM 전처리 결과).
+    effective_content = notice.effective_content
+    current_hash = compute_content_hash(effective_content)
     needs_reprocess = (
         force
         or result.status != 'success'
@@ -80,19 +85,19 @@ def process_notice(
     try:
         # Stage 1: 분류 (이미 결과 있으면 skip)
         if not result.notice_type:
-            result.notice_type = pipeline.classify(notice.content)
+            result.notice_type = pipeline.classify(effective_content)
             result.last_stage = 'classify'
             result.save(update_fields=['notice_type', 'last_stage', 'updated_at'])
 
         # Stage 2: 요약
         if not result.summary:
-            result.summary = pipeline.summarize(notice.content)
+            result.summary = pipeline.summarize(effective_content)
             result.last_stage = 'summarize'
             result.save(update_fields=['summary', 'last_stage', 'updated_at'])
 
         # Stage 3: 카드 구조화
         if not result.cards:
-            result.cards = pipeline.build_cards(notice.content, result.notice_type)
+            result.cards = pipeline.build_cards(effective_content, result.notice_type)
             result.last_stage = 'build_cards'
 
         result.status = 'success'

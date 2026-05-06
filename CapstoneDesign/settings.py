@@ -186,6 +186,8 @@ OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
 OPENAI_NOTICE_CONTENT_MAX_CHARS = int(os.getenv('OPENAI_NOTICE_CONTENT_MAX_CHARS', '4000'))
 OPENAI_REQUEST_TIMEOUT = int(os.getenv('OPENAI_REQUEST_TIMEOUT', '30'))
 OPENAI_MAX_RETRIES = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
+# VLM 전처리(spec 9.1.6): 한 공지당 VLM에 보낼 이미지 최대 장수
+OPENAI_VLM_MAX_IMAGES = int(os.getenv('OPENAI_VLM_MAX_IMAGES', '5'))
 
 # Email
 
