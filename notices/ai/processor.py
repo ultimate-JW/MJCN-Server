@@ -21,6 +21,11 @@ from .client import AIClientError
 
 logger = logging.getLogger(__name__)
 
+# 본문 텍스트가 이 길이 미만이면 의미 있는 LLM 처리 불가능
+# → 'empty_content' 상태로 마킹하고 LLM 호출 건너뜀.
+# (VLM 전처리도 image_urls가 있어야 가능하므로 그쪽도 적용 안 됨)
+MIN_EFFECTIVE_CONTENT_LENGTH = 30
+
 
 def compute_content_hash(content: str) -> str:
     """파이프라인 입력 본문의 sha256 — 재처리 트리거 비교 키.
@@ -60,10 +65,24 @@ def process_notice(
     current_hash = compute_content_hash(effective_content)
     needs_reprocess = (
         force
-        or result.status != 'success'
+        or result.status not in ('success', 'empty_content')
         or result.content_hash != current_hash
     )
     if not needs_reprocess:
+        return result, 'skipped'
+
+    # LLM 호출 전 가드: 본문이 너무 짧으면 LLM 호출 안 함.
+    # VLM 전처리(process_notice_images)가 나중에 image_urls를 채워주거나
+    # 본문이 갱신되면 content_hash 변경으로 자연스럽게 재처리됨.
+    if len(effective_content.strip()) < MIN_EFFECTIVE_CONTENT_LENGTH:
+        result.status = 'empty_content'
+        result.content_hash = current_hash
+        result.error_message = (
+            f'effective_content 길이 부족 ({len(effective_content.strip())}자)'
+        )
+        result.save(update_fields=[
+            'status', 'content_hash', 'error_message', 'updated_at',
+        ])
         return result, 'skipped'
 
     # 본문이 바뀌었거나 force면 처음부터 다시
@@ -166,12 +185,12 @@ def get_pending_notices(
         # 모든 Notice 대상
         pass
     else:
-        # status='success'가 아니거나 ai_result가 아예 없는 것만
+        # status가 success/empty_content가 아니거나 ai_result가 아예 없는 것만
         # (content 변경 감지는 process_notice 안에서 hash 비교로 처리)
         qs = qs.filter(
             ai_result__isnull=True,
         ) | qs.exclude(
-            ai_result__status='success',
+            ai_result__status__in=['success', 'empty_content'],
         )
 
     qs = qs.distinct().order_by('-published_at', 'id')

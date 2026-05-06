@@ -10,7 +10,11 @@ from notices.ai.client import AIClientError, AIResponseParseError
 from notices.models import Notice, NoticeAIResult
 
 
-def make_notice(content='본문', title='제목', source='academic') -> Notice:
+# 30자 이상 (MIN_EFFECTIVE_CONTENT_LENGTH 통과용)
+DEFAULT_TEST_CONTENT = '테스트용 공지 본문임. 충분히 길어서 LLM 호출이 진행되어야 한다는 것을 보장.'
+
+
+def make_notice(content=DEFAULT_TEST_CONTENT, title='제목', source='academic') -> Notice:
     return Notice.objects.create(
         source=source,
         title=title,
@@ -153,8 +157,8 @@ class ProcessNoticeFlowTests(TestCase):
         with c1, s1, b1:
             processor.process_notice(self.notice)
 
-        # 본문 변경
-        self.notice.content = '바뀐 본문'
+        # 본문 변경 (empty_content 가드 통과하도록 충분히 긴 본문)
+        self.notice.content = '완전히 다른 본문임. 충분히 길어서 LLM 호출이 진행되어야 함.'
         self.notice.save()
 
         c2, s2, b2 = self._patch_pipeline(classify='정보형', summarize='요약2')

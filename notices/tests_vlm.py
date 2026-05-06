@@ -13,6 +13,9 @@ from notices.ai.client import AIClientError
 from notices.models import Notice, NoticeAIResult
 
 
+DEFAULT_LONG_CONTENT = '테스트용 공지 본문임. 충분히 길어서 LLM 호출이 진행되어야 한다는 것을 보장.'
+
+
 def make_notice(*, content='', image_urls=None, title='이미지공지'):
     return Notice.objects.create(
         source='academic',
@@ -181,8 +184,9 @@ class EffectiveContentRoutingTests(TestCase):
     """spec 9.1.1: extracted_content 있으면 그것을, 없으면 content를 파이프라인에 입력."""
 
     def test_extracted_content가_있으면_그것을_파이프라인에_전달(self):
+        extracted = '추출된 본문임. 충분히 길어서 LLM 호출이 실제로 진행되도록 함.'
         n = make_notice(content='', image_urls=['u1'])
-        n.extracted_content = '추출된 본문'
+        n.extracted_content = extracted
         n.save()
 
         with patch.object(pipeline, 'classify', return_value='행동형') as cls, \
@@ -190,33 +194,29 @@ class EffectiveContentRoutingTests(TestCase):
              patch.object(pipeline, 'build_cards', return_value=[{'title': 'T', 'items': ['x']}]):
             processor.process_notice(n)
 
-        cls.assert_called_once_with('추출된 본문')
+        cls.assert_called_once_with(extracted)
 
     def test_extracted_없으면_content_사용(self):
-        n = make_notice(content='원본 본문', image_urls=[])
+        original = '원본 공지 본문임. 충분히 길어서 파이프라인이 진행되도록 보장.'
+        n = make_notice(content=original, image_urls=[])
 
         with patch.object(pipeline, 'classify', return_value='정보형') as cls, \
              patch.object(pipeline, 'summarize', return_value='요약'), \
              patch.object(pipeline, 'build_cards', return_value=[{'title': 'T', 'items': ['x']}]):
             processor.process_notice(n)
 
-        cls.assert_called_once_with('원본 본문')
+        cls.assert_called_once_with(original)
 
     def test_VLM_추출_후_content_hash_변경되어_자동_재처리(self):
-        # 1차: content 비어있는 상태에서 처리 시도 → 빈 본문으로 처리됨
+        # 1차: content 비어있는 상태에서 처리 시도 → empty_content로 마킹됨 (LLM 호출 안 함)
         n = make_notice(content='', image_urls=['u1'])
-
-        with patch.object(pipeline, 'classify', return_value='정보형'), \
-             patch.object(pipeline, 'summarize', return_value='첫번째 요약'), \
-             patch.object(pipeline, 'build_cards', return_value=[{'title': 'T', 'items': ['x']}]):
-            processor.process_notice(n)
-
+        _, action1 = processor.process_notice(n)
+        self.assertEqual(action1, 'skipped')
         n.refresh_from_db()
-        first_hash = n.ai_result.content_hash
-        first_summary = n.ai_result.summary
+        self.assertEqual(n.ai_result.status, 'empty_content')
 
         # VLM이 extracted_content를 채움 → content_hash 변경
-        n.extracted_content = '이미지에서 추출한 풍부한 본문'
+        n.extracted_content = '이미지에서 추출한 풍부한 본문임. LLM이 의미있는 처리를 하기에 충분한 길이.'
         n.save()
 
         # 다시 process_notice 호출 → 본문 변경 감지로 재처리
@@ -227,8 +227,7 @@ class EffectiveContentRoutingTests(TestCase):
 
         n.refresh_from_db()
         self.assertEqual(action, 'processed')
-        self.assertNotEqual(n.ai_result.content_hash, first_hash)
-        self.assertNotEqual(n.ai_result.summary, first_summary)
+        self.assertEqual(n.ai_result.status, 'success')
         self.assertEqual(n.ai_result.summary, '재처리된 요약')
         self.assertEqual(n.ai_result.notice_type, '행동형')
 
@@ -249,6 +248,50 @@ class EffectiveContentPropertyTests(TestCase):
     def test_둘_다_비면_빈문자열(self):
         n = make_notice(content='')
         self.assertEqual(n.effective_content, '')
+
+
+class EmptyContentGuardTests(TestCase):
+    """본문이 너무 짧으면 LLM 호출 없이 'empty_content' 상태로 마킹."""
+
+    def test_빈_본문은_LLM_호출_없이_empty_content(self):
+        n = make_notice(content='', image_urls=[])
+        with patch.object(pipeline, 'classify') as cls, \
+             patch.object(pipeline, 'summarize') as smr, \
+             patch.object(pipeline, 'build_cards') as bld:
+            _, action = processor.process_notice(n)
+
+        self.assertEqual(action, 'skipped')
+        n.refresh_from_db()
+        self.assertEqual(n.ai_result.status, 'empty_content')
+        cls.assert_not_called()
+        smr.assert_not_called()
+        bld.assert_not_called()
+
+    def test_매우_짧은_본문도_empty_content(self):
+        n = make_notice(content='짧음.', image_urls=[])
+        _, action = processor.process_notice(n)
+        self.assertEqual(action, 'skipped')
+        n.refresh_from_db()
+        self.assertEqual(n.ai_result.status, 'empty_content')
+
+    def test_empty_content_이후_재실행은_skipped(self):
+        n = make_notice(content='', image_urls=[])
+        processor.process_notice(n)
+        # 재실행: 본문 그대로면 다시 LLM 호출 안 함
+        with patch.object(pipeline, 'classify') as cls:
+            _, action = processor.process_notice(n)
+        self.assertEqual(action, 'skipped')
+        cls.assert_not_called()
+
+    def test_get_pending_notices에서_empty_content_제외(self):
+        n_empty = make_notice(content='', image_urls=[], title='empty')
+        processor.process_notice(n_empty)  # → empty_content 마킹
+        n_normal = make_notice(title='normal')
+
+        qs = processor.get_pending_notices()
+        ids = set(qs.values_list('id', flat=True))
+        self.assertIn(n_normal.id, ids)
+        self.assertNotIn(n_empty.id, ids)
 
 
 # --- process_notice_images 집계 ---

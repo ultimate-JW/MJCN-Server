@@ -64,6 +64,9 @@ class NoticeAIResult(models.Model):
         ('processing', '처리중'),
         ('success', '성공'),
         ('failed', '실패'),
+        # 본문 텍스트도 없고 추출 가능한 이미지도 없어 처리 불가능한 공지
+        # (예: 첨부파일만 있는 공지). 매일 cron 재시도 비용 누적 방지.
+        ('empty_content', '본문 없음'),
     ]
 
     STAGE_CHOICES = [
