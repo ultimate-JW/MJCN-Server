@@ -60,7 +60,7 @@ def process_notice(
     """
     result, _ = NoticeAIResult.objects.get_or_create(notice=notice)
 
-    # AI 입력은 extracted_content 우선 (spec 9.1.6 VLM 전처리 결과).
+    # AI 입력은 extracted_content 우선 (spec 9.1.5 VLM 전처리 결과).
     effective_content = notice.effective_content
     current_hash = compute_content_hash(effective_content)
     needs_reprocess = (

@@ -1,4 +1,4 @@
-"""VLM(Vision Language Model) 전처리 (spec 9.1.6).
+"""VLM(Vision Language Model) 전처리 (spec 9.1.5).
 
 이미지로만 구성된 공지의 텍스트를 gpt-4o-mini Vision 입력으로 추출.
 추출 결과를 Notice.extracted_content에 저장하면 다음 텍스트 파이프라인이
