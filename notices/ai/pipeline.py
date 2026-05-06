@@ -3,6 +3,11 @@
 각 함수는 한 단계만 책임진다.
 - 호출 실패는 AIClientError 그대로 전파 (오케스트레이터에서 처리)
 - 응답 검증 실패는 AIResponseParseError로 통일
+
+실행 순서 (spec 9.1.1):
+  Stage 1: summarize (spec 9.1.2)
+  Stage 2: classify  (spec 9.1.3)
+  Stage 3: build_cards (spec 9.1.4 — 행동형/정보형 공통 프롬프트)
 """
 from __future__ import annotations
 
@@ -13,8 +18,7 @@ from django.conf import settings
 
 from .client import AIResponseParseError, call_json, call_text
 from .prompts import (
-    BUILD_CARDS_ACTION_SYSTEM,
-    BUILD_CARDS_INFO_SYSTEM,
+    BUILD_CARDS_SYSTEM,
     CLASSIFY_SYSTEM,
     SUMMARIZE_SYSTEM,
     build_user_message,
@@ -38,6 +42,18 @@ def truncate_content(content: str, max_chars: int | None = None) -> str:
 
 # --- Stage 1 ---
 
+def summarize(content: str) -> str:
+    """공지 본문 → 100자 이내 한 문장 요약."""
+    truncated = truncate_content(content)
+    summary = call_text(SUMMARIZE_SYSTEM, truncated)
+    if not summary:
+        raise AIResponseParseError('요약이 비어있음')
+    # 100자 초과해도 모델이 가끔 넘기는 경우 있음 → DB 컬럼은 200자 여유
+    return summary
+
+
+# --- Stage 2 ---
+
 def classify(content: str) -> str:
     """공지 본문 → '정보형' or '행동형'."""
     truncated = truncate_content(content)
@@ -50,33 +66,21 @@ def classify(content: str) -> str:
     return notice_type
 
 
-# --- Stage 2 ---
-
-def summarize(content: str) -> str:
-    """공지 본문 → 100자 이내 한 문장 요약."""
-    truncated = truncate_content(content)
-    summary = call_text(SUMMARIZE_SYSTEM, truncated)
-    if not summary:
-        raise AIResponseParseError('요약이 비어있음')
-    # 100자 초과해도 모델이 가끔 넘기는 경우 있음 → DB 컬럼은 200자 여유
-    return summary
-
-
 # --- Stage 3 ---
 
 def build_cards(content: str, notice_type: str) -> list[dict[str, Any]]:
-    """공지 본문 + 유형 → cards 리스트 (title + items)."""
+    """공지 본문 + 유형 → cards 리스트 (title + items).
+
+    행동형/정보형 모두 공통 프롬프트(BUILD_CARDS_SYSTEM)를 사용한다.
+    {type} 변수는 user_message로 전달되어 프롬프트 내부의 [유형별 규칙]이
+    분기되어 적용됨 (행동형은 "🚨 지금 해야 할 행동" 카드 우선 배치).
+    """
     if notice_type not in VALID_TYPES:
         raise ValueError(f'invalid notice_type: {notice_type!r}')
 
     truncated = truncate_content(content)
     user_message = build_user_message(notice_type, truncated)
-    system = (
-        BUILD_CARDS_ACTION_SYSTEM
-        if notice_type == '행동형'
-        else BUILD_CARDS_INFO_SYSTEM
-    )
-    data = call_json(system, user_message)
+    data = call_json(BUILD_CARDS_SYSTEM, user_message)
 
     cards = data.get('cards')
     if not isinstance(cards, list):

@@ -189,7 +189,7 @@ class PartialFailureRecoveryTests(TestCase):
         self.notice = make_notice()
 
     def test_stage3_실패시_다음실행에서_stage3만_재시도(self):
-        # 1차: classify, summarize 성공 → build_cards 실패
+        # 1차: summarize, classify 성공 → build_cards 실패
         with patch.object(pipeline, 'classify', return_value='행동형') as c1, \
              patch.object(pipeline, 'summarize', return_value='요약임.') as s1, \
              patch.object(pipeline, 'build_cards', side_effect=AIClientError('API down')) as b1:
@@ -200,7 +200,8 @@ class PartialFailureRecoveryTests(TestCase):
         self.assertEqual(result.notice_type, '행동형')
         self.assertEqual(result.summary, '요약임.')
         self.assertEqual(result.cards, [])
-        self.assertEqual(result.last_stage, 'summarize')
+        # spec 9.1.1 순서: 요약(1) → 분류(2) → 카드(3) — 카드 실패 시 직전 성공 단계는 분류
+        self.assertEqual(result.last_stage, 'classify')
         self.assertEqual(result.retry_count, 1)
         c1.assert_called_once()
         s1.assert_called_once()
@@ -219,11 +220,12 @@ class PartialFailureRecoveryTests(TestCase):
         b2.assert_called_once()
 
     def test_stage1_실패시_재시도카운트_증가(self):
-        with patch.object(pipeline, 'classify', side_effect=AIClientError('boom')):
+        # spec 9.1.1 순서: Stage 1 = 요약(summarize)
+        with patch.object(pipeline, 'summarize', side_effect=AIClientError('boom')):
             r1, _ = processor.process_notice(self.notice)
             self.assertEqual(r1.retry_count, 1)
 
-        with patch.object(pipeline, 'classify', side_effect=AIClientError('boom')):
+        with patch.object(pipeline, 'summarize', side_effect=AIClientError('boom')):
             r2, _ = processor.process_notice(self.notice)
             self.assertEqual(r2.retry_count, 2)
 

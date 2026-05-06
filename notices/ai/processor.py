@@ -102,17 +102,17 @@ def process_notice(
     ])
 
     try:
-        # Stage 1: 분류 (이미 결과 있으면 skip)
-        if not result.notice_type:
-            result.notice_type = pipeline.classify(effective_content)
-            result.last_stage = 'classify'
-            result.save(update_fields=['notice_type', 'last_stage', 'updated_at'])
-
-        # Stage 2: 요약
+        # Stage 1: 요약 (이미 결과 있으면 skip)
         if not result.summary:
             result.summary = pipeline.summarize(effective_content)
             result.last_stage = 'summarize'
             result.save(update_fields=['summary', 'last_stage', 'updated_at'])
+
+        # Stage 2: 분류
+        if not result.notice_type:
+            result.notice_type = pipeline.classify(effective_content)
+            result.last_stage = 'classify'
+            result.save(update_fields=['notice_type', 'last_stage', 'updated_at'])
 
         # Stage 3: 카드 구조화
         if not result.cards:
