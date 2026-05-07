@@ -1,3 +1,3 @@
-from .base import BaseContestCrawler, CrawlResult, CrawledContest
+from .base import BaseInformationCrawler, CrawlResult, CrawledInformation
 
-__all__ = ['BaseContestCrawler', 'CrawlResult', 'CrawledContest']
+__all__ = ['BaseInformationCrawler', 'CrawlResult', 'CrawledInformation']

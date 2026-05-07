@@ -27,6 +27,8 @@ class CrawledNotice:
     content: str = ''
     end_date: Optional[date] = None
     tags: list[str] = field(default_factory=list)
+    # 본문 영역의 이미지 URL (절대경로). VLM 전처리 입력용 (spec 9.1.6).
+    image_urls: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +39,7 @@ class CrawledNotice:
             'content': self.content,
             'end_date': self.end_date.isoformat() if self.end_date else None,
             'tags': list(self.tags),
+            'image_urls': list(self.image_urls),
         }
 
 
@@ -158,13 +161,18 @@ class BaseNoticeCrawler:
 
     @transaction.atomic
     def _upsert(self, notice: CrawledNotice) -> tuple[Notice, bool]:
-        """(source, url) 기준 upsert."""
+        """(source, url) 기준 upsert.
+
+        주의: extracted_content는 VLM 전처리(spec 9.1.6)에서만 갱신되므로
+        크롤링 단계에서는 건드리지 않는다 (덮어쓰면 추출 결과 유실).
+        """
         defaults = {
             'title': notice.title,
             'content': notice.content,
             'published_at': notice.published_at,
             'end_date': notice.end_date,
             'tags': list(notice.tags),
+            'image_urls': list(notice.image_urls),
         }
         return Notice.objects.update_or_create(
             source=notice.source,

@@ -1,7 +1,11 @@
 from django.db import models
 
 
-class Contest(models.Model):
+class Information(models.Model):
+    """학생이 활용할 수 있는 외부/내부 기회 정보 (공모전/대외활동/지원사업/교육·강의/부트캠프).
+
+    spec 4.5 / 5.5 참조.
+    """
     title = models.CharField(max_length=300)
     organizer = models.CharField(max_length=200, blank=True, default='')
     description = models.TextField(blank=True, default='')
@@ -13,7 +17,6 @@ class Contest(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'information_contest'
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['-created_at']),
