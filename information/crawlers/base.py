@@ -9,16 +9,16 @@ import requests
 from bs4 import BeautifulSoup
 from django.db import IntegrityError, transaction
 
-from information.models import Contest
+from information.models import Information
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class CrawledContest:
-    """크롤러가 반환하는 단일 정보(공모전) 표준 dict (spec 8.4.1).
+class CrawledInformation:
+    """크롤러가 반환하는 단일 정보 표준 dict (spec 8.4.1).
 
-    Contest 모델 필드와 1:1 대응.
+    Information 모델 필드와 1:1 대응.
     """
     title: str
     url: str
@@ -55,8 +55,8 @@ class CrawlResult:
         return self.created + self.updated + self.skipped + self.failed
 
 
-class BaseContestCrawler:
-    """정보(공모전) 크롤러 베이스 클래스. spec 5.5 - 학교 자체 게시판 한정."""
+class BaseInformationCrawler:
+    """정보 크롤러 베이스 클래스. spec 5.5 - 학교 자체 게시판 한정."""
 
     SOURCE: str = ''  # 식별용 라벨 (DB 저장 안 함, 로깅용)
     LIST_URL: str = ''
@@ -82,10 +82,10 @@ class BaseContestCrawler:
     def parse_list(self, html: str) -> Iterable[dict]:
         raise NotImplementedError
 
-    def parse_detail(self, item: dict, html: str) -> CrawledContest:
+    def parse_detail(self, item: dict, html: str) -> CrawledInformation:
         raise NotImplementedError
 
-    def crawl(self) -> Iterable[CrawledContest]:
+    def crawl(self) -> Iterable[CrawledInformation]:
         list_html = self.fetch(self.LIST_URL)
         for item in self.parse_list(list_html):
             try:
@@ -93,14 +93,14 @@ class BaseContestCrawler:
                     detail_html = self.fetch(item['url'])
                     yield self.parse_detail(item, detail_html)
                 else:
-                    yield self._item_to_contest(item)
+                    yield self._item_to_information(item)
             except Exception:
                 logger.exception(
                     '[%s] 상세 파싱 실패: %s', self.SOURCE, item.get('url')
                 )
 
-    def _item_to_contest(self, item: dict) -> CrawledContest:
-        return CrawledContest(
+    def _item_to_information(self, item: dict) -> CrawledInformation:
+        return CrawledInformation(
             title=item['title'],
             url=item['url'],
             organizer=item.get('organizer', ''),
@@ -111,11 +111,11 @@ class BaseContestCrawler:
             is_active=item.get('is_active', True),
         )
 
-    def save(self, contests: Iterable[CrawledContest]) -> CrawlResult:
+    def save(self, informations: Iterable[CrawledInformation]) -> CrawlResult:
         result = CrawlResult(source=self.SOURCE)
-        for contest in contests:
+        for info in informations:
             try:
-                _, created = self._upsert(contest)
+                _, created = self._upsert(info)
                 if created:
                     result.created += 1
                 else:
@@ -123,30 +123,30 @@ class BaseContestCrawler:
             except IntegrityError:
                 logger.exception(
                     '[%s] 저장 실패 (IntegrityError): %s',
-                    self.SOURCE, contest.url,
+                    self.SOURCE, info.url,
                 )
                 result.failed += 1
             except Exception:
                 logger.exception(
-                    '[%s] 저장 실패: %s', self.SOURCE, contest.url,
+                    '[%s] 저장 실패: %s', self.SOURCE, info.url,
                 )
                 result.failed += 1
         return result
 
     @transaction.atomic
-    def _upsert(self, contest: CrawledContest) -> tuple[Contest, bool]:
+    def _upsert(self, info: CrawledInformation) -> tuple[Information, bool]:
         """url 기준 upsert."""
         defaults = {
-            'title': contest.title,
-            'organizer': contest.organizer,
-            'description': contest.description,
-            'start_date': contest.start_date,
-            'end_date': contest.end_date,
-            'categories': list(contest.categories),
-            'is_active': contest.is_active,
+            'title': info.title,
+            'organizer': info.organizer,
+            'description': info.description,
+            'start_date': info.start_date,
+            'end_date': info.end_date,
+            'categories': list(info.categories),
+            'is_active': info.is_active,
         }
-        return Contest.objects.update_or_create(
-            url=contest.url,
+        return Information.objects.update_or_create(
+            url=info.url,
             defaults=defaults,
         )
 

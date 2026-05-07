@@ -1,8 +1,9 @@
-"""정보(공모전) 크롤링 명령. 매일 03:00 KST 운영 cron에서 실행 (spec 8.2).
+"""정보(공모전/대외활동/지원사업/교육·강의/부트캠프) 크롤링 명령.
+매일 06:00 KST 운영 cron에서 실행 (spec 8.2).
 
 사용 예:
     python manage.py crawl_information
-    python manage.py crawl_information --source mju_contest
+    python manage.py crawl_information --source mju_information
 """
 from django.core.management.base import BaseCommand
 
@@ -10,7 +11,7 @@ from information.crawlers.registry import get_crawlers
 
 
 class Command(BaseCommand):
-    help = '명지대 공모전 게시판 크롤링 (학교 자체 게시판 한정)'
+    help = '명지대 정보(공모전/대외활동/지원사업/교육·강의/부트캠프) 게시판 크롤링 (학교 자체 게시판 한정)'
 
     def add_arguments(self, parser):
         parser.add_argument(
