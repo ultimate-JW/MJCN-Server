@@ -124,11 +124,12 @@ API 주소가 어떻게 생겼냐:
 `/api/v1/accounts/` 아래에:
 - `signup/` 회원가입
 - `verify-email/` 이메일 인증
+- `verify-email/resend/` 인증 코드 재발송
 - `login/` 로그인
-- `kakao-login/` 카카오 로그인
+- `login/kakao/` 카카오 로그인
 - `token/refresh/` 토큰 갱신
 - `logout/` 로그아웃
-- `password/reset/request/` `verify/` `confirm/` 비번 재설정 3단계
+- `password/reset/` `verify/` `confirm/` 비번 재설정 3단계
 - `profile/` 프로필
 - `settings/` 설정
 - `withdraw/` 회원탈퇴
