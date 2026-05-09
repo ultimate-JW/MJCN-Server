@@ -85,8 +85,8 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 │   ├── views.py
 │   ├── crawlers.py          # 크롤러
 │   └── urls.py
-├── information/             # 정보(공모전 등) 통합 조회
-│   ├── models.py            # Contest
+├── information/             # 정보(공모전/대외활동/지원사업/교육·강의/부트캠프) 통합 조회
+│   ├── models.py            # Information
 │   ├── serializers.py
 │   ├── views.py
 │   ├── crawlers.py          # 크롤러
@@ -280,7 +280,7 @@ erDiagram
         json tags
     }
 
-    Contest {
+    Information {
         int id PK
         string title
         string organizer
@@ -413,7 +413,7 @@ User ||--o{ Bookmark : "has"
 |------|------|------|
 | user | FK(User) | |
 | content_type | CharField | 북마크 대상 ("notice" 또는 "information") |
-| object_id | IntegerField | 대상 객체 ID (Notice 또는 Contest의 PK) |
+| object_id | IntegerField | 대상 객체 ID (Notice 또는 Information의 PK) |
 | created_at | DateTimeField | 북마크 시각 |
 
 - unique_together: (user, content_type, object_id)
@@ -555,18 +555,54 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| source | CharField | 출처 (학사공지/일반공지/행사공지/장학공지/오픈톡) |
+| source | CharField | 출처 (일반/학사/해외/공모전/학생활동/진로·취업·창업/장학·학자금) |
 | title | CharField | 제목 |
-| content | TextField | 내용 |
+| content | TextField | 본문 plain text (HTML 태그 제거됨) |
+| extracted_content | TextField(blank) | 본문이 이미지로만 구성된 경우 VLM으로 추출한 텍스트 (spec 9.1.5) |
+| image_urls | JSONField(default=list) | 본문 영역의 이미지 URL 배열 (VLM 입력용) |
 | url | URLField | 원문 링크 |
 | published_at | DateTimeField | 게시일 |
 | end_date | DateField(null) | 마감일 (있는 경우) |
 | created_at | DateTimeField | 수집 시각 |
 | tags | JSONField(default=list) | 자동 태깅 키워드 |
 
+- unique_together: (source, url) — 동일 출처에서 동일 URL 중복 저장 방지 (크롤링 재실행 시 upsert 기준)
+- AI 파이프라인 입력 우선순위: `extracted_content` 있으면 그것 사용, 없으면 `content` 사용
+
+#### NoticeAIResult (AI 처리 결과)
+
+> Notice 1:1로 매칭되는 AI 파이프라인 결과 저장 (spec 9.1.1).
+> Notice 모델과 분리해 재처리·실패 추적·모델 버전 관리를 단순화.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| notice | OneToOneField(Notice, related_name='ai_result') | 대상 공지 |
+| notice_type | CharField(blank) | Stage 1 결과 ("정보형" / "행동형") |
+| summary | CharField(200, blank) | Stage 2 결과 (100자 이내 한 문장) |
+| cards | JSONField(default=list) | Stage 3 결과 (cards 배열, 각 항목은 title+items) |
+| status | CharField(choices) | "pending" / "processing" / "success" / "failed" |
+| last_stage | CharField(blank) | 어디까지 성공했는지 ("classify"/"summarize"/"build_cards") |
+| error_message | TextField(blank) | 마지막 실패 메시지 (디버깅용) |
+| retry_count | IntegerField(default=0) | 재시도 누적 횟수 |
+| content_hash | CharField(64, blank) | Notice.content sha256 — 본문 변경 감지용 |
+| model_name | CharField(50, blank) | 처리에 사용한 LLM 모델명 (예: gpt-4o-mini) |
+| created_at | DateTimeField | 최초 처리 시각 |
+| updated_at | DateTimeField | 최종 업데이트 시각 |
+
+- 부분 실패 복구: Stage 1·2까지 성공 후 Stage 3 실패 시 다음 실행에서 Stage 3만 재시도
+- 재처리 트리거: `content_hash`가 현재 `Notice.content`와 다르면 처음부터 다시 처리
+- cards 형태 예시:
+  ```json
+  [
+    {"title": "🚨 지금 해야 할 행동", "items": ["MSI 접속 필요", "이수구분 확인 필요"]},
+    {"title": "📌 등록 기간", "items": ["2026.05.01 ~ 2026.05.10"]},
+    {"title": "📞 문의", "items": ["교학팀 02-XXX-XXXX"]}
+  ]
+  ```
+
 ### 4.5 information 앱
 
-#### Contest (정보)
+#### Information (정보)
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
@@ -576,9 +612,11 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | url | URLField | 원문 링크 |
 | start_date | DateField(null) | 시작일 (있는 경우) |
 | end_date | DateField(null) | 마감일 |
-| categories | JSONField(default=list) | 분야 태그 |
+| categories | JSONField(default=list) | 분야 태그 (공모전/대외활동/지원사업/교육·강의/부트캠프) |
 | is_active | BooleanField(default=True) | 활성 여부 |
 | created_at | DateTimeField | 수집 시각 |
+
+- unique_together: (url,) — 동일 URL 중복 저장 방지 (크롤링 재실행 시 upsert 기준)
 
 ### 4.6 notifications 앱
 
@@ -589,7 +627,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | user | FK(User) | |
 | title | CharField | 알림 제목 |
 | message | TextField | 알림 내용 |
-| notification_type | CharField | 알림 종류 (notice/contest/course/system) |
+| notification_type | CharField | 알림 종류 (notice/information/course/system) |
 | related_id | IntegerField(null) | 관련 객체 ID (notification_type에 따라 다른 테이블 ID, 프론트 화면 이동용) |
 | is_read | BooleanField(default=False) | 읽음 여부 |
 | is_pushed | BooleanField(default=False) | FCM 전송 여부 |
@@ -906,6 +944,8 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 ### 5.4 통합 정보 제공 - 공지사항 (notices)
 
+> **크롤링 출처 정책**: 명지대학교 자체 공지 게시판만 수집한다. 외부 사이트(링커리어/씽굿/위비티 등)는 후속 작업으로 보류.
+
 #### 5.4.1 전체보기
 
 - 공지 전체 목록 조회
@@ -941,6 +981,8 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 ### 5.5 통합 정보 제공 - 정보 (information)
 
+> **크롤링 출처 정책**: 1차 구현은 명지대학교 자체 공모전 게시판만 수집한다. 외부 공모전 사이트(링커리어/씽굿/위비티 등)는 후속 작업으로 보류.
+
 #### 5.5.1 전체보기
 
 - 전체 정보 리스트
@@ -960,7 +1002,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 - 수집된 외부 정보를 카테고리별로 자동 분류
 - 분류 기준: 공모전, 대외활동, 지원사업, 교육/강의, 부트캠프
-- Contest 모델의 `categories` JSONField에 저장
+- Information 모델의 `categories` JSONField에 저장
 
 ### 5.6 채팅방 보관함 (chat)
 
@@ -1127,7 +1169,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 |--------|-----|------|------|
 | GET | `/api/v1/information/` | O | 정보 목록 (맞춤형 기본) |
 | GET | `/api/v1/information/?view=all` | O | 정보 전체보기 |
-| GET | `/api/v1/contests/?q=<검색어>` | O | 정보 검색 |
+| GET | `/api/v1/information/?q=<검색어>` | O | 정보 검색 |
 | GET | `/api/v1/information/<id>/` | O | 정보 상세 |
 
 ### 6.9 알림 (notifications)
@@ -1233,7 +1275,12 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 - **AI 채팅 응답 시간**: 8초 이내
 - **AI 적절 응답률**: 80% 이상 (사용자 테스트 기준)
 - **데이터 갱신 주기**: 주요 학사/공지 데이터 1일 1회 이상
-- 공지사항/정보 크롤링: 주기적 백그라운드 작업
+- 공지사항/정보 크롤링: 매일 06:00 KST (Asia/Seoul) 정기 실행
+  - 1차 구현: 운영 서버 cron + `manage.py crawl_notices` / `crawl_information` 명령
+  - 후속 도입: Django-Q2 또는 Celery Beat로 스케줄러 래핑
+- 공지사항 AI 처리: 매일 06:30 KST (크롤링 완료 직후 정기 실행)
+  - 1차 구현: 운영 서버 cron + `manage.py process_notices_ai` 명령
+  - 미처리(`pending`) + 본문 변경 감지(`content_hash` 불일치)된 공지만 처리 (멱등)
 - AI 응답: 스트리밍 응답 고려 (SSE 또는 polling)
 - DB 인덱싱: 자주 조회되는 필드 (user, created_at, deadline 등)
 - API 페이지네이션: 기본 20개, 최대 100개
@@ -1251,6 +1298,43 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 - 과목/졸업요건 데이터: 초기 시딩 (fixture 또는 management command)
 - 사용자 업로드 파일: `MEDIA_ROOT` 관리
 
+#### 8.4.1 크롤링 데이터 흐름 (JSON 단일 포맷)
+
+크롤러 → DB → API → 프론트까지 **JSON 단일 포맷**으로 처리한다.
+중간 변환 없이 동일한 구조가 흐르므로 직렬화/역직렬화 비용을 최소화한다.
+
+```
+[크롤러] Python dict (JSON 직렬화 가능 구조)
+   ↓ Notice.objects.update_or_create(...)
+[DB] Notice / Information 레코드 (tags / categories는 JSONField로 보관)
+   ↓ DRF Serializer
+[API] application/json 응답
+   ↓ HTTPS
+[프론트] Android / iOS 클라이언트
+```
+
+크롤러 반환 dict 표준 스키마 (Notice 기준):
+
+```json
+{
+  "source": "academic",
+  "title": "공지 제목",
+  "content": "본문 plain text",
+  "image_urls": ["https://www.mju.ac.kr/.../1.png", "..."],
+  "url": "https://www.mju.ac.kr/...",
+  "published_at": "2026-05-01T09:00:00+09:00",
+  "end_date": null,
+  "tags": []
+}
+```
+
+- `content`는 HTML 태그 제거 후 plain text로 저장 (이후 LLM 입력용)
+- `image_urls`는 본문 영역(`div.artclView`)에 포함된 이미지 URL을 절대경로로 정규화해 수집.
+  본문이 이미지만으로 구성된 공지(`content`가 비거나 매우 짧음)에 대해 VLM 전처리(spec 9.1.5)에 사용한다.
+- `tags`는 크롤링 단계에서는 빈 리스트 또는 사이트 카테고리만 채우고, AI 자동 태깅은 후속 파이프라인(spec 9.1)에서 채운다
+- 저장은 `(source, url)` (Notice) / `(url,)` (Information) 기준 upsert
+- `extracted_content`는 크롤러가 채우지 않음. VLM 전처리 단계(spec 9.1.5)에서만 채워진다.
+
 ---
 
 ## 9. 외부 연동
@@ -1265,29 +1349,57 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 #### 9.1.1 공지사항 처리 파이프라인
 
-크롤링된 공지 원문을 3단계 LLM 호출로 처리:
+크롤링된 공지 원문을 (선택적 VLM 전처리 +) 3단계 LLM 호출로 처리:
 
 ```
-공지 원문
-  → [1차] 유형 분류 (정보형/행동형) — 별도 API 호출
-  → [2차] 요약 생성 (100자 이내 한 문장) — 별도 API 호출
-  → [3차] 카드 구조화 — 유형별 프롬프트 분기
-       - 행동형 → 상세 버전 (이모지 제목, 음슴체, 행동 카드 필수)
-       - 정보형 → 간결 버전 (존댓말, 이모지 없음, 정보 중심)
-  → DB 저장
+[전처리] content가 비거나 매우 짧고 image_urls가 있으면
+         → VLM(gpt-4o-mini Vision)으로 이미지 → 텍스트 추출 (spec 9.1.5)
+         → Notice.extracted_content에 저장
+
+공지 본문 (extracted_content 우선, 없으면 content)
+  → [1차] 요약 생성 (100자 이내 한 문장) — 별도 API 호출 (spec 9.1.2)
+  → [2차] 유형 분류 (정보형/행동형) — 별도 API 호출 (spec 9.1.3)
+  → [3차] 카드 구조화 — **공통 프롬프트 적용** (type 변수로 내부 분기) (spec 9.1.4)
+       - 이모지 제목 + 음슴체 items 통일
+       - 행동형: "🚨 지금 해야 할 행동" 카드 최상단 배치
+       - 정보형: 행동 카드 없이 정보 중심 구성
+  → NoticeAIResult 저장 (spec 4.4)
 ```
 
-#### 9.1.2 공지 유형 분류
+##### 운영 / 실행 방식
 
-| 유형 | 설명 | 예시 |
-|------|------|------|
-| 정보형 | 단순 안내 공지 | 등록금 안내, 장학금 안내, 프로그램 모집 |
-| 행동형 | 학생이 반드시 조치해야 하는 공지 | 이수구분 확인, 수강신청 정정, 폐강과목 공지 |
+| 항목 | 결정 |
+|------|------|
+| 모델 | `gpt-4o-mini` (환경변수 `OPENAI_MODEL`로 교체 가능). VLM 전처리도 동일 모델 사용 (Vision 입력 지원) |
+| API 키 | `.env`의 `OPENAI_API_KEY` (settings.py에서 `os.getenv` 로드) |
+| 실행 (텍스트 파이프라인) | `manage.py process_notices_ai` — 매일 06:30 KST cron |
+| 실행 (VLM 전처리) | `manage.py process_notice_images` — 06:15 KST cron (텍스트 파이프라인 직전) |
+| 처리 대상 (텍스트) | `NoticeAIResult.status` 가 `success`/`empty_content`가 아닌 항목 + `content_hash` 변경 감지 |
+| 처리 대상 (VLM) | `extracted_content`가 비어있고 `image_urls`가 1개 이상인 Notice |
+| 본문 길이 처리 | **truncate** — 본문이 일정 길이 초과 시 앞부분만 잘라 전송 (단순 절단) |
+| 재시도 | 단계별 실패 시 같은 단계만 재시도, 지수 백오프 1~3회 |
+| 부분 성공 | Stage별로 즉시 DB 저장 → 다음 실행에서 `last_stage` 이후만 이어서 처리 |
+| 응답 파싱 | Stage 3 / VLM은 OpenAI JSON mode 사용 (구조화 출력) |
 
-- LLM에 공지 원문을 입력하여 유형을 자동 판단
-- 분류 결과(`정보형` 또는 `행동형`)를 후속 프롬프트의 `{type}` 변수로 전달
+##### Management command 옵션 (예정)
 
-#### 9.1.3 공지 요약 프롬프트
+```
+manage.py process_notices_ai
+    [--source academic general]   # 특정 출처만
+    [--limit 50]                  # 처리 건수 제한
+    [--ids 12 34 56]              # 특정 Notice ID만
+    [--reprocess]                 # success 항목도 강제 재처리
+
+manage.py process_notice_images   # VLM 전처리 (이미지 → 텍스트)
+    [--source academic general]
+    [--limit 50]
+    [--ids 12 34 56]
+    [--reprocess]                 # 이미 extracted_content가 있어도 재추출
+```
+
+#### 9.1.2 공지 요약 프롬프트
+
+파이프라인 1단계. 공지 본문을 100자 이내 한 문장으로 요약. 음슴체 종결, 이모지 금지.
 
 ```text
 공지 내용을 공백 포함 최대 100자 이내로 요약해.
@@ -1304,9 +1416,38 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 출력은 한 문장만 반환해.
 ```
 
-#### 9.1.4 공지 카드 구조화 프롬프트 — 행동형 (상세 버전)
+#### 9.1.3 공지 유형 분류 프롬프트
 
-행동형 공지에 사용. 이모지 제목 + 음슴체 스타일.
+파이프라인 2단계. 공지 본문을 보고 정보형/행동형 중 하나로 분류. 분류 결과(`정보형` 또는 `행동형`)는 후속 카드 구조화 프롬프트의 `{type}` 변수로 전달된다.
+
+| 유형 | 설명 | 예시 |
+|------|------|------|
+| 정보형 | 단순 안내 또는 참고용 정보 제공 | 등록금 안내, 장학금 안내, 프로그램 모집, 일정 안내 |
+| 행동형 | 사용자가 반드시 확인하거나 수행해야 할 행동 포함 | 이수구분 확인, 수강신청 정정, 폐강과목, 서류 제출, 신청/납부/수정 |
+
+```text
+공지 내용을 보고 유형을 판단해.
+
+유형 기준:
+- 정보형: 단순 안내 또는 참고용 정보 제공 (예: 등록금 안내, 장학금, 프로그램 모집, 일정 안내)
+- 행동형: 사용자가 반드시 확인하거나 수행해야 할 행동이 있음 (예: 이수구분 확인, 수강신청 정정, 서류 제출, 신청/납부/수정 등)
+
+판단 기준:
+- 사용자가 직접 해야 할 행동(확인, 제출, 신청, 수정, 납부 등)이 포함되면 행동형
+- 행동 요구가 없고 단순 정보 전달이면 정보형
+- 표현이 명령형이 아니어도, 사실상 사용자의 행동이 필요한 경우 행동형으로 판단
+
+출력 규칙:
+- 반드시 "정보형" 또는 "행동형" 중 하나만 반환
+- 다른 설명, 문장, 공백 없이 결과만 출력
+
+판단이 애매한 경우에는 사용자의 행동 필요 여부를 기준으로 판단해.
+```
+
+#### 9.1.4 공지 카드 구조화 프롬프트 (공통)
+
+행동형/정보형 모두 동일한 프롬프트를 사용한다. `{type}` 변수 값에 따라 프롬프트 내부의 `[유형별 규칙]`이 분기되어 적용된다.
+이모지 제목 + 음슴체 items 스타일로 통일하며, 행동형의 경우 "🚨 지금 해야 할 행동" 카드가 가장 먼저 배치된다.
 
 ```text
 너는 대학 공지 내용을 사용자에게 보기 쉽게 정리하는 AI야.
@@ -1325,13 +1466,23 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 [스타일 규칙]
 1. title은 "이모지 + 명사형 한글 제목"으로 작성
+   - 반드시 "이모지 + 명사형 한글 제목" 형식으로 작성
    - 존댓말(~입니다, ~하세요 등) 사용 금지
-   - 문장형 금지, 명사형으로 간결하게 작성
-   예:
-   "👤 대상 확인"
-   "📌 등록 기간"
-   "⚠️ 주의사항"
-   "🔍 확인 방법"
+   - 완전한 문장형 표현 금지
+   - 핵심 키워드 중심의 명사형으로 간결하게 작성
+   - 이모지는 문맥과 의미에 맞는 것으로 자연스럽게 선택
+   - 과도한 감정 표현용 이모지 사용 금지
+   - title 길이는 가능한 짧고 직관적으로 작성
+
+   예시
+   - 👤 대상 확인
+   - 📌 등록 기간
+   - ⚠️ 주의사항
+   - 🔍 확인 방법
+   - 🗂 제출 서류
+   - 🕒 일정 안내
+   - 💳 결제 정보
+   - 🚫 제한 조건
 
 2. items는 음슴체(~임, ~필요, ~권장 등) 스타일로 작성
    예:
@@ -1391,65 +1542,70 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 {공지 원문}
 ```
 
-#### 9.1.5 공지 카드 구조화 프롬프트 — 정보형 (간결 버전)
+#### 9.1.5 VLM 전처리 (이미지 전용 공지 대응)
 
-정보형 공지에 사용. 존댓말 + 이모지 없음.
+학교 공지에는 본문이 텍스트 없이 포스터 이미지(`<img>` 태그)만으로 구성된 케이스가 존재한다.
+이 경우 텍스트 파이프라인은 빈 본문을 받아 의미 있는 분류·요약·카드를 만들 수 없으므로,
+VLM(Vision Language Model)으로 이미지 → 텍스트 추출을 먼저 수행한다.
 
-```text
-너는 대학 공지 내용을 사용자에게 보기 쉽게 정리하는 AI야.
-입력으로 공지 내용과 공지 유형(type: 정보형 또는 행동형)이 주어진다.
-공지 내용을 분석해서 핵심 정보를 카드 형태로 구조화해.
+##### 처리 흐름
 
-[규칙]
-1. 반드시 JSON 형식으로 반환
-2. 카드 형태로 정보를 구성
-3. 각 카드는 "title"과 "items"를 가진다
-4. items는 짧고 명확한 문장으로 작성 (존댓말, 간결하게)
-5. 불필요한 설명은 제거하고 핵심만 남긴다
-6. 중복 내용은 제거한다
-
-[유형별 규칙]
-
-- 행동형:
-  → "지금 해야 할 행동" 카드를 반드시 포함하고 가장 먼저 배치
-  → 사용자가 해야 할 행동을 명확하게 작성
-
-- 정보형:
-  → 행동 카드 없이 정보 중심으로 구성
-
-[카드 구성 가이드]
-공지 내용에 따라 아래 중 적절한 것만 선택해서 구성:
-- 대상
-- 기간
-- 변경 내용
-- 신청 방법 / 이용 방법
-- 확인 방법
-- 납부 방법
-- 주의사항
-- 문의처
-
-[출력 형식]
-{
-  "cards": [
-    {
-      "title": "카드 제목",
-      "items": ["내용1", "내용2"]
-    }
-  ]
-}
-
-공지 유형:
-{type}
-
-공지 내용:
-{공지 원문}
+```
+크롤러: artclView 영역의 <img> URL을 image_urls 배열에 저장
+   ↓
+process_notice_images 명령 (별도 cron 06:15 KST)
+   대상: extracted_content가 비어있고 image_urls가 1개 이상인 Notice
+   ↓
+VLM 호출 (gpt-4o-mini, vision 입력)
+   ↓
+Notice.extracted_content에 추출 텍스트 저장
+   ↓
+다음 텍스트 파이프라인(06:30 KST) 실행 시 자동 재처리됨
+   (NoticeAIResult.content_hash 비교에서 hash 변경 감지)
 ```
 
-### 9.2 크롤링 대상
+##### VLM 추출 프롬프트
 
-- 명지대학교 공지사항 페이지 (학사, 일반, 장학)
+```text
+다음 이미지는 대학 공지 게시판에 올라온 포스터 또는 안내문이야.
+이미지에 포함된 한국어 텍스트를 빠짐없이 옮겨 적어.
+
+[규칙]
+1. 이미지에 보이는 모든 한국어 텍스트를 그대로 추출
+2. 표·목록·날짜·연락처 등은 원본 구조를 살려 줄바꿈 유지
+3. 장식적 텍스트(브랜드 슬로건 등)도 포함
+4. 텍스트가 아닌 시각 요소는 묘사하지 말고 텍스트만 옮김
+5. 이미지에서 읽을 수 없는 부분은 [읽을 수 없음]으로 표시
+6. 출력은 추출한 텍스트만 (메타 설명·서두 금지)
+
+여러 이미지가 주어지면 각 이미지를 순서대로 추출해 빈 줄로 구분.
+```
+
+##### 운영 정책
+
+- **모델**: `gpt-4o-mini` (Vision 입력 지원, 비용 저렴)
+- **이미지 개수 한도**: 한 공지당 최대 N장(기본 5장)까지만 VLM에 보냄 — 초과분은 무시
+- **재시도**: 텍스트 파이프라인과 동일하게 지수 백오프 1~3회
+- **실패 처리**: VLM 호출 실패 시 `extracted_content`는 빈 채로 두고 다음 cron 실행에서 재시도
+- **재추출 트리거**: `--reprocess` 옵션 또는 `image_urls` 변경 시
+
+#### 1차 구현 (현재 범위)
+
+- 명지대학교 공지사항 페이지 (학사 / 일반 / 해외 / 학생활동 / 진로·취업·창업 / 장학·학자금 등 학교 자체 게시판)
+- 명지대학교 공모전 관련 게시판 (학교 자체 게시판에 올라오는 공모전·대외활동·지원사업 공지)
 - 카카오톡 오픈톡 (이전 데이터 CSV import, management command로 1회성 시딩 → Notice에 source="오픈톡"으로 저장)
-- 공모전 관련 사이트 (링커리어, 씽굿, 위비티 등)
+
+#### 후속 작업 (이번 범위 외)
+
+- 외부 공모전 사이트 (링커리어, 씽굿, 위비티 등) — 사이트별 크롤러 추가는 1차 구현 안정화 이후 별도 브랜치에서 진행
+
+#### 크롤링 방식 / 운영
+
+- HTTP 요청: `requests` + `BeautifulSoup4` (정적 HTML 우선; 필요 시 `playwright` 보완)
+- 데이터 포맷: 8.4.1의 JSON 단일 포맷
+- 실행: 매일 06:00 KST `manage.py crawl_notices` / `crawl_information` (운영 cron)
+- 멱등성: `(source, url)` (Notice) / `(url,)` (Information) 기준 upsert로 중복 방지
+- 실패 격리: 한 사이트 파싱 실패가 다른 사이트 크롤링을 중단시키지 않음
 
 ### 9.3 FCM (Firebase Cloud Messaging)
 
@@ -1481,11 +1637,32 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 ### Phase 2 - 데이터 수집 (2주)
 
-- [ ] notices 앱: 공지사항 모델 + Serializer + 크롤러 + management command
+- [ ] notices 앱: 공지사항 모델 + 크롤러 + management command (`crawl_notices`) — 학교 자체 공지 게시판
+- [ ] information 앱: 정보 모델 + 크롤러 + management command (`crawl_information`) — 학교 자체 공모전 게시판
+- [ ] 크롤러 베이스 클래스 + 사이트별 구현체 분리 (`requests` + `BeautifulSoup4`)
+- [ ] `(source, url)` / `(url,)` upsert 로직, 실패 격리 처리
+- [ ] 매일 06:00 KST cron 등록 (운영 환경)
 - [ ] 오픈톡 CSV import management command (1회성 시딩)
-- [ ] informations 앱: 정보 모델 + Serializer + 크롤러
 - [ ] courses 앱: 과목/졸업요건 모델 + Serializer + 시드 데이터
-- [ ] 크롤링 스케줄러 설정
+- [ ] **공지사항 AI 처리 파이프라인** (spec 9.1.1)
+  - [ ] `NoticeAIResult` 모델 + 마이그레이션
+  - [ ] OpenAI 클라이언트 래퍼 (`gpt-4o-mini`, JSON mode, 재시도/타임아웃)
+  - [ ] 3단계 함수: `classify` / `summarize` / `build_cards`
+  - [ ] 본문 truncate 유틸 (단계별 길이 한도)
+  - [ ] 오케스트레이터: `content_hash` 기반 재처리, 단계별 부분 성공 저장
+  - [ ] Management command: `process_notices_ai` (`--source`, `--limit`, `--ids`, `--reprocess`)
+  - [ ] 매일 06:30 KST cron 등록
+  - [ ] 단위 테스트: OpenAI 호출 mock, 부분 실패 복구, 재처리 트리거
+- [ ] **VLM 전처리 (이미지 전용 공지 대응)** (spec 9.1.5)
+  - [ ] Notice 모델에 `extracted_content`, `image_urls` 필드 추가 + 마이그레이션
+  - [ ] 크롤러 수정: `div.artclView` 내 `<img>` URL 절대경로로 수집해 `image_urls`에 저장
+  - [ ] 기존 80건 재크롤링으로 `image_urls` 백필
+  - [ ] VLM 호출 함수 (`gpt-4o-mini` Vision 입력, 다중 이미지 지원, 이미지 개수 한도)
+  - [ ] Management command: `process_notice_images` (`--source`, `--limit`, `--ids`, `--reprocess`)
+  - [ ] 매일 06:15 KST cron 등록 (텍스트 파이프라인 06:30 직전)
+  - [ ] 텍스트 파이프라인이 `extracted_content` 우선 사용하도록 분기
+  - [ ] 단위 테스트: 이미지 mock, 추출 실패 시 재시도, image_urls 비어있으면 skip
+- [ ] (후속) 외부 공모전 사이트 크롤러, Django-Q2/Celery Beat 스케줄러 도입
 
 ### Phase 3 - 정보 조회 API (2주)
 
@@ -1520,12 +1697,14 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 1. **`AUTH_USER_MODEL` 설정** - accounts 앱 생성 후 즉시 설정 (마이그레이션 전)
 2. **settings.py 분리** - `base.py`, `dev.py`, `prod.py`
 3. **환경변수 관리** - `python-dotenv` 또는 `django-environ` 도입
+   - 필수 키: `SECRET_KEY`, `DEBUG`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`
+   - AI 파이프라인: `OPENAI_API_KEY` (필수), `OPENAI_MODEL` (선택, 기본 `gpt-4o-mini`)
 4. **LANGUAGE_CODE / TIME_ZONE** - `ko-kr`, `Asia/Seoul`로 변경
 5. **`.gitignore`** - `.env`, `db.sqlite3`, `media/`, `__pycache__/` 등
 6. **requirements.txt 핵심 패키지**:
    - `Django`, `djangorestframework`, `djangorestframework-simplejwt`
    - `drf-spectacular`, `django-cors-headers`
-   - `python-dotenv`, `requests` (크롤링), `openai` (AI API)
+   - `python-dotenv`, `requests` + `beautifulsoup4` + `lxml` (크롤링), `openai` (AI 파이프라인)
    - `firebase-admin` (FCM PUSH 알림)
 7. **DRF 기본 설정** - `DEFAULT_AUTHENTICATION_CLASSES`, `DEFAULT_PAGINATION_CLASS`, `DEFAULT_THROTTLE_RATES`
 8. **CORS 설정** - `CORS_ALLOWED_ORIGINS`에 프론트엔드 도메인 등록
