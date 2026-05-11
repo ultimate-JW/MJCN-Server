@@ -981,7 +981,10 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 ### 5.5 통합 정보 제공 - 정보 (information)
 
-> **크롤링 출처 정책**: 1차 구현은 명지대학교 자체 공모전 게시판만 수집한다. 외부 공모전 사이트(링커리어/씽굿/위비티 등)는 후속 작업으로 보류.
+> **크롤링 출처 정책**:
+> - 1차 구현 — 명지대학교 자체 공모전 게시판
+> - 2차 구현 — 외부 공모전 사이트 **위비티(wevity)** 추가 (URL은 운영 cron 등록 시 확정)
+> - 그 외 외부 사이트(링커리어/씽굿 등)는 후속 작업으로 보류
 
 #### 5.5.1 전체보기
 
@@ -1589,15 +1592,26 @@ Notice.extracted_content에 추출 텍스트 저장
 - **실패 처리**: VLM 호출 실패 시 `extracted_content`는 빈 채로 두고 다음 cron 실행에서 재시도
 - **재추출 트리거**: `--reprocess` 옵션 또는 `image_urls` 변경 시
 
-#### 1차 구현 (현재 범위)
+#### 1차 구현 (완료)
 
 - 명지대학교 공지사항 페이지 (학사 / 일반 / 해외 / 학생활동 / 진로·취업·창업 / 장학·학자금 등 학교 자체 게시판)
 - 명지대학교 공모전 관련 게시판 (학교 자체 게시판에 올라오는 공모전·대외활동·지원사업 공지)
 - 카카오톡 오픈톡 (이전 데이터 CSV import, management command로 1회성 시딩 → Notice에 source="오픈톡"으로 저장)
 
+#### 2차 구현 (현재 범위 — feature/19)
+
+- **위비티(wevity)** 외부 공모전 사이트 크롤러 추가
+  - 대상: Information 모델로 저장 (`source` 식별자 = `wevity`, 로깅·`--source` 옵션용)
+  - 카테고리: 공모전/대외활동/지원사업/교육·강의/부트캠프 (Information.categories에 매핑)
+  - URL: 위비티 공모전 목록 페이지 (운영 cron 등록 시 확정)
+  - 멱등성: `(url,)` 단독 unique 기준 upsert
+  - 실행: 매일 **06:00 KST** `manage.py crawl_information --source wevity` (학교 자체 크롤러와 동일 시각, 동일 명령에 포함)
+  - 실패 격리: 위비티 파싱 실패가 다른 크롤러 실행을 막지 않음
+  - 정적 HTML이면 `requests` + `BeautifulSoup4`, JS 렌더링 필요 시 `playwright` 보완
+
 #### 후속 작업 (이번 범위 외)
 
-- 외부 공모전 사이트 (링커리어, 씽굿, 위비티 등) — 사이트별 크롤러 추가는 1차 구현 안정화 이후 별도 브랜치에서 진행
+- 그 외 외부 공모전 사이트 (링커리어, 씽굿 등) — 위비티 안정화 이후 별도 브랜치에서 진행
 
 #### 크롤링 방식 / 운영
 
@@ -1662,7 +1676,16 @@ Notice.extracted_content에 추출 텍스트 저장
   - [ ] 매일 06:15 KST cron 등록 (텍스트 파이프라인 06:30 직전)
   - [ ] 텍스트 파이프라인이 `extracted_content` 우선 사용하도록 분기
   - [ ] 단위 테스트: 이미지 mock, 추출 실패 시 재시도, image_urls 비어있으면 skip
-- [ ] (후속) 외부 공모전 사이트 크롤러, Django-Q2/Celery Beat 스케줄러 도입
+- [ ] **외부 공모전 크롤러 — 위비티(wevity)** (feature/19)
+  - [ ] `information/crawlers/wevity.py`: `WevityCrawler(BaseInformationCrawler)` 구현
+  - [ ] `SOURCE = 'wevity'`, `LIST_URL` 설정 + 상세 페이지 파싱
+  - [ ] 카테고리 매핑: 위비티 분류 → Information.categories (공모전/대외활동/지원사업/교육·강의/부트캠프)
+  - [ ] `start_date` / `end_date` 파싱
+  - [ ] `is_active` 마감일 기준 자동 판정
+  - [ ] `crawlers/registry.py`에 등록
+  - [ ] 매일 **06:00 KST** cron에 포함 (`crawl_information` 명령으로 일괄 실행)
+  - [ ] 단위 테스트: HTML fixture 기반 list/detail 파싱, upsert 멱등성, 실패 격리
+- [ ] (후속) 그 외 외부 공모전 사이트(링커리어, 씽굿 등), Django-Q2/Celery Beat 스케줄러 도입
 
 ### Phase 3 - 정보 조회 API (2주)
 
