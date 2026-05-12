@@ -983,8 +983,31 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 > **크롤링 출처 정책**:
 > - 1차 구현 — 명지대학교 자체 공모전 게시판
-> - 2차 구현 — 외부 공모전 사이트 **위비티(wevity)** 추가 (URL은 운영 cron 등록 시 확정)
+> - 2차 구현 — 외부 공모전 사이트 **위비티(wevity)** 추가 (운영팀 협조 확인 완료)
 > - 그 외 외부 사이트(링커리어/씽굿 등)는 후속 작업으로 보류
+
+#### 위비티 데이터 정책 (2026-05-12 운영팀 회신 반영)
+
+위비티 측 회신에 따라 다음 원칙을 적용한다.
+
+1. **상세 본문 전체 저장 금지**
+   - 상세 페이지를 fetch하되 본문 텍스트(`description`)는 **빈 채로** 저장
+   - 메타 정보(title, organizer, start_date, end_date, categories, url)만 저장
+   - 이유: 상세 페이지에 개인정보가 포함될 수 있어 KISA·정부기관의 수정·삭제 요청 위험
+   - 사용자는 항상 위비티 원문 링크로 이동해 본문을 확인하도록 유도
+
+2. **보관 기간 — 1년**
+   - `end_date`가 1년 이상 지난 위비티 출처 데이터는 자동 삭제
+   - 매일 새벽(06:45 KST) cron으로 정리
+
+3. **API/RSS 없음 → 크롤링 방식만 사용**
+   - 위비티는 공식 API/RSS를 제공하지 않음을 확인
+   - HTTP GET + HTML 파싱으로만 수집
+
+4. **서비스 런칭 시 위비티 측 통보 필요**
+   - 서비스 공개 URL과 담당자 연락처를 위비티 운영팀에 전달
+   - KISA·정부기관 통한 정보 수정/삭제 요청이 들어올 경우 응답하기 위함
+   - 운영 노트: 배포 직전 수행 작업 체크리스트로 관리 (Phase 5)
 
 #### 5.5.1 전체보기
 
@@ -1600,14 +1623,27 @@ Notice.extracted_content에 추출 텍스트 저장
 
 #### 2차 구현 (현재 범위 — feature/19)
 
-- **위비티(wevity)** 외부 공모전 사이트 크롤러 추가
+- **위비티(wevity)** 외부 공모전 사이트 크롤러 추가 (운영팀 회신 반영, 2026-05-12)
   - 대상: Information 모델로 저장 (`source` 식별자 = `wevity`, 로깅·`--source` 옵션용)
-  - 카테고리: 공모전/대외활동/지원사업/교육·강의/부트캠프 (Information.categories에 매핑)
-  - URL: 위비티 공모전 목록 페이지 (운영 cron 등록 시 확정)
+  - 1차 대상 카테고리 (URL은 cidx 파라미터로 구분):
+    - `cidx=20` — 웹/모바일/IT
+    - `cidx=21` — 게임/소프트웨어
+  - 카테고리 매핑: 위비티 분류 → Information.categories (공모전/대외활동/지원사업/교육·강의/부트캠프)
+  - 페이지네이션: query string `gp=N` (1부터 시작, 빈 페이지면 break)
   - 멱등성: `(url,)` 단독 unique 기준 upsert
   - 실행: 매일 **06:00 KST** `manage.py crawl_information --source wevity` (학교 자체 크롤러와 동일 시각, 동일 명령에 포함)
   - 실패 격리: 위비티 파싱 실패가 다른 크롤러 실행을 막지 않음
   - 정적 HTML이면 `requests` + `BeautifulSoup4`, JS 렌더링 필요 시 `playwright` 보완
+
+##### 개인정보 보호 정책 (위비티 측 요청)
+
+- **상세 페이지를 fetch는 하되 본문(`description`)은 저장하지 않음**
+  - 메타 정보만 추출: title, organizer, start_date, end_date, categories, url
+  - 본문 텍스트는 파싱 후 즉시 폐기 (`description=''` 저장)
+  - 이유: 상세 페이지에 개인정보 포함 가능성 → KISA·정부기관 수정·삭제 요청 위험 회피
+- **데이터 보관 1년 정책**: `end_date`가 1년 이상 지난 wevity 레코드는 자동 삭제 (`manage.py prune_information` cron)
+- **사용자 노출**: 항상 위비티 원문 링크로 이동해 본문을 확인하도록 UI 설계
+- **운영팀 통보 의무**: 서비스 런칭 시 서비스 URL + 담당자 연락처를 위비티 운영팀에 전달 (Phase 5 체크리스트)
 
 #### 후속 작업 (이번 범위 외)
 
@@ -1676,15 +1712,24 @@ Notice.extracted_content에 추출 텍스트 저장
   - [ ] 매일 06:15 KST cron 등록 (텍스트 파이프라인 06:30 직전)
   - [ ] 텍스트 파이프라인이 `extracted_content` 우선 사용하도록 분기
   - [ ] 단위 테스트: 이미지 mock, 추출 실패 시 재시도, image_urls 비어있으면 skip
-- [ ] **외부 공모전 크롤러 — 위비티(wevity)** (feature/19)
+- [ ] **외부 공모전 크롤러 — 위비티(wevity)** (feature/19) [운영팀 회신 반영, 2026-05-12]
   - [ ] `information/crawlers/wevity.py`: `WevityCrawler(BaseInformationCrawler)` 구현
-  - [ ] `SOURCE = 'wevity'`, `LIST_URL` 설정 + 상세 페이지 파싱
+  - [ ] 1차 대상 카테고리:
+        `cidx=20` (웹/모바일/IT) / `cidx=21` (게임/소프트웨어)
+  - [ ] 페이지네이션 `gp=N` 처리 (빈 페이지면 break, MAX_PAGES 상한)
+  - [ ] **메타 정보만 추출·저장**: title / organizer / start_date / end_date / categories / url
+        (개인정보 보호 정책에 따라 `description`은 저장하지 않음 — 파싱 후 폐기)
   - [ ] 카테고리 매핑: 위비티 분류 → Information.categories (공모전/대외활동/지원사업/교육·강의/부트캠프)
   - [ ] `start_date` / `end_date` 파싱
   - [ ] `is_active` 마감일 기준 자동 판정
   - [ ] `crawlers/registry.py`에 등록
   - [ ] 매일 **06:00 KST** cron에 포함 (`crawl_information` 명령으로 일괄 실행)
-  - [ ] 단위 테스트: HTML fixture 기반 list/detail 파싱, upsert 멱등성, 실패 격리
+  - [ ] 단위 테스트: HTML fixture 기반 list/detail 파싱, upsert 멱등성, 실패 격리, description 빈 채로 저장 확인
+- [ ] **데이터 보관 정책 cron — `prune_information`** (feature/19)
+  - [ ] Management command: `manage.py prune_information [--source wevity] [--days 365] [--dry-run]`
+  - [ ] 기본 동작: `source='wevity' AND end_date < (today - 365)` 삭제
+  - [ ] 매일 **06:45 KST** cron 등록 (크롤링 06:00 + AI 06:30 다음)
+  - [ ] 단위 테스트: 보관 기간 내 / 외 / end_date NULL 케이스
 - [ ] (후속) 그 외 외부 공모전 사이트(링커리어, 씽굿 등), Django-Q2/Celery Beat 스케줄러 도입
 
 ### Phase 3 - 정보 조회 API (2주)
@@ -1710,6 +1755,9 @@ Notice.extracted_content에 추출 텍스트 저장
 - [ ] API 통합 테스트 + Swagger 문서 검증
 - [ ] 운영 환경 설정 (PostgreSQL, 환경변수 등)
 - [ ] 프론트엔드 팀과 API 연동 테스트
+- [ ] **위비티 운영팀 통보** (서비스 런칭 직전)
+  - [ ] 서비스 공개 URL 전달
+  - [ ] 담당자 연락처 전달 (KISA·정부기관 통한 정보 수정/삭제 요청 응답용)
 
 ---
 
