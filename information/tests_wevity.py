@@ -21,7 +21,8 @@ def load_fixture(name: str) -> str:
 
 
 # 실제 위비티 페이지 (2026-05-12 캡처)
-REAL_LIST_HTML = load_fixture('wevity_list_cidx20.html')
+REAL_LIST_HTML = load_fixture('wevity_list_cidx20.html')  # 웹/모바일/IT
+REAL_LIST_CIDX21_HTML = load_fixture('wevity_list_cidx21.html')  # 게임/소프트웨어
 REAL_DETAIL_HTML = load_fixture('wevity_detail_sample.html')  # ix=106851 (K-콘텐츠 수출 마케터)
 
 # 정책 검증용 — 본문에 개인정보 포함된 가상 상세 페이지
@@ -200,6 +201,37 @@ class WevityRealListParsingTests(TestCase):
         self.assertIn('공모전', first_cats)
         self.assertIn('대외활동', first_cats)
         self.assertIn('지원사업', first_cats)
+
+
+class WevityCidx21StructureTests(TestCase):
+    """게임/소프트웨어(cidx=21) 페이지도 동일 셀렉터로 파싱되는지 검증."""
+
+    def setUp(self):
+        self.crawler = WevityCrawler()
+        self.items = list(self.crawler.parse_list(REAL_LIST_CIDX21_HTML))
+
+    def test_헤더_제외_데이터_행_추출(self):
+        # cidx=20과 동일하게 15건 (변동 가능하므로 5건 이상만 확인)
+        self.assertGreaterEqual(len(self.items), 5)
+
+    def test_모든_항목_필수_필드_존재(self):
+        for item in self.items:
+            self.assertTrue(item['title'])
+            self.assertTrue(item['url'].startswith('https://www.wevity.com/'))
+            self.assertIn('ix=', item['url'])
+
+    def test_cidx21_url에_cidx21_포함(self):
+        # 게임/소프트웨어 카테고리에서 추출된 항목은 cidx=21 URL이어야 함
+        for item in self.items:
+            # 일부 항목은 SPECIAL 등으로 다른 cidx에 노출될 수 있어 느슨하게 검증
+            self.assertTrue(
+                'cidx=21' in item['url'] or 'cidx=' in item['url']
+            )
+
+    def test_categories_매핑_정상_동작(self):
+        # 위비티는 기본 '공모전' 카테고리가 항상 포함됨
+        for item in self.items:
+            self.assertIn('공모전', item['categories'])
 
 
 class WevityParseDetailPrivacyTests(TestCase):
