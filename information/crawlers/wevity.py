@@ -12,8 +12,12 @@
 
 페이지네이션: query string `gp=N` (1부터, 빈 페이지 만나면 break)
 
-⚠️ 셀렉터는 위비티 페이지 구조 추정 기반 — 실제 운영 전 fixture 수집해서
-   각 select 표현식 검증·보완 필요.
+HTML 구조 (2026-05-12 실제 페이지 확인):
+- 행: <ul class="list"> > <li> (첫 li는 헤더 .top 클래스)
+- 제목/링크: <div class="tit"> > <a href="...&ix=NNNN">제목 <span class="stat">뱃지</span></a>
+- 분야: <div class="tit"> > <div class="sub-tit">분야 : A, B, C</div>
+- 주최: <div class="organ">주최사</div>
+- 마감: <div class="day">D-N <span class="dday ing|soon|future|end">상태</span></div>
 """
 from __future__ import annotations
 
@@ -27,22 +31,26 @@ from .base import BaseInformationCrawler, CrawledInformation
 logger = logging.getLogger(__name__)
 
 
-# 위비티 분류 라벨 → 우리 모델 카테고리 매핑.
-# 상세 페이지에서 추출되는 분류 텍스트 기준. 매칭 안 되면 '공모전' 기본값.
-WEVITY_CATEGORY_MAP = {
-    '공모전': '공모전',
+# 위비티 분야 키워드 → 우리 모델 카테고리(공모전/대외활동/지원사업/교육·강의/부트캠프).
+# 위비티 sub-tit 텍스트(예: "분야 : 기획/아이디어, 대외활동/서포터즈, 취업/창업")에서
+# 키워드가 등장하면 해당 카테고리로 매핑.
+WEVITY_FIELD_KEYWORDS = {
     '대외활동': '대외활동',
     '서포터즈': '대외활동',
-    '봉사활동': '대외활동',
-    '지원사업': '지원사업',
+    '봉사': '대외활동',
+    '취업': '지원사업',
     '창업': '지원사업',
-    '장학금': '지원사업',
+    '장학': '지원사업',
+    '지원사업': '지원사업',
     '교육': '교육·강의',
     '강의': '교육·강의',
     '아카데미': '교육·강의',
     '부트캠프': '부트캠프',
     '캠프': '부트캠프',
 }
+
+# 활성/비활성 상태 라벨 (span.dday 클래스)
+INACTIVE_DDAY_CLASSES = {'end'}  # 그 외(ing, soon, future)는 활성
 
 
 class WevityCrawler(BaseInformationCrawler):
@@ -68,7 +76,6 @@ class WevityCrawler(BaseInformationCrawler):
     # ─────────────────────────────────────────────────────────────────────
 
     def _build_list_url(self, cidx: int, page: int) -> str:
-        # 위비티는 gp=1도 유효함을 가정. 만약 gp 미지정 = 1페이지라면 그대로 동작.
         return f'{self.LIST_URL}&cidx={cidx}&gp={page}'
 
     def crawl(self) -> Iterable[CrawledInformation]:
@@ -83,7 +90,7 @@ class WevityCrawler(BaseInformationCrawler):
                         '[%s] 목록 fetch 실패 cidx=%d gp=%d: %s',
                         self.SOURCE, cidx, page, list_url,
                     )
-                    break  # 목록 자체가 실패하면 같은 cidx의 다음 페이지도 의미 없음
+                    break
 
                 items = list(self.parse_list(list_html))
                 if not items:
@@ -107,61 +114,85 @@ class WevityCrawler(BaseInformationCrawler):
                         )
 
     # ─────────────────────────────────────────────────────────────────────
-    # 목록 파싱
+    # 목록 파싱 — 실제 위비티 HTML 구조 기반
     # ─────────────────────────────────────────────────────────────────────
 
     def parse_list(self, html: str) -> Iterable[dict]:
-        """목록 페이지에서 각 공모전의 메타만 추출.
-
-        위비티 목록 HTML 구조 추정 — 실제 페이지 검증 후 셀렉터 보완 필요:
-          <ul class="list">
-            <li>
-              <a href="...&i=ID"> 제목 </a>
-              <span class="date"> D-7 또는 ~05.20 </span>
-              <span class="organ"> 주최자 </span>
-            </li>
-        """
         soup = self.soup(html)
 
-        # TODO: 실제 위비티 페이지 받으면 셀렉터 확정.
-        # 다음 셀렉터들은 흔한 게시판 구조 추정값.
-        rows = soup.select('ul.list > li, table.list tbody tr, div.list_item')
+        # 헤더 li.top 제외하고 데이터 행만
+        for row in soup.select('ul.list > li'):
+            if 'top' in row.get('class', []):
+                continue
 
-        for row in rows:
-            link = row.select_one('a[href*="c=find"], a[href*="i="]')
+            link = row.select_one('div.tit > a')
             if not link:
                 continue
+
             href = (link.get('href') or '').strip()
-            title = self.normalize_text(link.get_text())
-            if not title or not href:
+            if not href:
                 continue
+
+            title = self._extract_title(link)
+            if not title:
+                continue
+
+            field_text = self._text(row, 'div.tit > div.sub-tit')
+            dday_span = row.select_one('div.day span.dday')
+            dday_classes = dday_span.get('class', []) if dday_span else []
+            day_text = self._text(row, 'div.day')
 
             yield {
                 'title': title,
                 'url': self._absolute_url(href),
-                'organizer': self._text(row, '.organ, .organizer, .host'),
-                'end_date': self._parse_date_loose(
-                    self._text(row, '.date, .end, .deadline')
-                ),
+                'organizer': self._text(row, 'div.organ'),
+                'end_date': self._parse_dday(day_text),
+                'is_active': not bool(set(dday_classes) & INACTIVE_DDAY_CLASSES),
+                'categories': self._map_field_to_categories(field_text),
             }
+
+    @staticmethod
+    def _extract_title(link) -> str:
+        """링크 텍스트에서 SPECIAL 같은 뱃지(span.stat) 텍스트 제외."""
+        # span.stat 뱃지를 복제본에서 제거 후 텍스트 추출
+        clone = BeautifulSoupClone.copy(link)
+        for stat in clone.select('span.stat'):
+            stat.decompose()
+        return ' '.join(clone.get_text().split())
 
     # ─────────────────────────────────────────────────────────────────────
     # 상세 파싱 — 본문은 즉시 폐기, 메타만 저장
     # ─────────────────────────────────────────────────────────────────────
 
     def parse_detail(self, item: dict, html: str) -> CrawledInformation:
-        """상세 페이지에서 메타 정보만 추출. description은 강제로 빈 문자열."""
+        """상세 페이지에서 메타 정보만 추출. description은 강제로 빈 문자열.
+
+        상세 페이지에서 보강 가능한 정보:
+          - 정확한 start_date / end_date (목록은 D-N 근사값만)
+          - organizer (목록에 이미 있지만 상세에 더 정확한 표기 가능)
+
+        ⚠️ 상세 페이지 HTML fixture 미확보 — 셀렉터는 일반적 패턴 추정.
+           실제 fixture 확보 후 검증·보완 필요.
+        """
         soup = self.soup(html)
 
-        # 메타 정보 보강 (목록에서 못 얻은 부분만)
-        start_date = self._extract_start_date(soup) or item.get('start_date')
+        # 메타 보강 (상세에서 더 정확한 정보가 있으면 우선 사용)
+        start_date = self._extract_detail_start_date(soup) or item.get('start_date')
         end_date = (
-            self._extract_end_date_from_detail(soup) or item.get('end_date')
+            self._extract_detail_end_date(soup) or item.get('end_date')
         )
         organizer = (
-            self._extract_organizer_from_detail(soup) or item.get('organizer') or ''
+            self._extract_detail_organizer(soup) or item.get('organizer') or ''
         )
-        categories = self._extract_categories(soup) or ['공모전']
+
+        # categories는 목록에서 이미 정확함 (sub-tit 기반)
+        categories = item.get('categories') or ['공모전']
+
+        # is_active는 end_date 기반 재판정 (상세에서 더 정확한 end_date 가능)
+        if end_date is not None:
+            is_active = end_date >= date.today()
+        else:
+            is_active = item.get('is_active', True)
 
         return CrawledInformation(
             title=item['title'],
@@ -171,7 +202,7 @@ class WevityCrawler(BaseInformationCrawler):
             start_date=start_date,
             end_date=end_date,
             categories=categories,
-            is_active=self._is_active(end_date),
+            is_active=is_active,
         )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -197,28 +228,42 @@ class WevityCrawler(BaseInformationCrawler):
         node = element.select_one(selector)
         return cls.normalize_text(node.get_text()) if node else ''
 
-    @staticmethod
-    def _is_active(end_date: Optional[date]) -> bool:
-        if end_date is None:
-            return True
-        return end_date >= date.today()
+    @classmethod
+    def _map_field_to_categories(cls, sub_tit_text: str) -> list[str]:
+        """위비티 sub-tit("분야 : A, B, C")의 분야 키워드를 모델 카테고리로 매핑.
+
+        위비티 사이트 자체가 공모전 위주라 기본 '공모전'은 항상 포함.
+        대외활동/서포터즈, 취업/창업 등 추가 키워드가 있으면 더 붙임.
+        """
+        result: set[str] = {'공모전'}  # 위비티는 기본적으로 공모전 사이트
+        if sub_tit_text:
+            for keyword, mapped in WEVITY_FIELD_KEYWORDS.items():
+                if keyword in sub_tit_text:
+                    result.add(mapped)
+        return sorted(result)
 
     # 날짜 파싱 — 위비티 표기 다양성 흡수
+    _DDAY_PATTERN = re.compile(r'D-(\d+)')
     _DATE_PATTERNS = [
         (re.compile(r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})'), 'ymd'),
-        (re.compile(r'(\d{1,2})[.\-/](\d{1,2})(?!\d)'), 'md'),  # 05.20 (연도 없음)
+        (re.compile(r'(\d{1,2})[.\-/](\d{1,2})(?!\d)'), 'md'),
     ]
 
     @classmethod
-    def _parse_date_loose(cls, text: str) -> Optional[date]:
+    def _parse_dday(cls, text: str) -> Optional[date]:
+        """D-N 형식 → 오늘 + N일."""
         if not text:
             return None
-        text = text.strip()
-        # D-X 형식
-        m = re.search(r'D-(\d+)', text)
+        m = cls._DDAY_PATTERN.search(text)
         if m:
             return date.today() + timedelta(days=int(m.group(1)))
-        # YYYY.MM.DD 또는 MM.DD
+        return cls._parse_date_loose(text)
+
+    @classmethod
+    def _parse_date_loose(cls, text: str) -> Optional[date]:
+        """절대 날짜(YYYY.MM.DD 또는 MM.DD) 파싱."""
+        if not text:
+            return None
         for pattern, kind in cls._DATE_PATTERNS:
             m = pattern.search(text)
             if not m:
@@ -233,9 +278,11 @@ class WevityCrawler(BaseInformationCrawler):
                 continue
         return None
 
-    # 상세 페이지에서 메타 추출 — 실제 페이지 구조 확인 후 보완 필요
-    def _extract_start_date(self, soup) -> Optional[date]:
-        # 흔한 패턴: '접수기간 : 2026-05-01 ~ 2026-05-20' 같은 행
+    # ─────────────────────────────────────────────────────────────────────
+    # 상세 페이지에서 메타 추출 — 실제 fixture 확보 전까지는 추정 셀렉터
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _extract_detail_start_date(self, soup) -> Optional[date]:
         text = soup.get_text(' ', strip=True)
         m = re.search(
             r'접수기간[^0-9]*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})',
@@ -243,7 +290,7 @@ class WevityCrawler(BaseInformationCrawler):
         )
         return self._parse_date_loose(m.group(1)) if m else None
 
-    def _extract_end_date_from_detail(self, soup) -> Optional[date]:
+    def _extract_detail_end_date(self, soup) -> Optional[date]:
         text = soup.get_text(' ', strip=True)
         m = re.search(
             r'접수기간[^~]*~\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})',
@@ -251,8 +298,7 @@ class WevityCrawler(BaseInformationCrawler):
         )
         return self._parse_date_loose(m.group(1)) if m else None
 
-    def _extract_organizer_from_detail(self, soup) -> str:
-        # 흔한 라벨: '주최', '주관'
+    def _extract_detail_organizer(self, soup) -> str:
         for label in ['주최', '주관', '주최기관']:
             node = soup.find(string=re.compile(label))
             if not node:
@@ -267,11 +313,15 @@ class WevityCrawler(BaseInformationCrawler):
                     return txt
         return ''
 
-    def _extract_categories(self, soup) -> list[str]:
-        """위비티 분류 라벨을 우리 모델 카테고리로 매핑."""
-        text = soup.get_text(' ', strip=True)
-        matched: set[str] = set()
-        for keyword, mapped in WEVITY_CATEGORY_MAP.items():
-            if keyword in text:
-                matched.add(mapped)
-        return sorted(matched)
+
+class BeautifulSoupClone:
+    """selector로 추출한 노드를 안전하게 복제해 일부만 제거할 때 사용.
+
+    BeautifulSoup의 element를 직접 변경하면 원본 soup이 손상되므로,
+    문자열로 직렬화 → 다시 파싱해 격리된 복제본을 만든다.
+    """
+
+    @staticmethod
+    def copy(element):
+        from bs4 import BeautifulSoup
+        return BeautifulSoup(str(element), 'lxml')

@@ -1,5 +1,10 @@
-"""위비티 크롤러 테스트 (개인정보 보호 정책 검증 포함)."""
+"""위비티 크롤러 테스트 (개인정보 보호 정책 검증 포함).
+
+실제 위비티 페이지 HTML(2026-05-12 cidx=20 목록)을 fixture로 사용.
+상세 페이지 fixture는 추후 확보 후 추가.
+"""
 from datetime import date, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -8,43 +13,25 @@ from information.crawlers.wevity import WevityCrawler
 from information.models import Information
 
 
-# 위비티 페이지 구조 추정 fixture (실제 페이지 확인 후 갱신 필요)
-SAMPLE_LIST_HTML = """
-<html>
-<body>
-<ul class="list">
-  <li>
-    <a href="?c=find&s=2&cidx=20&i=12345">2026 AI 챌린지 공모전</a>
-    <span class="organ">한국정보과학회</span>
-    <span class="date">~05.31</span>
-  </li>
-  <li>
-    <a href="?c=find&s=2&cidx=20&i=12346">웹 개발 해커톤 모집</a>
-    <span class="organ">테크스타트업</span>
-    <span class="date">D-7</span>
-  </li>
-  <li>
-    <!-- 링크 없는 행 — 무시되어야 함 -->
-    <span>제목만 있는 행</span>
-  </li>
-</ul>
-</body>
-</html>
-"""
+FIXTURES_DIR = Path(__file__).parent / 'tests_fixtures'
 
-SAMPLE_DETAIL_HTML = """
+
+def load_fixture(name: str) -> str:
+    return (FIXTURES_DIR / name).read_text(encoding='utf-8')
+
+
+# 실제 위비티 cidx=20 목록 페이지 (2026-05-12 캡처)
+REAL_LIST_HTML = load_fixture('wevity_list_cidx20.html')
+
+# 상세 페이지 fixture 확보 전까지 임시 사용 (구조 추정)
+PLACEHOLDER_DETAIL_HTML = """
 <html>
 <body>
-<div class="content">
-  <h1>2026 AI 챌린지 공모전</h1>
-  <table>
-    <tr><th>주최</th><td>한국정보과학회</td></tr>
-    <tr><th>접수기간</th><td>2026-05-01 ~ 2026-05-31</td></tr>
-  </table>
-  <p>본 공모전은 공모전 분야에서 진행됩니다. 학생 누구나 참여 가능.</p>
-  <p>개인정보가 들어갈 수 있는 본문 내용입니다.
-     이름: 홍길동, 전화: 010-1234-5678 같은 게 들어있을 수 있음.</p>
-</div>
+<table>
+  <tr><th>주최</th><td>테스트 주최사</td></tr>
+  <tr><th>접수기간</th><td>2026-05-01 ~ 2026-05-31</td></tr>
+</table>
+<p>상세 본문 — 개인정보가 들어갈 수 있음. 이름: 홍길동, 전화: 010-1234-5678</p>
 </body>
 </html>
 """
@@ -68,8 +55,8 @@ class WevityURLBuildingTests(TestCase):
 
     def test_absolute_url_relative_query(self):
         self.assertEqual(
-            WevityCrawler._absolute_url('?c=find&s=2&i=123'),
-            'https://www.wevity.com/?c=find&s=2&i=123',
+            WevityCrawler._absolute_url('?c=find&s=2&ix=123'),
+            'https://www.wevity.com/?c=find&s=2&ix=123',
         )
 
     def test_absolute_url_path(self):
@@ -86,126 +73,164 @@ class WevityURLBuildingTests(TestCase):
 
 
 class WevityDateParsingTests(TestCase):
-    """위비티 표기 다양성 흡수 — D-7, 05.31, 2026-05-31 등."""
+    """위비티 표기 — D-N (가장 흔함) 및 절대 날짜."""
 
-    def test_dday_format(self):
-        result = WevityCrawler._parse_date_loose('D-7')
+    def test_dday_basic(self):
+        result = WevityCrawler._parse_dday('D-7')
         self.assertEqual(result, date.today() + timedelta(days=7))
 
-    def test_md_only(self):
-        # 연도 없는 표기는 올해로 가정
-        result = WevityCrawler._parse_date_loose('~05.31')
-        self.assertEqual(result.month, 5)
-        self.assertEqual(result.day, 31)
-        self.assertEqual(result.year, date.today().year)
+    def test_dday_with_status_text(self):
+        # "D-19 접수중" 같은 합쳐진 텍스트
+        result = WevityCrawler._parse_dday('D-19 접수중')
+        self.assertEqual(result, date.today() + timedelta(days=19))
 
-    def test_ymd_dot(self):
+    def test_dday_zero(self):
+        result = WevityCrawler._parse_dday('D-0')
+        self.assertEqual(result, date.today())
+
+    def test_loose_ymd_dot(self):
         self.assertEqual(
             WevityCrawler._parse_date_loose('2026.05.31'),
             date(2026, 5, 31),
         )
 
-    def test_ymd_hyphen(self):
+    def test_loose_ymd_hyphen(self):
         self.assertEqual(
             WevityCrawler._parse_date_loose('2026-05-31'),
             date(2026, 5, 31),
         )
 
     def test_empty(self):
-        self.assertIsNone(WevityCrawler._parse_date_loose(''))
-        self.assertIsNone(WevityCrawler._parse_date_loose('마감'))
+        self.assertIsNone(WevityCrawler._parse_dday(''))
+        self.assertIsNone(WevityCrawler._parse_dday('마감'))
 
 
-class WevityParseListTests(TestCase):
-    """목록 파싱 — 유효한 링크만 추출."""
+class WevityCategoryMappingTests(TestCase):
+    """위비티 분야 → 모델 카테고리 매핑."""
+
+    def test_기본은_공모전(self):
+        result = WevityCrawler._map_field_to_categories('분야 : 기획/아이디어')
+        self.assertEqual(result, ['공모전'])
+
+    def test_대외활동_매핑(self):
+        result = WevityCrawler._map_field_to_categories(
+            '분야 : 기획/아이디어, 대외활동/서포터즈'
+        )
+        self.assertIn('대외활동', result)
+        self.assertIn('공모전', result)
+
+    def test_취업창업_지원사업으로(self):
+        result = WevityCrawler._map_field_to_categories(
+            '분야 : 광고/마케팅, 취업/창업'
+        )
+        self.assertIn('지원사업', result)
+
+    def test_교육_매핑(self):
+        result = WevityCrawler._map_field_to_categories(
+            '분야 : 교육 콘텐츠 제작'
+        )
+        self.assertIn('교육·강의', result)
+
+    def test_여러_키워드(self):
+        # 대외활동 + 취업 → 대외활동 + 지원사업 + 공모전
+        result = WevityCrawler._map_field_to_categories(
+            '분야 : 대외활동/서포터즈, 취업/창업'
+        )
+        self.assertEqual(set(result), {'공모전', '대외활동', '지원사업'})
+
+    def test_빈_텍스트(self):
+        result = WevityCrawler._map_field_to_categories('')
+        self.assertEqual(result, ['공모전'])
+
+
+class WevityRealListParsingTests(TestCase):
+    """실제 위비티 cidx=20 목록 페이지 (2026-05-12 캡처) 기반."""
 
     def setUp(self):
         self.crawler = WevityCrawler()
+        self.items = list(self.crawler.parse_list(REAL_LIST_HTML))
 
-    def test_링크_있는_행만_추출(self):
-        items = list(self.crawler.parse_list(SAMPLE_LIST_HTML))
-        # 링크 있는 2개만, 링크 없는 행은 무시
-        self.assertEqual(len(items), 2)
-        self.assertEqual(items[0]['title'], '2026 AI 챌린지 공모전')
-        self.assertEqual(items[1]['title'], '웹 개발 해커톤 모집')
+    def test_헤더_제외하고_15개_추출(self):
+        # 실제 페이지: ul.list > li 16개 중 첫 li.top(헤더) 제외 → 15개
+        self.assertEqual(len(self.items), 15)
 
-    def test_url은_절대경로(self):
-        items = list(self.crawler.parse_list(SAMPLE_LIST_HTML))
-        for item in items:
+    def test_모든_항목에_필수_필드_존재(self):
+        for item in self.items:
+            self.assertTrue(item['title'])
+            self.assertTrue(item['url'])
             self.assertTrue(item['url'].startswith('https://www.wevity.com/'))
 
+    def test_url에_ix_파라미터_포함(self):
+        # 위비티 상세 페이지는 ?...&ix=NNNNN 형식
+        for item in self.items:
+            self.assertIn('ix=', item['url'])
+
+    def test_SPECIAL_뱃지_텍스트_제거(self):
+        # 첫 항목 제목에 "SPECIAL" 뱃지가 붙어있는데 제목에는 안 들어가야 함
+        first = self.items[0]
+        self.assertNotIn('SPECIAL', first['title'])
+        self.assertIn('AI BIZ CREATOR SCHOOL', first['title'])
+
     def test_주최자_추출(self):
-        items = list(self.crawler.parse_list(SAMPLE_LIST_HTML))
-        self.assertEqual(items[0]['organizer'], '한국정보과학회')
+        # 첫 항목 주최: "네이버 X 어반플레이"
+        self.assertEqual(self.items[0]['organizer'], '네이버 X 어반플레이')
 
-    def test_빈_목록은_빈_iterable(self):
-        items = list(self.crawler.parse_list(EMPTY_LIST_HTML))
-        self.assertEqual(items, [])
+    def test_DDay_파싱(self):
+        # 첫 항목: D-19 → 오늘 + 19일
+        expected = date.today() + timedelta(days=19)
+        self.assertEqual(self.items[0]['end_date'], expected)
+
+    def test_접수중은_활성(self):
+        # 첫 항목: span.dday.ing → 접수중 → is_active=True
+        self.assertTrue(self.items[0]['is_active'])
+
+    def test_마감임박도_활성(self):
+        # 둘째 항목: D-6 마감임박 (dday.soon) → 여전히 활성
+        self.assertTrue(self.items[1]['is_active'])
+
+    def test_카테고리_분야_매핑(self):
+        # 첫 항목 sub-tit: "분야 : 기획/아이디어, 광고/마케팅, 영상/UCC/사진, 웹/모바일/IT, 대외활동/서포터즈, 취업/창업"
+        # → 공모전(기본) + 대외활동 + 지원사업(취업/창업)
+        first_cats = set(self.items[0]['categories'])
+        self.assertIn('공모전', first_cats)
+        self.assertIn('대외활동', first_cats)
+        self.assertIn('지원사업', first_cats)
 
 
-class WevityParseDetailTests(TestCase):
-    """상세 파싱 — 개인정보 보호 정책 검증."""
+class WevityParseDetailPrivacyTests(TestCase):
+    """⭐ 상세 파싱 — 개인정보 보호 정책 검증 (가장 중요)."""
 
     def setUp(self):
         self.crawler = WevityCrawler()
         self.item = {
             'title': '2026 AI 챌린지 공모전',
-            'url': 'https://www.wevity.com/?c=find&s=2&i=12345',
+            'url': 'https://www.wevity.com/?c=find&s=1&gub=1&cidx=20&gbn=view&gp=1&ix=12345',
             'organizer': '한국정보과학회',
-            'end_date': None,
+            'end_date': date.today() + timedelta(days=10),
+            'is_active': True,
+            'categories': ['공모전'],
         }
 
     def test_description은_항상_빈_문자열(self):
-        """⭐ 핵심 정책 — 본문에 무엇이 있든 description은 빈 채로 저장."""
-        info = self.crawler.parse_detail(self.item, SAMPLE_DETAIL_HTML)
+        info = self.crawler.parse_detail(self.item, PLACEHOLDER_DETAIL_HTML)
         self.assertEqual(info.description, '')
 
-    def test_본문에_개인정보가_있어도_저장되지_않음(self):
-        """개인정보 보호 — 본문의 '홍길동', '010-1234-5678'가 저장되어선 안 됨."""
-        info = self.crawler.parse_detail(self.item, SAMPLE_DETAIL_HTML)
-        # 메타 어디에도 본문 텍스트가 누출되지 않아야 함
+    def test_본문에_개인정보가_있어도_저장_안_됨(self):
+        info = self.crawler.parse_detail(self.item, PLACEHOLDER_DETAIL_HTML)
         for field in (info.title, info.organizer, info.description):
             self.assertNotIn('홍길동', field)
             self.assertNotIn('010-1234-5678', field)
 
     def test_접수기간_파싱(self):
-        info = self.crawler.parse_detail(self.item, SAMPLE_DETAIL_HTML)
+        info = self.crawler.parse_detail(self.item, PLACEHOLDER_DETAIL_HTML)
+        # 상세에서 추출한 정확한 날짜 우선
         self.assertEqual(info.start_date, date(2026, 5, 1))
         self.assertEqual(info.end_date, date(2026, 5, 31))
 
-    def test_주최자_상세에서_보강(self):
-        # 목록에서 organizer 비어있어도 상세에서 채워야 함
-        item = {**self.item, 'organizer': ''}
-        info = self.crawler.parse_detail(item, SAMPLE_DETAIL_HTML)
-        self.assertEqual(info.organizer, '한국정보과학회')
-
-    def test_categories_매핑(self):
-        # 본문에 '공모전' 키워드 → categories=['공모전']
-        info = self.crawler.parse_detail(self.item, SAMPLE_DETAIL_HTML)
-        self.assertIn('공모전', info.categories)
-
-    def test_categories_없으면_기본값_공모전(self):
-        empty_html = '<html><body>아무 분류 키워드 없음</body></html>'
-        info = self.crawler.parse_detail(self.item, empty_html)
+    def test_목록의_categories_보존(self):
+        # categories는 목록의 sub-tit에서 이미 정확히 매핑됨 → 상세에서 덮어쓰지 않음
+        info = self.crawler.parse_detail(self.item, PLACEHOLDER_DETAIL_HTML)
         self.assertEqual(info.categories, ['공모전'])
-
-
-class WevityIsActiveTests(TestCase):
-    """is_active 마감일 기준 판정."""
-
-    def test_마감일_없으면_활성(self):
-        self.assertTrue(WevityCrawler._is_active(None))
-
-    def test_미래_마감이면_활성(self):
-        future = date.today() + timedelta(days=10)
-        self.assertTrue(WevityCrawler._is_active(future))
-
-    def test_오늘_마감이면_활성(self):
-        self.assertTrue(WevityCrawler._is_active(date.today()))
-
-    def test_과거_마감이면_비활성(self):
-        past = date.today() - timedelta(days=1)
-        self.assertFalse(WevityCrawler._is_active(past))
 
 
 class WevityCrawlIterationTests(TestCase):
@@ -215,10 +240,8 @@ class WevityCrawlIterationTests(TestCase):
         crawler = WevityCrawler()
         crawler.MAX_PAGES = 3
 
-        # cidx=20: gp=1 데이터 있음, gp=2 빈 페이지
-        # cidx=21: gp=1 빈 페이지부터
         page_responses = {
-            'cidx=20&gp=1': SAMPLE_LIST_HTML,
+            'cidx=20&gp=1': REAL_LIST_HTML,
             'cidx=20&gp=2': EMPTY_LIST_HTML,
             'cidx=21&gp=1': EMPTY_LIST_HTML,
         }
@@ -227,24 +250,23 @@ class WevityCrawlIterationTests(TestCase):
             for key, html in page_responses.items():
                 if key in url:
                     return html
-            return SAMPLE_DETAIL_HTML  # 상세 페이지 fetch
+            return PLACEHOLDER_DETAIL_HTML
 
         with patch.object(crawler, 'fetch', side_effect=fake_fetch):
             items = list(crawler.crawl())
 
-        # cidx=20 gp=1에서 2개 추출, cidx=21은 즉시 종료 → 총 2개
-        self.assertEqual(len(items), 2)
+        # cidx=20 gp=1에서 15개, cidx=21은 즉시 종료 → 15개
+        self.assertEqual(len(items), 15)
 
 
 class WevityIntegrationSaveTests(TestCase):
-    """fetch만 mock하고 save까지 통합 — DB 멱등성 검증."""
+    """fetch만 mock하고 save까지 통합 — DB 멱등성 + description 검증."""
 
     def test_run_full_flow(self):
         crawler = WevityCrawler()
         crawler.MAX_PAGES = 1
-        # cidx=20만 데이터, cidx=21은 빈 결과
         page_responses = {
-            'cidx=20&gp=1': SAMPLE_LIST_HTML,
+            'cidx=20&gp=1': REAL_LIST_HTML,
             'cidx=21&gp=1': EMPTY_LIST_HTML,
         }
 
@@ -252,19 +274,23 @@ class WevityIntegrationSaveTests(TestCase):
             for key, html in page_responses.items():
                 if key in url:
                     return html
-            return SAMPLE_DETAIL_HTML
+            return PLACEHOLDER_DETAIL_HTML
 
         with patch.object(crawler, 'fetch', side_effect=fake_fetch):
             result = crawler.run()
 
-        self.assertEqual(result.created, 2)
+        # 15개 모두 저장
+        self.assertEqual(result.created, 15)
         self.assertEqual(result.failed, 0)
-        # 저장된 description이 모두 빈 문자열
-        descriptions = list(Information.objects.values_list('description', flat=True))
-        self.assertEqual(descriptions, ['', ''])
+        self.assertEqual(Information.objects.count(), 15)
 
-        # 재실행 시 url 기준 updated (멱등)
+        # ⭐ 정책 검증: description은 모두 빈 문자열
+        descriptions = list(Information.objects.values_list('description', flat=True))
+        self.assertTrue(all(d == '' for d in descriptions))
+
+        # 재실행 — url 기준 멱등 upsert
         with patch.object(crawler, 'fetch', side_effect=fake_fetch):
             result2 = crawler.run()
         self.assertEqual(result2.created, 0)
-        self.assertEqual(result2.updated, 2)
+        self.assertEqual(result2.updated, 15)
+        self.assertEqual(Information.objects.count(), 15)
