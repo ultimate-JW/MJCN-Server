@@ -9,6 +9,8 @@ urlpatterns = [
     # API
     path('api/v1/accounts/', include('accounts.urls')),
     path('api/v1/courses/', include('courses.urls')),
+    path('api/v1/notices/', include('notices.urls')),
+    path('api/v1/information/', include('information.urls')),
     # API 문서
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),

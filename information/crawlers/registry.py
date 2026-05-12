@@ -2,13 +2,10 @@
 from typing import Type
 
 from .base import BaseInformationCrawler
-
-# 학교 자체 정보(공모전·대외활동·지원사업 등) 게시판 크롤러는 URL 확정 후 추가 예정.
-# 예시:
-#   from .mju_information import MjuInformationCrawler
+from .wevity import WevityCrawler
 
 CRAWLERS: list[Type[BaseInformationCrawler]] = [
-    # MjuInformationCrawler,
+    WevityCrawler,
 ]
 
 
