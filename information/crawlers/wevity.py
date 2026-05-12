@@ -279,39 +279,59 @@ class WevityCrawler(BaseInformationCrawler):
         return None
 
     # ─────────────────────────────────────────────────────────────────────
-    # 상세 페이지에서 메타 추출 — 실제 fixture 확보 전까지는 추정 셀렉터
+    # 상세 페이지 메타 추출 — div.info > ul.cd-info-list > li 구조
     # ─────────────────────────────────────────────────────────────────────
 
+    @classmethod
+    def _detail_info_map(cls, soup) -> dict[str, str]:
+        """div.info > ul.cd-info-list > li를 {라벨: 값} 딕셔너리로 변환.
+
+        각 li 구조:
+          <li[class]>
+            <span class="tit">라벨</span>
+            값 텍스트 (혹은 <a>, <span class="cil-dday">D-N</span> 등)
+          </li>
+        """
+        result: dict[str, str] = {}
+        for li in soup.select('div.info ul.cd-info-list > li'):
+            label_el = li.select_one('span.tit')
+            if not label_el:
+                continue
+            label = label_el.get_text(strip=True)
+            if not label:
+                continue
+            # li 전체 텍스트에서 라벨 + 부가 라벨(D-N 등) 제거 → 값만 남김
+            full = li.get_text(' ', strip=True)
+            value = full
+            for el in li.select('span.tit, span.cil-dday'):
+                value = value.replace(el.get_text(strip=True), '', 1)
+            result[label] = cls.normalize_text(value)
+        return result
+
+    # 접수기간 텍스트에서 두 날짜 추출: "2026-04-27 ~ 2026-05-25"
+    _PERIOD_RE = re.compile(
+        r'(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})\s*[~\-]\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})'
+    )
+
     def _extract_detail_start_date(self, soup) -> Optional[date]:
-        text = soup.get_text(' ', strip=True)
-        m = re.search(
-            r'접수기간[^0-9]*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})',
-            text,
-        )
+        period = self._detail_info_map(soup).get('접수기간', '')
+        m = self._PERIOD_RE.search(period)
         return self._parse_date_loose(m.group(1)) if m else None
 
     def _extract_detail_end_date(self, soup) -> Optional[date]:
-        text = soup.get_text(' ', strip=True)
-        m = re.search(
-            r'접수기간[^~]*~\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})',
-            text,
-        )
-        return self._parse_date_loose(m.group(1)) if m else None
+        period = self._detail_info_map(soup).get('접수기간', '')
+        m = self._PERIOD_RE.search(period)
+        return self._parse_date_loose(m.group(2)) if m else None
 
     def _extract_detail_organizer(self, soup) -> str:
-        for label in ['주최', '주관', '주최기관']:
-            node = soup.find(string=re.compile(label))
-            if not node:
-                continue
-            parent = node.parent
-            if parent is None:
-                continue
-            sib = parent.find_next(['td', 'dd', 'span', 'p'])
-            if sib:
-                txt = self.normalize_text(sib.get_text())
-                if txt and txt != label:
-                    return txt
-        return ''
+        info_map = self._detail_info_map(soup)
+        # '주최/주관' 라벨 우선, 없으면 '주최'
+        return (
+            info_map.get('주최/주관')
+            or info_map.get('주최')
+            or info_map.get('주관')
+            or ''
+        )
 
 
 class BeautifulSoupClone:

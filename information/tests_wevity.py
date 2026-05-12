@@ -20,18 +20,23 @@ def load_fixture(name: str) -> str:
     return (FIXTURES_DIR / name).read_text(encoding='utf-8')
 
 
-# 실제 위비티 cidx=20 목록 페이지 (2026-05-12 캡처)
+# 실제 위비티 페이지 (2026-05-12 캡처)
 REAL_LIST_HTML = load_fixture('wevity_list_cidx20.html')
+REAL_DETAIL_HTML = load_fixture('wevity_detail_sample.html')  # ix=106851 (K-콘텐츠 수출 마케터)
 
-# 상세 페이지 fixture 확보 전까지 임시 사용 (구조 추정)
-PLACEHOLDER_DETAIL_HTML = """
+# 정책 검증용 — 본문에 개인정보 포함된 가상 상세 페이지
+PRIVACY_TEST_DETAIL_HTML = """
 <html>
 <body>
-<table>
-  <tr><th>주최</th><td>테스트 주최사</td></tr>
-  <tr><th>접수기간</th><td>2026-05-01 ~ 2026-05-31</td></tr>
-</table>
-<p>상세 본문 — 개인정보가 들어갈 수 있음. 이름: 홍길동, 전화: 010-1234-5678</p>
+<div class="info">
+  <ul class="cd-info-list">
+    <li><span class="tit">주최/주관</span> 테스트 주최사</li>
+    <li class="dday-area"><span class="tit">접수기간</span> 2026-05-01 ~ 2026-05-31</li>
+  </ul>
+</div>
+<div class="content">
+  <p>상세 본문 — 개인정보가 들어갈 수 있음. 이름: 홍길동, 전화: 010-1234-5678</p>
+</div>
 </body>
 </html>
 """
@@ -203,34 +208,93 @@ class WevityParseDetailPrivacyTests(TestCase):
     def setUp(self):
         self.crawler = WevityCrawler()
         self.item = {
-            'title': '2026 AI 챌린지 공모전',
+            'title': '테스트 공모전',
             'url': 'https://www.wevity.com/?c=find&s=1&gub=1&cidx=20&gbn=view&gp=1&ix=12345',
-            'organizer': '한국정보과학회',
+            'organizer': '목록 주최',
             'end_date': date.today() + timedelta(days=10),
             'is_active': True,
             'categories': ['공모전'],
         }
 
     def test_description은_항상_빈_문자열(self):
-        info = self.crawler.parse_detail(self.item, PLACEHOLDER_DETAIL_HTML)
+        info = self.crawler.parse_detail(self.item, PRIVACY_TEST_DETAIL_HTML)
         self.assertEqual(info.description, '')
 
     def test_본문에_개인정보가_있어도_저장_안_됨(self):
-        info = self.crawler.parse_detail(self.item, PLACEHOLDER_DETAIL_HTML)
+        info = self.crawler.parse_detail(self.item, PRIVACY_TEST_DETAIL_HTML)
         for field in (info.title, info.organizer, info.description):
             self.assertNotIn('홍길동', field)
             self.assertNotIn('010-1234-5678', field)
 
     def test_접수기간_파싱(self):
-        info = self.crawler.parse_detail(self.item, PLACEHOLDER_DETAIL_HTML)
-        # 상세에서 추출한 정확한 날짜 우선
+        info = self.crawler.parse_detail(self.item, PRIVACY_TEST_DETAIL_HTML)
         self.assertEqual(info.start_date, date(2026, 5, 1))
         self.assertEqual(info.end_date, date(2026, 5, 31))
 
     def test_목록의_categories_보존(self):
-        # categories는 목록의 sub-tit에서 이미 정확히 매핑됨 → 상세에서 덮어쓰지 않음
-        info = self.crawler.parse_detail(self.item, PLACEHOLDER_DETAIL_HTML)
+        info = self.crawler.parse_detail(self.item, PRIVACY_TEST_DETAIL_HTML)
         self.assertEqual(info.categories, ['공모전'])
+
+
+class WevityRealDetailParsingTests(TestCase):
+    """실제 위비티 상세 페이지 (ix=106851) 기반 검증."""
+
+    def setUp(self):
+        self.crawler = WevityCrawler()
+        self.item = {
+            'title': '[문화체육관광부 x 한국콘텐츠진흥원] 2026 K-콘텐츠 수출 마케터 양성 교육 5기 교육생 모집',
+            'url': 'https://www.wevity.com/?c=find&s=1&gub=1&cidx=20&gbn=view&gp=1&ix=106851',
+            'organizer': '문화체육관광부, 한국콘텐츠진흥원',  # 목록에서 추출된 값
+            'end_date': date.today() + timedelta(days=13),  # D-13
+            'is_active': True,
+            'categories': ['공모전', '대외활동', '지원사업'],
+        }
+
+    def test_상세_정확한_접수기간_추출(self):
+        # 상세 페이지의 '접수기간 2026-04-27 ~ 2026-05-25'
+        info = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
+        self.assertEqual(info.start_date, date(2026, 4, 27))
+        self.assertEqual(info.end_date, date(2026, 5, 25))
+
+    def test_상세_주최주관_추출(self):
+        info = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
+        # div.info의 '주최/주관 문화체육관광부, 한국콘텐츠진흥원'
+        self.assertIn('문화체육관광부', info.organizer)
+        self.assertIn('한국콘텐츠진흥원', info.organizer)
+
+    def test_상세_description은_빈_채(self):
+        # 실제 페이지 og:description에는 본문 일부가 있지만 우리는 저장하지 않음
+        info = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
+        self.assertEqual(info.description, '')
+
+    def test_상세_title은_목록값_유지(self):
+        info = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
+        self.assertEqual(info.title, self.item['title'])
+
+    def test_상세_categories는_목록값_유지(self):
+        # 상세 파싱은 categories 덮어쓰지 않음 (목록의 sub-tit 매핑이 정확)
+        info = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
+        self.assertEqual(info.categories, ['공모전', '대외활동', '지원사업'])
+
+    def test_상세_end_date로_is_active_재판정(self):
+        # 상세에서 추출한 end_date=2026-05-25 기준 활성 여부 결정
+        info = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
+        # 2026-05-25 >= 오늘(2026-05-12) → True
+        self.assertTrue(info.is_active)
+
+    def test_detail_info_map_라벨_파싱(self):
+        # 헬퍼 직접 검증
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(REAL_DETAIL_HTML, 'lxml')
+        info_map = WevityCrawler._detail_info_map(soup)
+        self.assertIn('접수기간', info_map)
+        self.assertIn('주최/주관', info_map)
+        self.assertIn('분야', info_map)
+        # 접수기간 값에 날짜가 포함되어 있는지
+        self.assertIn('2026-04-27', info_map['접수기간'])
+        self.assertIn('2026-05-25', info_map['접수기간'])
+        # cil-dday(D-N) 텍스트는 제거되어 있어야 함
+        self.assertNotIn('D-13', info_map['접수기간'])
 
 
 class WevityCrawlIterationTests(TestCase):
@@ -250,7 +314,7 @@ class WevityCrawlIterationTests(TestCase):
             for key, html in page_responses.items():
                 if key in url:
                     return html
-            return PLACEHOLDER_DETAIL_HTML
+            return PRIVACY_TEST_DETAIL_HTML
 
         with patch.object(crawler, 'fetch', side_effect=fake_fetch):
             items = list(crawler.crawl())
@@ -274,7 +338,7 @@ class WevityIntegrationSaveTests(TestCase):
             for key, html in page_responses.items():
                 if key in url:
                     return html
-            return PLACEHOLDER_DETAIL_HTML
+            return PRIVACY_TEST_DETAIL_HTML
 
         with patch.object(crawler, 'fetch', side_effect=fake_fetch):
             result = crawler.run()
