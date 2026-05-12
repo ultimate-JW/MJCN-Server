@@ -69,6 +69,7 @@ class CourseModelTests(TestCase):
         self.assertEqual(codes, ['CSE1001', 'CSE2001'])
 
 
+# 선수과목 관계 모델 검증
 class CoursePrerequisiteModelTests(TestCase):
     def setUp(self):
         self.base = _make_course(course_code='CSE1001', name='프로그래밍기초')
@@ -81,6 +82,7 @@ class CoursePrerequisiteModelTests(TestCase):
         self.assertEqual(prereq.course, self.next)
         self.assertEqual(prereq.prerequisite, self.base)
 
+    # 중복으로 선수과목 저장되는지 검사
     def test_unique_together(self):
         CoursePrerequisite.objects.create(course=self.next, prerequisite=self.base)
         with self.assertRaises(IntegrityError):
@@ -95,6 +97,7 @@ class CoursePrerequisiteModelTests(TestCase):
         )
         self.assertEqual(str(prereq), '자료구조 <- 프로그래밍기초')
 
+    # 과목 삭제 시, 선수과목 관계 데이터도 함께 삭제되는지
     def test_course_삭제_시_관계도_삭제됨(self):
         CoursePrerequisite.objects.create(course=self.next, prerequisite=self.base)
         self.next.delete()
@@ -106,6 +109,7 @@ class CoursePrerequisiteModelTests(TestCase):
         self.assertEqual(self.base.required_by.count(), 1)
 
 
+# 강의 시간표 모델 검증
 class CourseScheduleModelTests(TestCase):
     def setUp(self):
         self.course = _make_course()
@@ -122,6 +126,7 @@ class CourseScheduleModelTests(TestCase):
         self.assertEqual(schedule.day_of_week, '월')
         self.assertEqual(schedule.building, '본관')
 
+    # 허용되지 않은 요일값 에러 테스트
     def test_day_of_week_choices_검증(self):
         schedule = CourseSchedule(
             course=self.course,
@@ -163,6 +168,7 @@ class CourseScheduleModelTests(TestCase):
         self.assertEqual(self.course.schedules.count(), 1)
 
 
+# 졸업 요건 모델 검증
 class GraduationRequirementModelTests(TestCase):
     def test_정상_생성(self):
         req = GraduationRequirement.objects.create(
@@ -192,6 +198,7 @@ class GraduationRequirementModelTests(TestCase):
                     total_required=130,
                 )
 
+    # 동일 학과여도 입학년도가 다르면 별도 졸업요건이 저장되는지
     def test_같은_학과_다른_입학년도는_허용(self):
         GraduationRequirement.objects.create(
             department='융합소프트웨어학부',
@@ -222,6 +229,7 @@ class GraduationRequirementModelTests(TestCase):
         )
 
 
+# 학사일정 모델 검증
 class AcademicCalendarModelTests(TestCase):
     def test_정상_생성(self):
         cal = AcademicCalendar.objects.create(
@@ -238,6 +246,7 @@ class AcademicCalendarModelTests(TestCase):
         self.assertIsNone(cal.semester_start)
         self.assertIsNone(cal.registration_start)
 
+    # 동일 연도, 학기에 중복 금지 제약조건이 잘 동작하는지
     def test_unique_together(self):
         AcademicCalendar.objects.create(year=2026, semester=1)
         with self.assertRaises(IntegrityError):
