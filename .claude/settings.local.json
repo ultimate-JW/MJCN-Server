@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python -m venv .venv)",
+      "PowerShell(& \"C:\\\\Users\\\\leemi\\\\OneDrive\\\\Desktop\\\\MJCN-Server\\\\.venv\\\\Scripts\\\\python.exe\" -m pip install --upgrade pip; & \"C:\\\\Users\\\\leemi\\\\OneDrive\\\\Desktop\\\\MJCN-Server\\\\.venv\\\\Scripts\\\\python.exe\" -m pip install -r requirements.txt)",
+      "PowerShell(& \"C:\\\\Users\\\\leemi\\\\OneDrive\\\\Desktop\\\\MJCN-Server\\\\.venv\\\\Scripts\\\\python.exe\" -m pip install -r \"C:\\\\Users\\\\leemi\\\\OneDrive\\\\Desktop\\\\MJCN-Server\\\\requirements.txt\")",
+      "Bash(git -C \"C:/Users/leemi/OneDrive/Desktop/MJCN-Server\" status)",
+      "PowerShell(& \"C:\\\\Users\\\\leemi\\\\OneDrive\\\\Desktop\\\\MJCN-Server\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import django, rest_framework, rest_framework_simplejwt, drf_spectacular, corsheaders, dotenv; print\\('Django', django.get_version\\(\\)\\); print\\('DRF', rest_framework.VERSION\\)\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(gh issue *)",
+      "PowerShell(gh issue view 9 --json number,title,body,url | ConvertFrom-Json | ForEach-Object { \"URL: $\\($_.url\\)`n#$\\($_.number\\) $\\($_.title\\)`n---BODY---`n$\\($_.body\\)\" })",
+      "PowerShell(. .\\\\.venv\\\\Scripts\\\\Activate.ps1; python --version; python manage.py migrate)",
+      "PowerShell(. .\\\\.venv\\\\Scripts\\\\Activate.ps1; python manage.py runserver 127.0.0.1:8000)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8000/api/docs/)",
+      "Bash(curl -s -o /dev/null -w \"docs: %{http_code}\\\\n\" http://127.0.0.1:8000/api/docs/)",
+      "Bash(curl -s -o /dev/null -w \"schema: %{http_code}\\\\n\" http://127.0.0.1:8000/api/schema/)",
+      "PowerShell(git commit *)",
+      "Bash(python *)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(git ls-remote *)",
+      "Bash(git push *)",
+      "Bash(git rm *)",
+      "Bash(gh auth *)",
+      "PowerShell(Get-Process *)",
+      "Bash(gh pr *)",
+      "Bash(gh api *)",
+      "Bash(git config *)",
+      "Bash(findstr /i claude)",
+      "Bash(git check-ignore *)"
+    ]
+  }
+}

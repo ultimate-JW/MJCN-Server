@@ -6,13 +6,60 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Course, CoursePrerequisite, GraduationRequirement
+from .models import AcademicCalendar, Course, CoursePrerequisite, GraduationRequirement
 from .serializers import (
     CompletionStatusSerializer,
     CourseListSerializer,
     CurriculumPlanSerializer,
     NextSemesterRecommendationSerializer,
 )
+
+
+def _resolve_graduation_date(user):
+    """
+    사용자의 졸업 희망 (연/월)을 기준으로 졸업일을 결정한다.
+
+    졸업 시기 구분 (graduation_month는 2 또는 8만 유효 — 프론트에서 강제):
+      - 동계졸업 (graduation_month=2): 직전 학년도 2학기 종료 시점
+      - 하계졸업 (graduation_month=8): 당해 학년도 1학기 종료 시점
+
+    우선순위:
+      1) 해당 학기의 AcademicCalendar.semester_end 가 등록되어 있으면 그 값 사용
+      2) 없으면 임시 규칙: 동계졸업 → 2/10, 하계졸업 → 8/20
+
+    AcademicCalendar 조회 키:
+      - 동계졸업 → year=graduation_year-1, semester=2
+      - 하계졸업 → year=graduation_year, semester=1
+
+    반환: (graduation_date, is_estimated)
+      - is_estimated=False → AcademicCalendar에 등록된 실제 일정 사용
+      - is_estimated=True  → 폴백 규칙 사용
+      - 사용자가 졸업 희망 연/월을 설정 안 했거나, graduation_month가 2/8이
+        아닌 잘못된 값이면 (None, None)
+
+    NOTE: 현재 학교측 공식 학사일정 API 제공이 거절되어 AcademicCalendar는
+    관리자(Django admin)가 수동 등록하는 형태로 운영된다. 향후 학교 API가
+    열리면 별도 sync 작업이 이 테이블을 채워주는 식으로 확장 예정 —
+    그 시점에도 본 헬퍼의 로직은 변경 불필요.
+    """
+    if not user.graduation_year or user.graduation_month not in (2, 8):
+        return None, None
+
+    if user.graduation_month == 2:
+        # 동계졸업 — 학사일정은 graduation_year - 1 년의 2학기
+        cal_year = user.graduation_year - 1
+        cal_semester = 2
+        fallback = date(user.graduation_year, 2, 10)
+    else:
+        # 하계졸업 — 학사일정은 graduation_year 년의 1학기
+        cal_year = user.graduation_year
+        cal_semester = 1
+        fallback = date(user.graduation_year, 8, 20)
+
+    cal = AcademicCalendar.objects.filter(year=cal_year, semester=cal_semester).first()
+    if cal and cal.semester_end:
+        return cal.semester_end, False
+    return fallback, True
 
 
 class CourseSearchView(APIView):
