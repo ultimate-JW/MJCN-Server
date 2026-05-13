@@ -81,6 +81,9 @@ class CompletionStatusSerializer(serializers.Serializer):
     total_completed = serializers.IntegerField()
     total_required = serializers.IntegerField()
     total_remaining = serializers.IntegerField()
+    graduation_date = serializers.DateField(allow_null=True)
+    days_until_graduation = serializers.IntegerField(allow_null=True)
+    is_estimated = serializers.BooleanField(allow_null=True)
 
 
 class RecommendedCourseSerializer(serializers.Serializer):
