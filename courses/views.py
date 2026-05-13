@@ -159,11 +159,21 @@ class CompletionStatusView(APIView):
         })
 
         grand_total_completed = total_completed + general_completed
+
+        # 졸업일·D-day 계산 (spec 5.3.3)
+        graduation_date, is_estimated = _resolve_graduation_date(user)
+        days_until_graduation = (
+            (graduation_date - date.today()).days if graduation_date else None
+        )
+
         data = {
             'categories': categories,
             'total_completed': grand_total_completed,
             'total_required': graduation_total,
             'total_remaining': max(0, graduation_total - grand_total_completed),
+            'graduation_date': graduation_date,
+            'days_until_graduation': days_until_graduation,
+            'is_estimated': is_estimated,
         }
         serializer = CompletionStatusSerializer(data)
         return Response(serializer.data)
