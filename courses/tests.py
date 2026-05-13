@@ -300,41 +300,103 @@ class CourseSearchAPITests(APITestCase):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(res.data), 3)
+        self.assertEqual(res.data['count'], 3)
+        self.assertEqual(len(res.data['results']), 3)
 
     def test_q로_과목명_검색(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url, {'q': '자료'})
-        self.assertEqual(len(res.data), 1)
-        self.assertEqual(res.data[0]['course_code'], 'CSE2001')
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['course_code'], 'CSE2001')
 
     def test_q로_과목코드_검색(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url, {'q': 'CSE'})
-        codes = {c['course_code'] for c in res.data}
+        codes = {c['course_code'] for c in res.data['results']}
         self.assertEqual(codes, {'CSE1001', 'CSE2001'})
 
     def test_category_필터(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url, {'category': '교양필수'})
-        self.assertEqual(len(res.data), 1)
-        self.assertEqual(res.data[0]['course_code'], 'GEN1001')
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['course_code'], 'GEN1001')
 
     def test_credits_필터(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url, {'credits': '3'})
-        self.assertEqual(len(res.data), 2)
+        self.assertEqual(res.data['count'], 2)
 
     def test_여러_필터_AND(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url, {'category': '전공필수', 'credits': '3'})
-        self.assertEqual(len(res.data), 2)
+        self.assertEqual(res.data['count'], 2)
 
     def test_결과_없으면_빈_배열(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url, {'q': '존재하지않는과목'})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data, [])
+        self.assertEqual(res.data['count'], 0)
+        self.assertEqual(res.data['results'], [])
+
+
+# 과목 검색 페이지네이션 검증 (spec 6.14 공통 응답 형식)
+class CourseSearchPaginationTests(APITestCase):
+    url = '/api/v1/courses/'
+
+    def setUp(self):
+        self.user = _make_user()
+        # 페이지 동작 검증을 위해 25개 생성 (기본 page_size 20 초과)
+        for i in range(25):
+            _make_course(
+                course_code=f'CSE{i:04d}',
+                name=f'테스트과목{i:02d}',
+                category='전공필수' if i % 2 == 0 else '전공선택',
+                credits=3,
+            )
+
+    def test_응답_구조에_count_next_previous_results_포함(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('count', res.data)
+        self.assertIn('next', res.data)
+        self.assertIn('previous', res.data)
+        self.assertIn('results', res.data)
+        self.assertEqual(res.data['count'], 25)
+        # 기본 page_size=20이라 첫 페이지 결과는 20개
+        self.assertEqual(len(res.data['results']), 20)
+        # 다음 페이지 존재
+        self.assertIsNotNone(res.data['next'])
+        # 첫 페이지에선 previous None
+        self.assertIsNone(res.data['previous'])
+
+    def test_page_size_쿼리파라미터_동작(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'page_size': 5})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data['results']), 5)
+        self.assertEqual(res.data['count'], 25)
+
+    def test_page_2_접근(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'page': 2})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # 25개 중 첫 페이지 20개를 제외한 나머지 5개
+        self.assertEqual(len(res.data['results']), 5)
+        # 두 번째 페이지에선 previous가 있어야 함, next는 None
+        self.assertIsNotNone(res.data['previous'])
+        self.assertIsNone(res.data['next'])
+
+    def test_필터와_페이지네이션_조합(self):
+        self.client.force_authenticate(user=self.user)
+        # 25개 중 짝수 인덱스(0,2,...,24) 13개가 전공필수
+        res = self.client.get(self.url, {'category': '전공필수', 'page_size': 5})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 13)
+        self.assertEqual(len(res.data['results']), 5)
+        # 결과들이 전부 전공필수인지
+        for item in res.data['results']:
+            self.assertEqual(item['category'], '전공필수')
 
 
 class CompletionStatusAPITests(APITestCase):
