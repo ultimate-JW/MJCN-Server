@@ -291,6 +291,8 @@ erDiagram
         json categories
         bool is_active
         datetime created_at
+        string source
+        string source_id
     }
 
     Notification {
@@ -608,15 +610,19 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 |------|------|------|
 | title | CharField | 제목 |
 | organizer | CharField | 주최 |
-| description | TextField | 설명 |
-| url | URLField | 원문 링크 |
+| description | TextField | 설명 (위비티는 개인정보 보호로 빈 채 저장) |
+| url | URLField | 원문 링크 (변동 query 파라미터 포함 가능) |
 | start_date | DateField(null) | 시작일 (있는 경우) |
 | end_date | DateField(null) | 마감일 |
 | categories | JSONField(default=list) | 분야 태그 (공모전/대외활동/지원사업/교육·강의/부트캠프) |
 | is_active | BooleanField(default=True) | 활성 여부 |
 | created_at | DateTimeField | 수집 시각 |
+| source | CharField(max_length=20) | 출처 식별자 (예: 'wevity', 'mju') |
+| source_id | CharField(max_length=50) | 출처 내 고유 ID (예: 위비티 ix 값) |
 
-- unique_together: (url,) — 동일 URL 중복 저장 방지 (크롤링 재실행 시 upsert 기준)
+- UniqueConstraint: `(source, source_id)` — 같은 공모전이 여러 카테고리/페이지에 노출돼도 1행만 저장
+- 크롤링 재실행 시 upsert 기준도 `(source, source_id)`
+- url은 unique 아님 — 카테고리 파라미터(cidx 등) 차이로 같은 공모전이 다른 URL을 가질 수 있음
 
 ### 4.6 notifications 앱
 
@@ -1630,7 +1636,7 @@ Notice.extracted_content에 추출 텍스트 저장
     - `cidx=21` — 게임/소프트웨어
   - 카테고리 매핑: 위비티 분류 → Information.categories (공모전/대외활동/지원사업/교육·강의/부트캠프)
   - 페이지네이션: query string `gp=N` (1부터 시작, 빈 페이지면 break)
-  - 멱등성: `(url,)` 단독 unique 기준 upsert
+  - 멱등성: `(source='wevity', source_id=ix)` 기준 upsert — 같은 공모전이 cidx=20/21 양쪽에 노출돼도 1행
   - 실행: 매일 **06:00 KST** `manage.py crawl_information --source wevity` (학교 자체 크롤러와 동일 시각, 동일 명령에 포함)
   - 실패 격리: 위비티 파싱 실패가 다른 크롤러 실행을 막지 않음
   - 정적 HTML이면 `requests` + `BeautifulSoup4`, JS 렌더링 필요 시 `playwright` 보완
@@ -1654,7 +1660,7 @@ Notice.extracted_content에 추출 텍스트 저장
 - HTTP 요청: `requests` + `BeautifulSoup4` (정적 HTML 우선; 필요 시 `playwright` 보완)
 - 데이터 포맷: 8.4.1의 JSON 단일 포맷
 - 실행: 매일 06:00 KST `manage.py crawl_notices` / `crawl_information` (운영 cron)
-- 멱등성: `(source, url)` (Notice) / `(url,)` (Information) 기준 upsert로 중복 방지
+- 멱등성: `(source, url)` (Notice) / `(source, source_id)` (Information) 기준 upsert로 중복 방지
 - 실패 격리: 한 사이트 파싱 실패가 다른 사이트 크롤링을 중단시키지 않음
 
 ### 9.3 FCM (Firebase Cloud Messaging)

@@ -11,6 +11,14 @@ from information.models import Information
 User = get_user_model()
 
 
+_seq = [0]
+
+
+def _next_id() -> str:
+    _seq[0] += 1
+    return f'api-seq-{_seq[0]}'
+
+
 def make_info(**overrides):
     defaults = {
         'title': '기본 정보',
@@ -21,6 +29,8 @@ def make_info(**overrides):
         'end_date': None,
         'categories': [],
         'is_active': True,
+        'source': 'wevity',
+        'source_id': _next_id(),  # 매 호출마다 고유 — UNIQUE 충돌 방지
     }
     defaults.update(overrides)
     return Information.objects.create(**defaults)
