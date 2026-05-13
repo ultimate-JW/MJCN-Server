@@ -15,6 +15,7 @@ from .serializers import (
 )
 
 
+# 과목 검색
 class CourseSearchView(APIView):
     """GET /api/v1/courses/ - 과목 검색"""
     permission_classes = [IsAuthenticated]
@@ -54,6 +55,7 @@ class CourseSearchView(APIView):
         return Response(serializer.data)
 
 
+# 이수현황
 class CompletionStatusView(APIView):
     """GET /api/v1/courses/status/ - 이수현황 분석"""
     permission_classes = [IsAuthenticated]
@@ -122,6 +124,7 @@ class CompletionStatusView(APIView):
         return Response(serializer.data)
 
 
+# 다음학기 추천
 class NextSemesterRecommendView(APIView):
     """GET /api/v1/courses/recommend/next/ - 다음학기 수강과목 추천"""
     permission_classes = [IsAuthenticated]
@@ -182,6 +185,7 @@ class NextSemesterRecommendView(APIView):
         return current_year + 1, 1
 
 
+# 졸업까지 전체 커리큘럼 추천
 class CurriculumRecommendView(APIView):
     """GET /api/v1/courses/recommend/curriculum/ - 전체 커리큘럼 추천"""
     permission_classes = [IsAuthenticated]

@@ -22,9 +22,13 @@ media/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
+
+# Claude Code (작업자 로컬 전용)
+CLAUDE.md
 
 # OS
 .DS_Store
