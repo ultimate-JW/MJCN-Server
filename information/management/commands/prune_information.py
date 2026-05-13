@@ -37,8 +37,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--source',
             default='wevity',
-            help='대상 출처 식별자. 현재 모델은 별도 source 컬럼이 없으므로 '
-                 'URL 도메인 기준으로 필터링 (예: wevity → wevity.com 포함).',
+            help='대상 출처 식별자 (Information.source 컬럼 값). 기본 wevity.',
         )
         parser.add_argument(
             '--dry-run',
@@ -57,14 +56,11 @@ class Command(BaseCommand):
 
         cutoff = timezone.localdate() - timedelta(days=days)
 
-        # Information 모델에 source 컬럼이 없으므로 URL 도메인 매칭으로 대체.
-        # 위비티는 url에 'wevity.com'이 포함되어 있음.
-        domain_keyword = self._source_to_domain_keyword(source)
-
+        # source 컬럼(0003 마이그레이션에서 도입) 기준 필터.
         qs = Information.objects.filter(
+            source=source,
             end_date__isnull=False,
             end_date__lt=cutoff,
-            url__icontains=domain_keyword,
         )
 
         count = qs.count()
@@ -86,14 +82,3 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'완료 - source={source} cutoff={cutoff} 삭제={deleted}건'
         ))
-
-    @staticmethod
-    def _source_to_domain_keyword(source: str) -> str:
-        """source 식별자 → URL 도메인 키워드 매핑.
-
-        Information 모델에 source 컬럼이 없는 한 URL 기반으로 출처를 식별한다.
-        """
-        mapping = {
-            'wevity': 'wevity.com',
-        }
-        return mapping.get(source, source)

@@ -242,6 +242,8 @@ class WevityParseDetailPrivacyTests(TestCase):
         self.item = {
             'title': '테스트 공모전',
             'url': 'https://www.wevity.com/?c=find&s=1&gub=1&cidx=20&gbn=view&gp=1&ix=12345',
+            'source': 'wevity',
+            'source_id': '12345',
             'organizer': '목록 주최',
             'end_date': date.today() + timedelta(days=10),
             'is_active': True,
@@ -276,6 +278,8 @@ class WevityRealDetailParsingTests(TestCase):
         self.item = {
             'title': '[문화체육관광부 x 한국콘텐츠진흥원] 2026 K-콘텐츠 수출 마케터 양성 교육 5기 교육생 모집',
             'url': 'https://www.wevity.com/?c=find&s=1&gub=1&cidx=20&gbn=view&gp=1&ix=106851',
+            'source': 'wevity',
+            'source_id': '106851',
             'organizer': '문화체육관광부, 한국콘텐츠진흥원',  # 목록에서 추출된 값
             'end_date': date.today() + timedelta(days=13),  # D-13
             'is_active': True,
@@ -384,9 +388,63 @@ class WevityIntegrationSaveTests(TestCase):
         descriptions = list(Information.objects.values_list('description', flat=True))
         self.assertTrue(all(d == '' for d in descriptions))
 
-        # 재실행 — url 기준 멱등 upsert
+        # ⭐ source/source_id 저장 확인
+        for info in Information.objects.all():
+            self.assertEqual(info.source, 'wevity')
+            self.assertTrue(info.source_id.isdigit(), f'ix가 숫자여야 함: {info.source_id!r}')
+
+        # 재실행 — (source, source_id) 기준 멱등 upsert
         with patch.object(crawler, 'fetch', side_effect=fake_fetch):
             result2 = crawler.run()
         self.assertEqual(result2.created, 0)
         self.assertEqual(result2.updated, 15)
         self.assertEqual(Information.objects.count(), 15)
+
+
+class WevityDedupTests(TestCase):
+    """⭐ cidx=20과 cidx=21에 같은 ix가 노출돼도 1건만 저장됨 (Option B 핵심)."""
+
+    def test_같은_ix_여러_카테고리에서_1건만_저장(self):
+        """실제 fixture: cidx=20과 cidx=21 모두 ix=106194, 106656, 106687, 106965 4건 공유.
+
+        cidx=20: 15건 / cidx=21: 15건 / 그 중 4건이 공유 ix → 총 고유 ix = 26건.
+        """
+        import re
+        from pathlib import Path
+
+        crawler = WevityCrawler()
+        crawler.MAX_PAGES = 1
+
+        cidx20_html = REAL_LIST_HTML
+        cidx21_html = load_fixture('wevity_list_cidx21.html')
+
+        page_responses = {
+            'cidx=20&gp=1': cidx20_html,
+            'cidx=21&gp=1': cidx21_html,
+        }
+
+        def fake_fetch(url):
+            for key, html in page_responses.items():
+                if key in url:
+                    return html
+            return PRIVACY_TEST_DETAIL_HTML
+
+        with patch.object(crawler, 'fetch', side_effect=fake_fetch):
+            result = crawler.run()
+
+        # 전체 30번 yield되지만 (source='wevity', source_id=ix) 기준 dedup
+        # 결과: 고유 ix 수만큼 저장
+        total_yields = result.created + result.updated
+        unique_db = Information.objects.count()
+        self.assertEqual(unique_db, 26, '고유 ix 26건만 저장되어야 함')
+        self.assertEqual(total_yields, 30, '크롤러는 30번 yield (15 + 15)')
+        # → 첫 15건 created + 같은 ix 4건 updated + 새 11건 created = 26 created + 4 updated
+        self.assertEqual(result.created, 26)
+        self.assertEqual(result.updated, 4)
+
+        # 중복 그룹 검증 — 같은 ix가 두 row에 분산되지 않음
+        from django.db.models import Count
+        dupes = Information.objects.values('source', 'source_id').annotate(
+            n=Count('id')
+        ).filter(n__gt=1)
+        self.assertEqual(list(dupes), [])

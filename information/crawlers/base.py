@@ -19,9 +19,14 @@ class CrawledInformation:
     """크롤러가 반환하는 단일 정보 표준 dict (spec 8.4.1).
 
     Information 모델 필드와 1:1 대응.
+
+    source / source_id 는 upsert 식별자(필수). 같은 (source, source_id) 가
+    여러 카테고리/페이지에 노출돼도 1행만 저장됨.
     """
     title: str
     url: str
+    source: str       # 'wevity' 등 출처 식별자 (필수)
+    source_id: str    # 출처 내 고유 ID (예: 위비티 ix 값, 필수)
     organizer: str = ''
     description: str = ''
     start_date: Optional[date] = None
@@ -29,10 +34,19 @@ class CrawledInformation:
     categories: list[str] = field(default_factory=list)
     is_active: bool = True
 
+    def __post_init__(self):
+        if not self.source or not self.source_id:
+            raise ValueError(
+                f'CrawledInformation requires non-empty source/source_id '
+                f'(got source={self.source!r}, source_id={self.source_id!r})'
+            )
+
     def to_dict(self) -> dict:
         return {
             'title': self.title,
             'url': self.url,
+            'source': self.source,
+            'source_id': self.source_id,
             'organizer': self.organizer,
             'description': self.description,
             'start_date': self.start_date.isoformat() if self.start_date else None,
@@ -103,6 +117,8 @@ class BaseInformationCrawler:
         return CrawledInformation(
             title=item['title'],
             url=item['url'],
+            source=item['source'],
+            source_id=item['source_id'],
             organizer=item.get('organizer', ''),
             description=item.get('description', ''),
             start_date=item.get('start_date'),
@@ -135,9 +151,10 @@ class BaseInformationCrawler:
 
     @transaction.atomic
     def _upsert(self, info: CrawledInformation) -> tuple[Information, bool]:
-        """url 기준 upsert."""
+        """(source, source_id) 기준 upsert. url은 같은 공모전이라도 cidx 등으로 변동 가능."""
         defaults = {
             'title': info.title,
+            'url': info.url,
             'organizer': info.organizer,
             'description': info.description,
             'start_date': info.start_date,
@@ -146,7 +163,8 @@ class BaseInformationCrawler:
             'is_active': info.is_active,
         }
         return Information.objects.update_or_create(
-            url=info.url,
+            source=info.source,
+            source_id=info.source_id,
             defaults=defaults,
         )
 

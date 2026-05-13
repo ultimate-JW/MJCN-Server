@@ -9,6 +9,14 @@ from django.utils import timezone
 from information.models import Information
 
 
+_seq = [0]
+
+
+def _next_id() -> str:
+    _seq[0] += 1
+    return f'seq-{_seq[0]}'
+
+
 def make_info(**overrides):
     defaults = {
         'title': '테스트',
@@ -19,6 +27,8 @@ def make_info(**overrides):
         'end_date': None,
         'categories': ['공모전'],
         'is_active': False,
+        'source': 'wevity',
+        'source_id': _next_id(),  # 매 호출마다 고유 — UNIQUE 충돌 방지
     }
     defaults.update(overrides)
     return Information.objects.create(**defaults)
@@ -52,6 +62,7 @@ class PruneInformationTests(TestCase):
             title='오래된 학교',
             url='https://www.mju.ac.kr/contest/1',
             end_date=today - timedelta(days=400),
+            source='mju',
         )
 
     def test_기본_365일_위비티_만_삭제(self):
@@ -103,8 +114,8 @@ class PruneInformationTests(TestCase):
             Information.objects.filter(id=self.nodate_wevity.id).exists()
         )
 
-    def test_학교_자체_데이터는_영향_없음(self):
-        # default source=wevity 라서 mju.ac.kr 도메인은 매칭 안 됨
+    def test_다른_source는_영향_없음(self):
+        # default --source=wevity 라서 source='mju' 행은 매칭 안 됨
         out = StringIO()
         call_command('prune_information', '--days', '0', stdout=out)
         self.assertTrue(

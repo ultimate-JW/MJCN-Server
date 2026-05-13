@@ -117,6 +117,14 @@ class WevityCrawler(BaseInformationCrawler):
     # 목록 파싱 — 실제 위비티 HTML 구조 기반
     # ─────────────────────────────────────────────────────────────────────
 
+    # 위비티 URL의 공모전 고유 ID(ix) 추출 — (source, source_id) upsert 키
+    _IX_RE = re.compile(r'[?&]ix=(\d+)')
+
+    @classmethod
+    def _extract_ix(cls, href: str) -> Optional[str]:
+        m = cls._IX_RE.search(href)
+        return m.group(1) if m else None
+
     def parse_list(self, html: str) -> Iterable[dict]:
         soup = self.soup(html)
 
@@ -133,6 +141,11 @@ class WevityCrawler(BaseInformationCrawler):
             if not href:
                 continue
 
+            ix = self._extract_ix(href)
+            if not ix:
+                # ix가 없는 행은 unique 키 만들 수 없음 → skip (이론상 발생 안 함)
+                continue
+
             title = self._extract_title(link)
             if not title:
                 continue
@@ -145,6 +158,8 @@ class WevityCrawler(BaseInformationCrawler):
             yield {
                 'title': title,
                 'url': self._absolute_url(href),
+                'source': self.SOURCE,        # 'wevity'
+                'source_id': ix,              # 위비티 공모전 고유 ID
                 'organizer': self._text(row, 'div.organ'),
                 'end_date': self._parse_dday(day_text),
                 'is_active': not bool(set(dday_classes) & INACTIVE_DDAY_CLASSES),
@@ -197,6 +212,8 @@ class WevityCrawler(BaseInformationCrawler):
         return CrawledInformation(
             title=item['title'],
             url=item['url'],
+            source=item['source'],         # parse_list가 채운 'wevity'
+            source_id=item['source_id'],   # parse_list가 채운 ix
             organizer=organizer,
             description='',  # 개인정보 보호 정책 — 본문 저장 금지
             start_date=start_date,
