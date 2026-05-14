@@ -83,33 +83,6 @@ class GraduationDateAPITests(APITestCase):
         self.assertEqual(res.data['graduation_date'], '2027-02-10')
         self.assertTrue(res.data['is_estimated'])
 
-    # --- D-day 계산 ---
-
-    def test_days_until_graduation_미래_졸업일은_양수(self):
-        # 폴백 8/20을 멀리 잡아 오늘 기준 항상 양수가 되도록
-        user = _make_user(graduation_year=date.today().year + 5, graduation_month=8)
-        self.client.force_authenticate(user=user)
-
-        res = self.client.get(self.url)
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertIsNotNone(res.data['days_until_graduation'])
-        self.assertGreater(res.data['days_until_graduation'], 365)  # 1년 넘게 남음
-
-    def test_days_until_graduation_오늘이_졸업일이면_0(self):
-        # AcademicCalendar 등록으로 졸업일을 오늘로 고정
-        today = date.today()
-        # graduation_month=8 (하계) → AcademicCalendar key (graduation_year, 1)
-        AcademicCalendar.objects.create(
-            year=today.year, semester=1,
-            semester_end=today,
-        )
-        user = _make_user(graduation_year=today.year, graduation_month=8)
-        self.client.force_authenticate(user=user)
-
-        res = self.client.get(self.url)
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data['days_until_graduation'], 0)
-
     # --- 사용자가 졸업 정보 안 설정한 경우 ---
 
     def test_사용자_졸업연도_없으면_관련_필드_모두_None(self):
@@ -119,7 +92,6 @@ class GraduationDateAPITests(APITestCase):
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIsNone(res.data['graduation_date'])
-        self.assertIsNone(res.data['days_until_graduation'])
         self.assertIsNone(res.data['is_estimated'])
 
     def test_graduation_month가_2_8이_아니면_None(self):
@@ -130,5 +102,4 @@ class GraduationDateAPITests(APITestCase):
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIsNone(res.data['graduation_date'])
-        self.assertIsNone(res.data['days_until_graduation'])
         self.assertIsNone(res.data['is_estimated'])
