@@ -2,6 +2,7 @@ from collections import defaultdict
 from datetime import date
 
 from django.db.models import Q
+from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -65,18 +66,21 @@ def _resolve_graduation_date(user):
 class CourseSearchView(APIView):
     """GET /api/v1/courses/ - 과목 검색"""
     permission_classes = [IsAuthenticated]
+    serializer_class = CourseListSerializer
 
-    def get(self, request):
-        queryset = Course.objects.prefetch_related('schedules', 'prerequisites')
+    def get_queryset(self):
+        # course_code는 유니크 PK 역할이라 페이지 간 순서 안정성 확보용 정렬 키
+        queryset = Course.objects.prefetch_related('schedules', 'prerequisites').order_by('course_code')
 
-        q = request.query_params.get('q')
-        college = request.query_params.get('college')
-        department = request.query_params.get('department')
-        major = request.query_params.get('major')
-        category = request.query_params.get('category')
-        credits = request.query_params.get('credits')
-        year_open = request.query_params.get('year_open')
-        semester_open = request.query_params.get('semester_open')
+        params = self.request.query_params
+        q = params.get('q')
+        college = params.get('college')
+        department = params.get('department')
+        major = params.get('major')
+        category = params.get('category')
+        credits = params.get('credits')
+        year_open = params.get('year_open')
+        semester_open = params.get('semester_open')
 
         if q:
             queryset = queryset.filter(
@@ -97,10 +101,10 @@ class CourseSearchView(APIView):
         if semester_open:
             queryset = queryset.filter(semester_open=int(semester_open))
 
-        serializer = CourseListSerializer(queryset, many=True)
-        return Response(serializer.data)
+        return queryset
 
 
+# 이수현황
 class CompletionStatusView(APIView):
     """GET /api/v1/courses/status/ - 이수현황 분석"""
     permission_classes = [IsAuthenticated]
@@ -175,6 +179,7 @@ class CompletionStatusView(APIView):
         return Response(serializer.data)
 
 
+# 다음학기 추천
 class NextSemesterRecommendView(APIView):
     """GET /api/v1/courses/recommend/next/ - 다음학기 수강과목 추천"""
     permission_classes = [IsAuthenticated]
@@ -235,6 +240,7 @@ class NextSemesterRecommendView(APIView):
         return current_year + 1, 1
 
 
+# 졸업까지 전체 커리큘럼 추천
 class CurriculumRecommendView(APIView):
     """GET /api/v1/courses/recommend/curriculum/ - 전체 커리큘럼 추천"""
     permission_classes = [IsAuthenticated]

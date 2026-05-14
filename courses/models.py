@@ -1,6 +1,6 @@
 from django.db import models
 
-
+# 강의 기본 정보(코드, 이름, 학점 등등)
 class Course(models.Model):
     CATEGORY_CHOICES = [
         ('전공필수', '전공필수'),
@@ -28,6 +28,7 @@ class Course(models.Model):
         return f"[{self.course_code}] {self.name}"
 
 
+# 선수 과목 관계 저장
 class CoursePrerequisite(models.Model):
     course = models.ForeignKey(
         Course, on_delete=models.CASCADE, related_name='prerequisites'
@@ -35,6 +36,7 @@ class CoursePrerequisite(models.Model):
     prerequisite = models.ForeignKey(
         Course, on_delete=models.CASCADE, related_name='required_by'
     )
+    # prerequisite ← course 관계: course를 듣기 위해 prerequisite가 필요
 
     class Meta:
         db_table = 'courses_courseprerequisite'
@@ -44,6 +46,7 @@ class CoursePrerequisite(models.Model):
         return f"{self.course.name} <- {self.prerequisite.name}"
 
 
+# 강의 정보 : 요일/시간/강의실
 class CourseSchedule(models.Model):
     DAY_CHOICES = [
         ('월', '월'),
@@ -69,6 +72,7 @@ class CourseSchedule(models.Model):
         return f"{self.course.name} {self.day_of_week} {self.start_time}-{self.end_time}"
 
 
+# 졸업 필요 학점
 class GraduationRequirement(models.Model):
     CATEGORY_CHOICES = [
         ('전공필수', '전공필수'),
@@ -91,6 +95,7 @@ class GraduationRequirement(models.Model):
         return f"{self.department} {self.admission_year} {self.category}: {self.required_credits}학점"
 
 
+# 학사 일정 : 수강신청 기간, 학기 시작/종료일
 class AcademicCalendar(models.Model):
     year = models.IntegerField()
     semester = models.IntegerField()
