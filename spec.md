@@ -271,6 +271,7 @@ erDiagram
     Notice {
         int id PK
         string source
+        string department
         string title
         text content
         url url
@@ -558,7 +559,8 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | source | CharField | 출처 (일반/학사/해외/공모전/학생활동/진로·취업·창업/장학·학자금) |
-| title | CharField | 제목 |
+| department | CharField(blank, default='') | 게시 부서명. 제목 앞 `[부서명]` 접두사를 분리 추출. 패턴 없으면 빈 문자열 |
+| title | CharField | 제목 (원본 그대로 — `[부서명]` 접두사 포함) |
 | content | TextField | 본문 plain text (HTML 태그 제거됨) |
 | extracted_content | TextField(blank) | 본문이 이미지로만 구성된 경우 VLM으로 추출한 텍스트 (spec 9.1.5) |
 | image_urls | JSONField(default=list) | 본문 영역의 이미지 URL 배열 (VLM 입력용) |
@@ -570,6 +572,14 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 - unique_together: (source, url) — 동일 출처에서 동일 URL 중복 저장 방지 (크롤링 재실행 시 upsert 기준)
 - AI 파이프라인 입력 우선순위: `extracted_content` 있으면 그것 사용, 없으면 `content` 사용
+
+##### `department` 필드 추출 정책
+
+- 제목이 `[xxx] yyy` 패턴이면 `xxx`를 `department`로, 본문 제목은 원본 그대로 보존
+- 패턴이 없으면 `department=''` (빈 문자열)
+- 추출은 단순 정규식 — 첫 번째 `[...]` 만 분리 (휴리스틱 화이트리스트 없음)
+- 모든 source에 동일 적용 (일반·학사·해외·공모전·학생활동·진로·장학)
+- 크롤러 저장 시 자동 추출, 별도 cron 불필요
 
 #### NoticeAIResult (AI 처리 결과)
 
@@ -955,8 +965,9 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 #### 5.4.1 전체보기
 
 - 공지 전체 목록 조회
-- 형식: `[출처] 제목`
-  - 출처 유형: 일반, 학사, 해외, 공모전, 학생활동, 진로/취업/창업, 장학/학자금
+- 카드 메타 노출 형식: **`[카테고리 태그] 부서명 · 게시 시각`** + 제목
+  - 카테고리 태그: 출처 라벨 (`일반` / `학사` / `해외` / `공모전` / `학생활동` / `진로·취업·창업` / `장학·학자금`)
+  - 부서명: `Notice.department` (제목 앞 `[부서명]` 접두사에서 자동 추출, 없으면 출처 라벨로 대체)
 - 검색 기능 (제목, 내용 검색)
 - 페이지네이션
 
@@ -1195,6 +1206,39 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | GET | `/api/v1/notices/?q=<검색어>` | O | 공지 검색 |
 | GET | `/api/v1/notices/<id>/` | O | 공지 상세 |
 
+#### 응답 필드 — 부서명 표시
+
+목록·상세 응답에 다음 두 필드가 포함된다 (spec 4.4 `Notice.department` 정책 반영):
+
+| 필드 | 출처 | 설명 |
+|------|------|------|
+| `department` | `Notice.department` 그대로 | 부서명. 없으면 빈 문자열 |
+| `department_display` | 가공 | `department`가 비어있으면 `source_label`(예: `학사공지`)로 자동 대체. 항상 값 있음 → 프론트는 별도 분기 없이 메타 라인 노출 가능 |
+
+응답 예시:
+```json
+{
+  "id": 85,
+  "source": "general",
+  "source_label": "일반공지",
+  "department": "원격교육센터",
+  "department_display": "원격교육센터",
+  "title": "[원격교육센터] 명지대학교 \"카피킬러 캠퍼스\" 도입 안내",
+  "published_at": "2026-05-12T...",
+  ...
+}
+```
+
+부서명 없는 공지의 경우:
+```json
+{
+  "department": "",
+  "department_display": "학사공지",
+  "title": "수강신청 안내",
+  ...
+}
+```
+
 ### 6.8 정보 (information)
 
 | Method | URL | 인증 | 설명 |
@@ -1350,7 +1394,8 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 ```json
 {
   "source": "academic",
-  "title": "공지 제목",
+  "department": "학사지원팀",
+  "title": "[학사지원팀] 2026-1학기 수강신청 안내",
   "content": "본문 plain text",
   "image_urls": ["https://www.mju.ac.kr/.../1.png", "..."],
   "url": "https://www.mju.ac.kr/...",
@@ -1363,8 +1408,10 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 - `content`는 HTML 태그 제거 후 plain text로 저장 (이후 LLM 입력용)
 - `image_urls`는 본문 영역(`div.artclView`)에 포함된 이미지 URL을 절대경로로 정규화해 수집.
   본문이 이미지만으로 구성된 공지(`content`가 비거나 매우 짧음)에 대해 VLM 전처리(spec 9.1.5)에 사용한다.
+- `department`는 제목의 첫 `[xxx]` 접두사를 정규식으로 분리 추출. 패턴 없으면 빈 문자열.
+  `title`은 원본 그대로 (`[부서명]` 접두사 포함). 분리 표현은 API 응답 단계의 `department_display`에서 처리.
 - `tags`는 크롤링 단계에서는 빈 리스트 또는 사이트 카테고리만 채우고, AI 자동 태깅은 후속 파이프라인(spec 9.1)에서 채운다
-- 저장은 `(source, url)` (Notice) / `(url,)` (Information) 기준 upsert
+- 저장은 `(source, url)` (Notice) / `(source, source_id)` (Information) 기준 upsert
 - `extracted_content`는 크롤러가 채우지 않음. VLM 전처리 단계(spec 9.1.5)에서만 채워진다.
 
 ---
