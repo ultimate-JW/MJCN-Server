@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Iterable, Optional
@@ -12,6 +13,25 @@ from django.db import IntegrityError, transaction
 from notices.models import Notice
 
 logger = logging.getLogger(__name__)
+
+
+# spec 4.4: 제목 앞 [부서명] 접두사 분리 추출용 정규식.
+# 첫 번째 [...] 만 매칭. 휴리스틱 화이트리스트 없음 (spec 정책).
+_DEPT_PREFIX_RE = re.compile(r'^\s*\[\s*([^\[\]]+?)\s*\]')
+
+
+def extract_department(title: str) -> str:
+    """제목 앞 [부서명] 접두사를 정규식으로 분리. 패턴 없으면 빈 문자열.
+
+    예:
+      '[원격교육센터] 카피킬러 도입 안내' → '원격교육센터'
+      '수강신청 안내'                    → ''
+      '[2026-1] 학부 안내'               → '2026-1' (휴리스틱 없음 — spec 정책)
+    """
+    if not title:
+        return ''
+    m = _DEPT_PREFIX_RE.match(title)
+    return m.group(1).strip() if m else ''
 
 
 @dataclass
@@ -29,10 +49,18 @@ class CrawledNotice:
     tags: list[str] = field(default_factory=list)
     # 본문 영역의 이미지 URL (절대경로). VLM 전처리 입력용 (spec 9.1.6).
     image_urls: list[str] = field(default_factory=list)
+    # 게시 부서명. 미지정 시 title에서 자동 추출 (spec 4.4).
+    department: str = ''
+
+    def __post_init__(self):
+        # department가 명시되지 않았으면 title에서 자동 추출
+        if not self.department:
+            self.department = extract_department(self.title)
 
     def to_dict(self) -> dict:
         return {
             'source': self.source,
+            'department': self.department,
             'title': self.title,
             'url': self.url,
             'published_at': self.published_at.isoformat(),
@@ -168,6 +196,7 @@ class BaseNoticeCrawler:
         """
         defaults = {
             'title': notice.title,
+            'department': notice.department,
             'content': notice.content,
             'published_at': notice.published_at,
             'end_date': notice.end_date,
