@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .crawlers.base import _DEPT_PREFIX_RE
 from .models import Notice, NoticeAIResult
 
 
@@ -12,14 +13,21 @@ class NoticeAIResultSerializer(serializers.ModelSerializer):
 
 
 class _NoticeBaseSerializerMixin:
-    """List/Detail 공용 — department_display fallback 로직 (spec 6.7).
+    """List/Detail 공용 — department_display + title_without_dept 가공 (spec 6.7).
 
-    department가 비어있으면 source_label로 자동 대체. 항상 값이 있어
-    프론트는 분기 없이 메타 라인 노출 가능.
+    - department_display: department 비어있으면 source_label로 fallback (항상 값 보장)
+    - title_without_dept: title에서 [부서명] 접두사 제거된 깔끔한 버전
+                         (department 비어있거나 접두사 없으면 원본 title 그대로)
     """
 
     def get_department_display(self, obj):
         return obj.department or obj.get_source_display()
+
+    def get_title_without_dept(self, obj):
+        if obj.department and obj.title:
+            # 첫 [...] 만 제거 후 앞 공백 trim. base.py의 추출 정규식과 동일 패턴.
+            return _DEPT_PREFIX_RE.sub('', obj.title, count=1).lstrip()
+        return obj.title
 
 
 class NoticeListSerializer(_NoticeBaseSerializerMixin, serializers.ModelSerializer):
@@ -28,13 +36,14 @@ class NoticeListSerializer(_NoticeBaseSerializerMixin, serializers.ModelSerializ
     source_label = serializers.CharField(source='get_source_display', read_only=True)
     summary = serializers.SerializerMethodField()
     department_display = serializers.SerializerMethodField()
+    title_without_dept = serializers.SerializerMethodField()
 
     class Meta:
         model = Notice
         fields = [
             'id', 'source', 'source_label',
             'department', 'department_display',
-            'title', 'summary',
+            'title', 'title_without_dept', 'summary',
             'published_at', 'end_date', 'url', 'tags',
         ]
 
@@ -48,6 +57,7 @@ class NoticeDetailSerializer(_NoticeBaseSerializerMixin, serializers.ModelSerial
 
     source_label = serializers.CharField(source='get_source_display', read_only=True)
     department_display = serializers.SerializerMethodField()
+    title_without_dept = serializers.SerializerMethodField()
     ai_result = NoticeAIResultSerializer(read_only=True)
 
     class Meta:
@@ -55,7 +65,8 @@ class NoticeDetailSerializer(_NoticeBaseSerializerMixin, serializers.ModelSerial
         fields = [
             'id', 'source', 'source_label',
             'department', 'department_display',
-            'title', 'content', 'extracted_content',
+            'title', 'title_without_dept',
+            'content', 'extracted_content',
             'image_urls', 'url', 'published_at', 'end_date',
             'tags', 'ai_result',
         ]

@@ -167,6 +167,56 @@ class NoticeAPIResponseTests(TestCase):
         # 원본 title 보존 (검색 호환성)
         self.assertEqual(res.data['title'], '[원격교육센터] 카피킬러 도입')
 
+    def test_title_without_dept_접두사_제거(self):
+        n = make_notice(
+            source='general',
+            title='[원격교육센터] 명지대학교 카피킬러 도입 안내',
+            department='원격교육센터',
+            url='https://x/title-clean',
+        )
+        res = self.client.get(f'/api/v1/notices/{n.id}/')
+        self.assertEqual(
+            res.data['title_without_dept'],
+            '명지대학교 카피킬러 도입 안내',
+        )
+
+    def test_title_without_dept_부서명_없으면_원본_그대로(self):
+        n = make_notice(
+            source='general',
+            title='수강신청 안내',
+            department='',
+            url='https://x/title-no-dept',
+        )
+        res = self.client.get(f'/api/v1/notices/{n.id}/')
+        self.assertEqual(res.data['title_without_dept'], '수강신청 안내')
+
+    def test_title_without_dept_첫_대괄호만_제거(self):
+        # [A] [B] xxx → [B] xxx (첫 [A]만 제거)
+        n = make_notice(
+            source='general',
+            title='[학사지원팀] [긴급] 등록금 안내',
+            department='학사지원팀',
+            url='https://x/title-multi-bracket',
+        )
+        res = self.client.get(f'/api/v1/notices/{n.id}/')
+        self.assertEqual(
+            res.data['title_without_dept'],
+            '[긴급] 등록금 안내',
+        )
+
+    def test_title_without_dept_목록에도_포함(self):
+        make_notice(
+            source='general',
+            title='[학생지원팀] 안내',
+            department='학생지원팀',
+            url='https://x/list-clean',
+        )
+        res = self.client.get('/api/v1/notices/')
+        self.assertEqual(
+            res.data['results'][0]['title_without_dept'],
+            '안내',
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Crawler 통합 — 저장 시 department 자동 채움
