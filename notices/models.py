@@ -15,6 +15,9 @@ class Notice(models.Model):
     ]
 
     source = models.CharField(max_length=30, choices=SOURCE_CHOICES)
+    # 게시 부서명 (spec 4.4) — 제목 앞 [부서명] 접두사를 정규식으로 분리 추출.
+    # 패턴 없으면 빈 문자열. 모든 source에 동일 적용.
+    department = models.CharField(max_length=100, blank=True, default='')
     title = models.CharField(max_length=300)
     content = models.TextField(blank=True, default='')
     # VLM 전처리(spec 9.1.6) 결과 저장. 본문이 이미지로만 구성된 공지에 대해
