@@ -534,7 +534,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 |------|------|---------------------|
 | department | CharField | 학과                  |
 | admission_year | IntegerField | 입학 연도               |
-| category | CharField | 전공필수/전공선택/교양필수/교양선택 |
+| category | CharField | 전공필수/전공선택/교양필수/교양선택/일반선택 |
 | required_credits | IntegerField | 필요 학점               |
 | total_required | IntegerField | 총 졸업 학점             |
 
@@ -1003,7 +1003,7 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 #### 5.3.3 이수현황 분석
 
 - 아래 카테고리별 이수학점 / 필요학점 / 잔여학점 표시
-  - 전공필수, 전공선택, 교양필수, 교양선택, 일반선택, 총학점
+  - 전공필수 / 전공선택 / 교양필수 / 교양선택 / 일반선택
 - 졸업까지 남은 총 학점 계산
   - 졸업일 기준: 학사일정 미등록 시 겨울졸업 2월 10일 / 여름졸업 8월 20일로 임시 계산
   - 학사일정 등록 후 실제 졸업일로 자동 변경
