@@ -590,3 +590,97 @@ class CurriculumRecommendAPITests(APITestCase):
                 self.assertIn('year', sem)
                 self.assertIn('semester', sem)
                 self.assertIn('courses', sem)
+
+
+# 졸업까지 진척도(%) API (spec 5.3.5)
+class GraduationProgressAPITests(APITestCase):
+    url = '/api/v1/courses/graduation-progress/'
+
+    def test_인증_없으면_401(self):
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_사용자_입력_졸업일로_진척도_계산(self):
+        # admission=2023 (시작 2023-03-01), graduation 2027.2 폴백 2027-02-10
+        # 약 4년 구간 중 오늘이 대략 80% 부근
+        user = _make_user(
+            email='a@x.com',
+            admission_year=2023, grade=4, semester=1,
+            graduation_year=2027, graduation_month=2,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        pct = res.data['graduation_progress_percent']
+        self.assertGreater(pct, 50)
+        self.assertLess(pct, 100)
+
+    def test_자동_추정_4_1_봄시즌은_다음해_2월(self):
+        # graduation_year/month 미입력 → grade=4-1 + 봄(5/14) → 추정 (현재년+1, 2)
+        user = _make_user(
+            email='b@x.com',
+            admission_year=2023, grade=4, semester=1,
+            graduation_year=None, graduation_month=None,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertGreater(res.data['graduation_progress_percent'], 0)
+        self.assertLess(res.data['graduation_progress_percent'], 100)
+
+    def test_엇학기_4_2_봄시즌은_8월_하계로_추정(self):
+        # 4-2 + 봄(5/14) → 추정 (현재년, 8) → 폴백 8/20 → 진척도 거의 100 근처
+        user = _make_user(
+            email='c@x.com',
+            admission_year=2022, grade=4, semester=2,
+            graduation_year=None, graduation_month=None,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        pct = res.data['graduation_progress_percent']
+        self.assertGreater(pct, 80)
+        self.assertLessEqual(pct, 100)
+
+    def test_admission_year_없으면_0(self):
+        user = _make_user(
+            email='d@x.com',
+            admission_year=None, grade=4, semester=1,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['graduation_progress_percent'], 0)
+
+    def test_졸업일_이미_지났으면_100(self):
+        user = _make_user(
+            email='e@x.com',
+            admission_year=2019,
+            graduation_year=2023, graduation_month=2,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['graduation_progress_percent'], 100)
+
+    def test_graduation_month_잘못된_값이면_자동_추정으로_폴백(self):
+        # graduation_month=5 (잘못된 값) → 자동 추정 사용
+        user = _make_user(
+            email='f@x.com',
+            admission_year=2023, grade=4, semester=1,
+            graduation_year=2027, graduation_month=5,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # 자동 추정 동작했으면 0~100 사이 값 나옴 (None 반환 X)
+        self.assertGreater(res.data['graduation_progress_percent'], 0)
+
+    def test_grade_semester_없고_졸업희망도_없으면_0(self):
+        # 자동 추정조차 불가능 → graduation_date 결정 불가 → 0
+        user = _make_user(
+            email='g@x.com',
+            admission_year=2023, grade=None, semester=None,
+            graduation_year=None, graduation_month=None,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['graduation_progress_percent'], 0)
