@@ -534,7 +534,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 |------|------|---------------------|
 | department | CharField | 학과                  |
 | admission_year | IntegerField | 입학 연도               |
-| category | CharField | 전공필수/전공선택/교양필수/교양선택 |
+| category | CharField | 전공필수/전공선택/교양필수/교양선택/일반선택 |
 | required_credits | IntegerField | 필요 학점               |
 | total_required | IntegerField | 총 졸업 학점             |
 
