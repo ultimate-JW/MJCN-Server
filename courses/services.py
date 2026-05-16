@@ -172,7 +172,7 @@ def calc_graduation_progress(user):
 BONUS_INTEREST_MATCH = 20          # 사용자 관심사 카테고리 일치
 BONUS_CATEGORY_SHORT = 15          # 졸업요건상 잔여학점이 남은 카테고리에 속한 과목이면 가산
 BONUS_MAJOR_REQUIRED = 25          # 전공필수 가산
-BONUS_LIBERAL_REQUIRED = 15        # 교양필수 가산 (전공필수와 별개, 졸업 필수)
+BONUS_LIBERAL_REQUIRED = 15        # 교양필수 가산 
 BONUS_GRADE_SEMESTER_MATCH = 10    # 과목 권장 "학년/학기"가 사용자 현재 "학년/학기"와 정확히 일치
 BONUS_BACKLOG_REQUIRED = 10        # 권장 학년이 지났는데 안 들은 "전공필수/교양필수" 
 PENALTY_GRADE_EXCEEDED = 10        # 권장 학년이 사용자 학년보다 위 (상위 학년 과목)
