@@ -7,6 +7,7 @@ View / dashboard / chat 등 여러 곳에서 재사용 가능한 도메인 로�
 주요 함수:
   - _resolve_graduation_date(user)     : 졸업일 결정 (spec 5.3.4)
   - calc_graduation_progress(user)     : 졸업까지 진척도 % (spec 5.3.5)
+  - calculate_recommendation_score(...): 다음학기 추천 점수 (spec 5.3.1)
 """
 
 from datetime import date
@@ -134,24 +135,141 @@ def calc_graduation_progress(user):
 
     반환: int (0 ~ 100)
     """
+    # 입학연도 미입력 — 시작일을 정할 수 없으므로 진척도 계산 불가
     if not user.admission_year:
         return 0
 
+    # 졸업일 결정 실패 (graduation_year/month 미입력 + 자동 추정도 불가) → 분모 못 만듦
     graduation_date, _ = _resolve_graduation_date(user)
     if graduation_date is None:
         return 0
 
-    start_date = date(user.admission_year, 3, 1)
+    start_date = date(user.admission_year, 3, 1)  # 1학년 1학기 시작일 = 입학년도 3/1
     today = date.today()
 
+    # 입학 전 (admission_year 미래 입력 등) — 아직 시작 안 함
     if today <= start_date:
         return 0
+    
+    # 이미 졸업일 지남 — 100%로 고정
     if today >= graduation_date:
         return 100
 
     total_days = (graduation_date - start_date).days
+    # 시작일 == 졸업일 같은 이상 케이스 (0으로 나눔 방지)
     if total_days <= 0:
         return 0
 
     pct = round((today - start_date).days / total_days * 100)
-    return max(0, min(100, pct))
+    return max(0, min(100, pct))  # 부동소수점 반올림 보정 — 0~100 범위 강제
+
+
+# ────────────────────────────────────────
+# 5.3.1 다음학기 추천 — 점수 계산
+# ────────────────────────────────────────
+
+# 점수 가감산 상수 (CLAUDE.md 이슈 #24 참조, 튜닝 대상)
+BONUS_INTEREST_MATCH = 20          # 사용자 관심사 카테고리 일치
+BONUS_CATEGORY_SHORT = 15          # 졸업요건상 잔여학점이 남은 카테고리에 속한 과목이면 가산
+BONUS_MAJOR_REQUIRED = 25          # 전공필수 가산
+BONUS_GRADE_SEMESTER_MATCH = 10    # 과목 권장 "학년/학기"가 사용자 현재 "학년/학기"와 정확히 일치 
+BONUS_BACKLOG_REQUIRED = 10        # 권장 학년이 지났는데 안 들은 "전공필수/교양필수" 
+PENALTY_GRADE_EXCEEDED = 10        # 권장 학년이 사용자 학년보다 위 (상위 학년 과목)
+PENALTY_PREREQUISITE_MISSING = 15  # 동일 학과 학생이 선수과목을 안 들음 (타과생은 영향 없음)
+
+# 권장 학년이 지난 필수 과목 가산점 적용 대상 카테고리
+BACKLOG_REQUIRED_CATEGORIES = ('전공필수', '교양필수')
+
+# 정렬 2차 키 — 동점 시 카테고리 우선순위 (숫자낮을수록 상위)
+CATEGORY_PRIORITY = {
+    '전공필수': 1,
+    '교양필수': 2,
+    '전공선택': 3,
+    '교양선택': 4,
+    '일반선택': 5,
+}
+
+
+def calculate_recommendation_score(
+    course,
+    *,
+    user_grade,
+    user_semester,
+    user_major,
+    user_interest_categories,
+    short_categories,
+    completed_course_ids,
+    course_prerequisite_ids,
+    course_tags=None,
+):
+    """
+    한 과목에 대한 다음학기 추천 점수를 계산한다. (spec 5.3.1)
+
+    순수 함수 — DB 조회를 하지 않는다. 호출자는 사전에 다음을 빌드해 넘긴다:
+      - short_categories: 졸업요건상 잔여학점이 남은 카테고리 set
+      - completed_course_ids: 사용자가 이수 완료한 강의 ID set
+      - course_prerequisite_ids: 해당 course의 선수과목 강의 ID set
+      - course_tags: course의 관심사 태그 리스트. 모델에 Course.tags가 추가되기
+        전까지는 인자로 직접 넘긴다. None이면 빈 리스트로 처리.
+
+    인자:
+      course: Course 인스턴스 (category / year_open / semester_open / major 사용)
+      user_grade: 사용자 현재 학년 (1~4 또는 None)
+      user_semester: 사용자 현재 학기 (1, 2 또는 None)
+      user_major: 사용자 전공 문자열 (빈 문자열이면 동일 학과 판정 안 함)
+      user_interest_categories: InterestArea.category 모음 (예: {"IT/개발"})
+
+    반환: int
+
+    가감 규칙:
+      +20  관심사 매칭 (course_tags ∩ user_interest_categories 비어있지 않음)
+      +15  졸업요건 잔여 카테고리에 속함
+      +25  전공필수 카테고리
+      +10  course.year_open == user_grade AND course.semester_open == user_semester
+      +10  course.year_open < user_grade AND category ∈ {전공필수, 교양필수}
+            (밀린 필수 과목 — 졸업 지연 방지용 우선 노출)
+      -10  course.year_open > user_grade
+      -5   course.year_open == user_grade AND course.semester_open > user_semester
+      -15  user_major == course.major AND 선수과목 미이수
+    """
+    score = 100  # 기준점. 여기에 항목별 가감산
+
+    # 관심사 매칭 — 과목 태그와 사용자 관심사 카테고리에 겹치는 항목이 하나라도 있으면 가산
+    #    course_tags 자체가 비어있거나 None이면 매칭 자체가 불가능하므로 스킵
+    tags = list(course_tags) if course_tags else []
+    if tags and set(tags) & set(user_interest_categories or []):
+        score += BONUS_INTEREST_MATCH
+
+    # ② 졸업요건 부족 카테고리 — 호출자가 미리 계산한 "잔여학점 남은 카테고리 set"에 속하면 가산
+    if course.category in short_categories:
+        score += BONUS_CATEGORY_SHORT
+
+    # ③ 전공필수 가산 — 졸업의 핵심이라 단일 가산 중 가장 큼 (+25)
+    if course.category == '전공필수':
+        score += BONUS_MAJOR_REQUIRED
+
+    # ④ 학년/학기 적합성 — 사용자 학년/학기 정보가 있을 때만 판정
+    if user_grade is not None and user_semester is not None:
+        # ④-1 권장 학년/학기와 정확히 일치 → 제때 듣는 과목 → 가산
+        if course.year_open == user_grade and course.semester_open == user_semester:
+            score += BONUS_GRADE_SEMESTER_MATCH
+        # ④-2 권장 학년이 사용자보다 위 → 상위 학년 과목 → soft 감점 (수강은 가능하나 권장 안 됨)
+        if course.year_open > user_grade:
+            score -= PENALTY_GRADE_EXCEEDED
+        # ④-3 학년은 같은데 권장 학기가 더 뒤 → 한 학기 빨리 듣는 케이스 → soft 감점
+        if course.year_open == user_grade and course.semester_open > user_semester:
+            score -= PENALTY_SEMESTER_EXCEEDED
+
+    # ⑤ 밀린 필수 — 권장 학년이 이미 지났는데 전공필수/교양필수 미이수 → 우선 노출 가산
+    #    (졸업 지연 방지 목적. 일반선택/전공선택은 해당 없음)
+    if user_grade is not None and course.year_open < user_grade:
+        if course.category in BACKLOG_REQUIRED_CATEGORIES:
+            score += BONUS_BACKLOG_REQUIRED
+
+    # ⑥ 선수과목 미이수 감점 — 동일 학과 학생만 적용 (타과생은 선수과목 제한 면제 정책)
+    #    course_prerequisite_ids가 completed_course_ids의 부분집합이 아니면 미이수가 있는 것
+    if user_major and course.major and course.major == user_major:
+        if course_prerequisite_ids and not set(course_prerequisite_ids).issubset(completed_course_ids):
+            score -= PENALTY_PREREQUISITE_MISSING
+
+    return score
