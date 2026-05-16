@@ -14,7 +14,7 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, Bl
 from .authentication import blacklist_current_access_token
 from .throttles import VerifyEmailPerEmailThrottle, PasswordResetPerEmailThrottle
 
-from .models import InterestArea, CourseHistory, CurrentCourse
+from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark
 from .serializers import (
     SignupSerializer, VerifyEmailSerializer, ResendVerificationSerializer,
     LoginSerializer, LogoutSerializer, KakaoLoginSerializer,
@@ -22,6 +22,7 @@ from .serializers import (
     ProfileSerializer, ProfileUpdateSerializer, SettingsSerializer,
     InterestAreaSerializer, CourseHistorySerializer, CurrentCourseSerializer,
     WithdrawSerializer,
+    BookmarkCreateSerializer, BookmarkListSerializer,
 )
 from .services import (
     send_verification_email, verify_code,
@@ -421,3 +422,138 @@ class CurrentCourseViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+
+# ─── 6.11 북마크 ───
+
+from rest_framework.generics import ListCreateAPIView, DestroyAPIView
+from rest_framework.exceptions import NotFound
+
+from notices.models import Notice
+from information.models import Information
+
+
+class BookmarkListCreateView(ListCreateAPIView):
+    """GET /api/v1/bookmarks/ - 본인 북마크 목록 (type/source/category 필터)
+    POST /api/v1/bookmarks/ - 북마크 추가 (멱등)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return BookmarkCreateSerializer
+        return BookmarkListSerializer
+
+    # ─ GET ─
+
+    def get_queryset(self):
+        qs = Bookmark.objects.filter(user=self.request.user)
+        params = self.request.query_params
+
+        # GET 시 type 파라미터 필수 (spec 6.11 — type=notice 또는 type=information)
+        # POST는 body의 content_type을 쓰므로 이 검증 안 함
+        if self.request.method == 'GET':
+            type_param = params.get('type')
+            if not type_param:
+                raise serializers.ValidationError({'type': ['type 파라미터는 필수입니다.']})
+            if type_param not in (Bookmark.CONTENT_TYPE_NOTICE, Bookmark.CONTENT_TYPE_INFORMATION):
+                raise serializers.ValidationError({'type': [f'잘못된 type 값: {type_param!r}']})
+            qs = qs.filter(content_type=type_param)
+        else:
+            type_param = params.get('type')
+            if type_param:
+                qs = qs.filter(content_type=type_param)
+
+        # 공지 북마크 + source 필터 (spec 6.11 피그마 디자인)
+        if type_param == Bookmark.CONTENT_TYPE_NOTICE:
+            source = params.get('source')
+            if source:
+                notice_ids = Notice.objects.filter(source=source).values_list('id', flat=True)
+                qs = qs.filter(object_id__in=list(notice_ids))
+
+        # 정보 북마크 + category 필터
+        elif type_param == Bookmark.CONTENT_TYPE_INFORMATION:
+            category = params.get('category')
+            if category:
+                import json
+                needle = json.dumps(category, ensure_ascii=True)
+                info_ids = Information.objects.filter(
+                    categories__icontains=needle
+                ).values_list('id', flat=True)
+                qs = qs.filter(object_id__in=list(info_ids))
+
+        return qs
+
+    def get_serializer_context(self):
+        """N+1 회피용 — 페이지네이션된 북마크의 target 객체들을 한번에 prefetch."""
+        ctx = super().get_serializer_context()
+
+        # paginate_queryset이 호출되어야 self.paginator._page가 채워지므로,
+        # 여기서 직접 paginated_queryset 만들어서 in_bulk로 prefetch
+        page = self.paginator.page if hasattr(self, 'paginator') and getattr(self.paginator, 'page', None) else None
+        if page is None:
+            return ctx
+
+        bookmarks = list(page.object_list)
+        notice_ids = [b.object_id for b in bookmarks if b.content_type == Bookmark.CONTENT_TYPE_NOTICE]
+        info_ids = [b.object_id for b in bookmarks if b.content_type == Bookmark.CONTENT_TYPE_INFORMATION]
+
+        ctx['notice_map'] = Notice.objects.select_related('ai_result').in_bulk(notice_ids)
+        ctx['info_map'] = Information.objects.in_bulk(info_ids)
+        return ctx
+
+    def list(self, request, *args, **kwargs):
+        # 페이지네이션을 먼저 수행해서 get_serializer_context의 page를 채움
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    # ─ POST ─
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        content_type = serializer.validated_data['content_type']
+        object_id = serializer.validated_data['object_id']
+
+        # 대상 객체 존재 확인 (없으면 404 — spec 6.11 정책)
+        if content_type == Bookmark.CONTENT_TYPE_NOTICE:
+            exists = Notice.objects.filter(id=object_id).exists()
+        elif content_type == Bookmark.CONTENT_TYPE_INFORMATION:
+            exists = Information.objects.filter(id=object_id).exists()
+        else:
+            exists = False
+
+        if not exists:
+            raise NotFound(detail='북마크 대상이 존재하지 않습니다.')
+
+        # 멱등 처리 — 이미 있으면 그대로 200 반환
+        bookmark, created = Bookmark.objects.get_or_create(
+            user=request.user,
+            content_type=content_type,
+            object_id=object_id,
+        )
+        response_serializer = BookmarkCreateSerializer(bookmark)
+        return Response(
+            response_serializer.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class BookmarkDetailView(DestroyAPIView):
+    """DELETE /api/v1/bookmarks/<id>/ - 본인 북마크 삭제.
+
+    본인 소유 아닌 북마크 ID로 시도하면 404 (spec 6.11 enumeration 방어).
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = BookmarkListSerializer  # DRF 요구사항 (실제로는 안 씀)
+
+    def get_queryset(self):
+        # 본인 북마크만 조회 가능 → 다른 사용자 북마크 ID 접근 시 자동 404
+        return Bookmark.objects.filter(user=self.request.user)
+

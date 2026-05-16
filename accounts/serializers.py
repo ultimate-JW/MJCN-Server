@@ -5,7 +5,7 @@ from django.contrib.auth.password_validation import validate_password as django_
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from .models import InterestArea, CourseHistory, CurrentCourse
+from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark
 
 User = get_user_model()
 
@@ -226,3 +226,44 @@ class SettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['notification_enabled', 'notification_chat', 'notification_notice', 'notification_information']
+
+
+# ─── 북마크 ───
+
+class BookmarkCreateSerializer(serializers.ModelSerializer):
+    """POST /api/v1/bookmarks/ 요청·응답용."""
+
+    class Meta:
+        model = Bookmark
+        fields = ['id', 'content_type', 'object_id', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class BookmarkListSerializer(serializers.ModelSerializer):
+    """GET /api/v1/bookmarks/ 목록 응답용.
+
+    `target` 필드에 Notice 또는 Information 메타를 nest해서 노출.
+    뷰의 get_serializer_context()에서 'notice_map'/'info_map' 주입 필요 (N+1 회피).
+    """
+    target = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Bookmark
+        fields = ['id', 'content_type', 'object_id', 'created_at', 'target']
+
+    def get_target(self, obj):
+        # 지연 import — 순환 의존 방지
+        from notices.serializers import NoticeListSerializer
+        from information.serializers import InformationListSerializer
+
+        if obj.content_type == Bookmark.CONTENT_TYPE_NOTICE:
+            notice_map = self.context.get('notice_map', {})
+            notice = notice_map.get(obj.object_id)
+            return NoticeListSerializer(notice).data if notice else None
+
+        if obj.content_type == Bookmark.CONTENT_TYPE_INFORMATION:
+            info_map = self.context.get('info_map', {})
+            info = info_map.get(obj.object_id)
+            return InformationListSerializer(info).data if info else None
+
+        return None

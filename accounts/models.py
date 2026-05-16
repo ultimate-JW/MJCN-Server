@@ -142,3 +142,46 @@ class EmailVerification(models.Model):
 
     def __str__(self):
         return f'{self.user.email} - {self.code}'
+
+
+class Bookmark(models.Model):
+    """사용자별 공지·정보 북마크 (spec 4.x / 6.11).
+
+    content_type + object_id 조합으로 Notice 또는 Information을 참조.
+    Generic ForeignKey 안 쓰고 단순 CharField+IntegerField (spec 일치 + 의존 최소화).
+    """
+    CONTENT_TYPE_NOTICE = 'notice'
+    CONTENT_TYPE_INFORMATION = 'information'
+    CONTENT_TYPE_CHOICES = [
+        (CONTENT_TYPE_NOTICE, '공지'),
+        (CONTENT_TYPE_INFORMATION, '정보'),
+    ]
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='bookmarks',
+        verbose_name='사용자',
+    )
+    content_type = models.CharField(
+        max_length=20, choices=CONTENT_TYPE_CHOICES, verbose_name='북마크 대상 종류',
+    )
+    object_id = models.IntegerField(verbose_name='대상 객체 ID')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='북마크 시각')
+
+    class Meta:
+        verbose_name = '북마크'
+        verbose_name_plural = '북마크'
+        # 같은 사용자가 같은 항목 중복 북마크 방지 (멱등 POST 안전망)
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'content_type', 'object_id'],
+                name='unique_bookmark_per_user_target',
+            ),
+        ]
+        # GET ?type=notice + 페이지네이션 ORDER BY created_at DESC 최적화
+        indexes = [
+            models.Index(fields=['user', 'content_type', '-created_at']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user.email} - {self.content_type}:{self.object_id}'

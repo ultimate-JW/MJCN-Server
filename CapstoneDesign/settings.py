@@ -129,6 +129,14 @@ REST_FRAMEWORK = {
     },
 }
 
+# 테스트 환경에서는 DRF throttle 비활성화.
+# LocMemCache는 테스트 클래스 간에 카운터가 누적되어 무관한 테스트도 429로 떨어짐.
+# 운영 throttle은 그대로 유지되므로 보안 영향 없음.
+import sys
+if 'test' in sys.argv or 'pytest' in sys.argv[0]:
+    REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = []
+    REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] = {}
+
 # SimpleJWT
 
 SIMPLE_JWT = {
