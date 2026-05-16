@@ -23,54 +23,64 @@ from courses.models import (
 
 
 # 샘플 과목 (컴퓨터공학전공 + 교양 일부)
+# [임시 더미 데이터] tags 포함 전부 개발/테스트용.
+# 실서비스 데이터는 학교 PDF import + 별도 태깅 단계로 처리 예정 (#24 범위 밖, 별도 이슈)
 SAMPLE_COURSES = [
     {
         'course_code': 'COMP101', 'name': '프로그래밍기초',
         'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
         'category': '전공필수', 'credits': 3, 'year_open': 1, 'semester_open': 1,
         'professor': '이설하',
+        'tags': ['IT/개발'],
     },
     {
         'course_code': 'COMP102', 'name': '이산수학',
         'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
         'category': '전공필수', 'credits': 3, 'year_open': 1, 'semester_open': 2,
         'professor': '김세훈',
+        'tags': ['IT/개발', '연구/R&D'],
     },
     {
         'course_code': 'COMP201', 'name': '자료구조',
         'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
         'category': '전공필수', 'credits': 3, 'year_open': 2, 'semester_open': 1,
         'professor': '최진원',
+        'tags': ['IT/개발'],
     },
     {
         'course_code': 'COMP202', 'name': '객체지향프로그래밍',
         'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
         'category': '전공필수', 'credits': 3, 'year_open': 2, 'semester_open': 1,
         'professor': '진소은',
+        'tags': ['IT/개발'],
     },
     {
         'course_code': 'COMP301', 'name': '알고리즘',
         'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
         'category': '전공필수', 'credits': 3, 'year_open': 3, 'semester_open': 1,
         'professor': '신다예',
+        'tags': ['IT/개발', '연구/R&D'],
     },
     {
         'course_code': 'COMP302', 'name': '데이터베이스',
         'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
         'category': '전공선택', 'credits': 3, 'year_open': 3, 'semester_open': 2,
         'professor': '김윤하',
+        'tags': ['IT/개발'],
     },
     {
         'course_code': 'GEN101', 'name': '대학영어',
         'college': '교양', 'department': None, 'major': None,
         'category': '교양필수', 'credits': 2, 'year_open': 1, 'semester_open': 1,
         'professor': '카레왕',
+        'tags': [],
     },
     {
         'course_code': 'GEN102', 'name': '글쓰기',
         'college': '교양', 'department': None, 'major': None,
         'category': '교양필수', 'credits': 2, 'year_open': 1, 'semester_open': 2,
         'professor': '한로로',
+        'tags': [],
     },
 ]
 
