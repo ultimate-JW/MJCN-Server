@@ -5,14 +5,19 @@ View / dashboard / chat 등 여러 곳에서 재사용 가능한 도메인 로�
 순수 함수 모음이다. 모델 조회는 하되 DRF Request / Response에 의존하지 않는다.
 
 주요 함수:
-  - _resolve_graduation_date(user)     : 졸업일 결정 (spec 5.3.4)
-  - calc_graduation_progress(user)     : 졸업까지 진척도 % (spec 5.3.5)
-  - calculate_recommendation_score(...): 다음학기 추천 점수 (spec 5.3.1)
+  - _resolve_graduation_date(user)            : 졸업일 결정 (spec 5.3.4)
+  - calc_graduation_progress(user)            : 졸업까지 진척도 % (spec 5.3.5)
+  - calculate_recommendation_score(...)       : 다음학기 추천 점수 (spec 5.3.1)
+  - recommend_next_semester_courses(user)     : 다음학기 추천 호출자 (spec 5.3.1)
 """
 
 from datetime import date
 
-from .models import AcademicCalendar
+from .models import (
+    AcademicCalendar,
+    Course,
+    GraduationRequirement,
+)
 
 
 # ────────────────────────────────────────
@@ -273,3 +278,109 @@ def calculate_recommendation_score(
             score -= PENALTY_PREREQUISITE_MISSING
 
     return score
+
+
+def _build_short_categories(user):
+    """
+    졸업요건상 잔여학점이 남은 카테고리 set을 빌드한다.
+
+    department + admission_year 기준으로 GraduationRequirement를 조회하고,
+    CourseHistory의 카테고리별 합산 학점과 비교하여 부족분이 있는 카테고리만
+    set에 담는다. 점수 계산의 `short_categories` 인자로 그대로 사용된다.
+
+    user.major 또는 admission_year 미입력 시 빈 set 반환 → 졸업요건 가산점 0점.
+    """
+    # 졸업요건 조회 불가 — 학과 또는 입학연도 미입력
+    if not user.major or not user.admission_year:
+        return set()
+
+    requirements = GraduationRequirement.objects.filter(
+        department=user.major,
+        admission_year=user.admission_year,
+    )
+
+    # 사용자 이수이력의 카테고리별 학점 합산
+    taken_credits_by_category = {}
+    for history in user.course_histories.all():
+        taken_credits_by_category[history.category] = (
+            taken_credits_by_category.get(history.category, 0) + history.credits
+        )
+
+    # 카테고리별 필요학점 > 이수학점 인 경우만 short으로 분류
+    return {
+        req.category for req in requirements
+        if taken_credits_by_category.get(req.category, 0) < req.required_credits
+    }
+
+
+def recommend_next_semester_courses(user):
+    """
+    한 사용자에 대해 다음학기 추천 과목 리스트를 반환한다. (spec 5.3.1)
+
+    DRF Request/Response에 의존하지 않는 순수 도메인 함수. view 등 호출자가
+    User 인스턴스를 넘기면 (점수, Course) 튜플 리스트를 정렬해 반환한다.
+
+    처리 흐름:
+      1. 사용자 데이터 조회 — 수강이력 / 현재수강 / 관심사
+      2. Hard Filter — 이미 이수했거나 현재 수강 중인 course_code 제외
+      3. 졸업요건 잔여학점 분석 → 부족 카테고리 set 빌드
+      4. 후보 과목 각각에 calculate_recommendation_score 호출
+      5. 정렬 — score DESC → CATEGORY_PRIORITY ASC → course_code ASC
+      6. (score, Course) 튜플 리스트 반환
+
+    반환: list[tuple[int, Course]] — 정렬된 추천 결과 (상위가 가장 추천 강함)
+    """
+    # 사용자 관심사 카테고리 집합 — InterestArea.category 값 모음
+    user_interest_categories = set(
+        user.interests.values_list('category', flat=True)
+    )
+
+    # 이수 / 현재 수강 중 course_code 집합 (Hard Filter용)
+    taken_codes = set(
+        user.course_histories.values_list('course_code', flat=True)
+    )
+    current_codes = set(
+        user.current_courses.values_list('course_code', flat=True)
+    )
+    excluded_codes = taken_codes | current_codes
+
+    # Hard Filter — 이미 이수했거나 수강 중인 과목은 후보에서 제외
+    # prefetch_related로 선수과목 N+1 쿼리 방지
+    candidates = list(
+        Course.objects.exclude(course_code__in=excluded_codes)
+        .prefetch_related('prerequisites')
+    )
+
+    # 졸업요건 부족 카테고리 (점수 +15용)
+    short_categories = _build_short_categories(user)
+
+    # 이수 완료한 Course.id 집합 (선수과목 검사용)
+    # CourseHistory는 course_code만 저장하므로 Course.id로 변환 필요
+    completed_course_ids = set(
+        Course.objects.filter(course_code__in=taken_codes).values_list('id', flat=True)
+    )
+
+    # 후보별 점수 계산
+    scored = []
+    for course in candidates:
+        prereq_ids = {cp.prerequisite_id for cp in course.prerequisites.all()}
+        score = calculate_recommendation_score(
+            course,
+            user_grade=user.grade,
+            user_semester=user.semester,
+            user_major=user.major,
+            user_interest_categories=user_interest_categories,
+            short_categories=short_categories,
+            completed_course_ids=completed_course_ids,
+            course_prerequisite_ids=prereq_ids,
+            course_tags=course.tags,
+        )
+        scored.append((score, course))
+
+    # 정렬 — score DESC → 카테고리 우선순위 ASC → course_code ASC
+    scored.sort(key=lambda x: (
+        -x[0],
+        CATEGORY_PRIORITY.get(x[1].category, 99),
+        x[1].course_code,
+    ))
+    return scored
