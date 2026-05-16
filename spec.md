@@ -1418,10 +1418,78 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
-| POST | `/api/v1/bookmarks/` | O | 북마크 추가 |
+| POST | `/api/v1/bookmarks/` | O | 북마크 추가 (멱등) |
 | DELETE | `/api/v1/bookmarks/<id>/` | O | 북마크 삭제 |
-| GET | `/api/v1/bookmarks/?type=notice` | O | 북마크한 공지 목록 |
-| GET | `/api/v1/bookmarks/?type=information` | O | 북마크한 정보 목록 |
+| GET | `/api/v1/bookmarks/?type=notice` | O | 북마크한 공지 목록 (전체보기) |
+| GET | `/api/v1/bookmarks/?type=notice&source=academic` | O | 공지 북마크 + source 필터 |
+| GET | `/api/v1/bookmarks/?type=information` | O | 북마크한 정보 목록 (전체보기) |
+| GET | `/api/v1/bookmarks/?type=information&category=공모전` | O | 정보 북마크 + 카테고리 필터 |
+
+#### 응답 정책
+
+**POST 멱등**: 같은 `(user, content_type, object_id)` 조합으로 두 번 POST해도 새 행 생성 안 함. 1차 호출 → 201 Created, 2차 호출 → 200 OK (같은 `id` 반환). `unique_together` 제약으로 DB 1행만 유지.
+
+**없는 `object_id` POST**: Notice/Information에 해당 ID가 없으면 → **404 Not Found**.
+
+**다른 사용자 북마크 DELETE 시도**: 본인 소유 아닌 북마크 ID로 DELETE → **404 Not Found** (존재 자체 노출 방지 — enumeration 방어).
+
+**Dangling bookmark**: 북마크된 Notice/Information이 삭제됐으면 list 응답의 `target` 필드를 `null`로 반환 (행 자체는 유지).
+
+**GET `type` 파라미터 필수**: `?type=notice` 또는 `?type=information` 명시. 누락·잘못된 값 → 400 Bad Request.
+
+#### 응답 스키마 — 목록
+
+```json
+{
+  "count": 12,
+  "next": "...",
+  "previous": null,
+  "results": [
+    {
+      "id": 7,
+      "content_type": "notice",
+      "object_id": 42,
+      "created_at": "2026-05-17T10:00:00Z",
+      "target": {
+        "id": 42,
+        "source": "general",
+        "source_label": "일반공지",
+        "department": "원격교육센터",
+        "department_display": "원격교육센터",
+        "title": "[원격교육센터] 카피킬러 도입 안내",
+        "title_without_dept": "카피킬러 도입 안내",
+        "published_at": "2026-05-12T00:00:00Z",
+        "end_date": null,
+        "url": "https://www.mju.ac.kr/..."
+      }
+    }
+  ]
+}
+```
+
+- `target`은 `content_type`에 따라 Notice 또는 Information 메타 nest
+- 카드 노출에 필요한 최소 필드만 포함 (목록용 Serializer 동일)
+- 본인 북마크만 노출 (다른 사용자 것 접근 불가)
+
+#### 응답 스키마 — POST 추가 (성공)
+
+요청:
+```json
+{ "content_type": "notice", "object_id": 42 }
+```
+
+응답:
+```json
+{
+  "id": 7,
+  "content_type": "notice",
+  "object_id": 42,
+  "created_at": "2026-05-17T10:00:00Z"
+}
+```
+
+- 신규 생성 시 201 Created
+- 이미 존재하면 200 OK (같은 id 반환, 멱등)
 
 ### 6.12 테마 (themes)
 
