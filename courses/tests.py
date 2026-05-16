@@ -3,7 +3,7 @@ from datetime import date, time
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -15,6 +15,17 @@ from courses.models import (
     CoursePrerequisite,
     CourseSchedule,
     GraduationRequirement,
+)
+from courses.services import (
+    BONUS_BACKLOG_REQUIRED,
+    BONUS_CATEGORY_SHORT,
+    BONUS_GRADE_SEMESTER_MATCH,
+    BONUS_INTEREST_MATCH,
+    BONUS_LIBERAL_REQUIRED,
+    BONUS_MAJOR_REQUIRED,
+    PENALTY_GRADE_EXCEEDED,
+    PENALTY_PREREQUISITE_MISSING,
+    calculate_recommendation_score,
 )
 
 User = get_user_model()
@@ -466,91 +477,132 @@ class CompletionStatusAPITests(APITestCase):
 
 
 class NextSemesterRecommendAPITests(APITestCase):
+    """다음학기 추천 API 통합 테스트 (spec 5.3.1, 점수 기반 단일 리스트)"""
     url = '/api/v1/courses/recommend/next/'
 
     def setUp(self):
+        # 사용자: 2학년 1학기, 데이터테크놀로지전공
         self.user = _make_user()
-        # 다음 학기는 view 로직상 (현재년도, 2) 또는 (다음년도, 1)
-        # 두 케이스 모두 매칭되도록 과목을 풍부하게 생성
-        from datetime import date as _date
-        today = _date.today()
-        if self.user.semester in (1, 2):
-            self.next_year, self.next_sem = today.year, 2
-        else:
-            self.next_year, self.next_sem = today.year + 1, 1
 
-        self.prog = _make_course(
-            course_code='CSE2001', name='자료구조', category='전공필수',
-            year_open=self.next_year, semester_open=self.next_sem,
+        # 졸업요건: 전공필수 30학점 필요 → 전공필수 카테고리가 부족 카테고리에 포함됨
+        GraduationRequirement.objects.create(
+            department='데이터테크놀로지전공', admission_year=2024,
+            category='전공필수', required_credits=30, total_required=130,
         )
-        self.algo = _make_course(
+
+        # 후보 과목 4개 — 점수 분포가 갈리도록 설계
+        self.base = _make_course(
+            course_code='CSE1001', name='프로그래밍기초', category='전공필수',
+            year_open=1, semester_open=1, tags=['IT/개발'],
+        )
+        self.mid = _make_course(
+            course_code='CSE2001', name='자료구조', category='전공필수',
+            year_open=2, semester_open=1, tags=['IT/개발'],
+        )
+        self.elective = _make_course(
             course_code='CSE3001', name='알고리즘', category='전공선택',
-            year_open=self.next_year, semester_open=self.next_sem,
+            year_open=3, semester_open=1, tags=[],
         )
         self.liberal = _make_course(
             course_code='GEN1001', name='글쓰기', category='교양필수',
             department='교양', major='교양',
-            year_open=self.next_year, semester_open=self.next_sem,
+            year_open=1, semester_open=2, tags=[],
         )
 
     def test_인증_없으면_401(self):
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_응답_4개_카테고리_키(self):
+    def test_응답은_단일_리스트(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(
-            set(res.data.keys()),
-            {'major_required', 'major_elective', 'liberal_required', 'liberal_elective'},
-        )
+        self.assertIsInstance(res.data, list)
+        # setUp의 4개 과목이 모두 후보 (이수/수강 중 없음)
+        self.assertEqual(len(res.data), 4)
 
-    def test_이미_들은_과목은_제외(self):
+    def test_각_항목에_score와_과목정보가_포함됨(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        item = res.data[0]
+        for key in ('score', 'course_code', 'name', 'category', 'credits', 'professor', 'schedules'):
+            self.assertIn(key, item)
+
+    def test_score_내림차순_정렬(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        scores = [item['score'] for item in res.data]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_이미_이수한_과목은_Hard_Filter로_제외(self):
         CourseHistory.objects.create(
             user=self.user, course_name='자료구조', course_code='CSE2001',
             year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
         )
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
-        names = [c['name'] for c in res.data['major_required']]
-        self.assertNotIn('자료구조', names)
+        codes = {item['course_code'] for item in res.data}
+        self.assertNotIn('CSE2001', codes)
 
-    def test_현재_수강중인_과목도_제외(self):
+    def test_현재_수강중인_과목도_Hard_Filter로_제외(self):
         CurrentCourse.objects.create(
             user=self.user, course_name='자료구조', course_code='CSE2001',
             day_of_week='월', start_time=time(9, 0), end_time=time(10, 30),
         )
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
-        names = [c['name'] for c in res.data['major_required']]
-        self.assertNotIn('자료구조', names)
+        codes = {item['course_code'] for item in res.data}
+        self.assertNotIn('CSE2001', codes)
 
-    def test_선수과목_미이수면_제외(self):
-        base = _make_course(
-            course_code='CSE1001', name='프로그래밍기초', category='전공필수',
-            year_open=1, semester_open=1,
-        )
-        CoursePrerequisite.objects.create(course=self.prog, prerequisite=base)
+    def test_선수과목_미이수는_제외하지_않고_Soft_감점만(self):
+        """spec 5.3.1: 동일 학과 + 선수과목 미이수는 Hard Filter 아닌 Soft 감점 (-15)"""
+        CoursePrerequisite.objects.create(course=self.mid, prerequisite=self.base)
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
-        names = [c['name'] for c in res.data['major_required']]
-        self.assertNotIn('자료구조', names)
+        codes = {item['course_code'] for item in res.data}
+        # 자료구조(CSE2001) 여전히 후보에 포함됨
+        self.assertIn('CSE2001', codes)
 
-    def test_선수과목_이수했으면_포함(self):
-        base = _make_course(
-            course_code='CSE1001', name='프로그래밍기초', category='전공필수',
-            year_open=1, semester_open=1,
-        )
-        CoursePrerequisite.objects.create(course=self.prog, prerequisite=base)
-        CourseHistory.objects.create(
-            user=self.user, course_name='프로그래밍기초', course_code='CSE1001',
-            year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+    def test_관심사_매칭_과목이_상위에_노출(self):
+        """관심사 IT/개발 → IT/개발 태그 과목이 비태그 과목보다 위"""
+        self.user.interests.create(category='IT/개발')
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        # CSE2001(2-1 전공필수, IT/개발 태그)이 GEN1001(1-2 교양필수, 태그X)보다 위
+        codes_ordered = [item['course_code'] for item in res.data]
+        self.assertLess(codes_ordered.index('CSE2001'), codes_ordered.index('GEN1001'))
+
+    def test_상위_학년_과목도_결과에_포함되되_하단(self):
+        """학년 초과는 Hard Filter 아닌 Soft 감점 — 후보엔 들어가지만 점수 낮음"""
+        adv = _make_course(
+            course_code='CSE4001', name='고급주제', category='전공선택',
+            year_open=4, semester_open=2, tags=[],
         )
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
-        names = [c['name'] for c in res.data['major_required']]
-        self.assertIn('자료구조', names)
+        codes = [item['course_code'] for item in res.data]
+        self.assertIn('CSE4001', codes)
+        # CSE4001 점수가 CSE2001(2-1 전공필수)보다 낮아야 함
+        adv_score = next(i['score'] for i in res.data if i['course_code'] == 'CSE4001')
+        mid_score = next(i['score'] for i in res.data if i['course_code'] == 'CSE2001')
+        self.assertLess(adv_score, mid_score)
+
+    def test_동점일때_카테고리_우선순위로_정렬(self):
+        """spec 5.3.1: score DESC → CATEGORY_PRIORITY ASC → course_code ASC"""
+        # GEN1001(교양필수, 1-2)과 비교군 동점 만들기 — 같은 조건의 전공필수 추가
+        same_score_major = _make_course(
+            course_code='CSE0001', name='입문과목', category='전공필수',
+            year_open=1, semester_open=2, tags=[],
+        )
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        # 같은 점수면 전공필수가 교양필수보다 위 (CATEGORY_PRIORITY: 전필=1 < 교필=2)
+        ordered = [item['course_code'] for item in res.data]
+        if 'CSE0001' in ordered and 'GEN1001' in ordered:
+            cse_score = next(i['score'] for i in res.data if i['course_code'] == 'CSE0001')
+            gen_score = next(i['score'] for i in res.data if i['course_code'] == 'GEN1001')
+            if cse_score == gen_score:
+                self.assertLess(ordered.index('CSE0001'), ordered.index('GEN1001'))
 
 
 class CurriculumRecommendAPITests(APITestCase):
@@ -684,3 +736,131 @@ class GraduationProgressAPITests(APITestCase):
         self.client.force_authenticate(user=user)
         res = self.client.get(self.url)
         self.assertEqual(res.data['graduation_progress_percent'], 0)
+
+
+# ===== 점수 계산 함수 단위 테스트 (spec 5.3.1, DB 안 띄움) =====
+
+class CalculateScoreTests(SimpleTestCase):
+    """`calculate_recommendation_score`의 분기별 가감 검증.
+
+    Course는 ORM 인스턴스만 만들고 save() 안 함 → DB 의존 없음.
+    `_score` 헬퍼의 기본값은 모든 분기를 미발동시켜 100점이 나오도록 설계됨.
+    각 테스트는 하나의 분기만 발동시켜 그 항목의 가감산만 검증한다.
+    """
+
+    def _course(self, **kwargs):
+        defaults = dict(
+            course_code='TEST001',
+            name='테스트과목',
+            category='전공선택',
+            year_open=1,
+            semester_open=2,
+            major='기타전공',
+        )
+        defaults.update(kwargs)
+        return Course(**defaults)
+
+    def _score(self, course, **overrides):
+        """기본 baseline — 사용자 2학년 1학기, 컴공.
+        course 기본(전공선택 1-2, 타과)과 합쳐서 모든 분기 미발동 → 100점."""
+        defaults = dict(
+            user_grade=2,
+            user_semester=1,
+            user_major='컴퓨터공학전공',
+            user_interest_categories=set(),
+            short_categories=set(),
+            completed_course_ids=set(),
+            course_prerequisite_ids=set(),
+            course_tags=[],
+        )
+        defaults.update(overrides)
+        return calculate_recommendation_score(course, **defaults)
+
+    def test_baseline은_100점(self):
+        self.assertEqual(self._score(self._course()), 100)
+
+    def test_관심사_매칭시_BONUS_INTEREST_MATCH_가산(self):
+        course = self._course()
+        score = self._score(
+            course,
+            user_interest_categories={'IT/개발'},
+            course_tags=['IT/개발'],
+        )
+        self.assertEqual(score, 100 + BONUS_INTEREST_MATCH)
+
+    def test_졸업요건_부족_카테고리면_BONUS_CATEGORY_SHORT_가산(self):
+        course = self._course(category='전공선택')
+        score = self._score(course, short_categories={'전공선택'})
+        self.assertEqual(score, 100 + BONUS_CATEGORY_SHORT)
+
+    def test_전공필수면_BONUS_MAJOR_REQUIRED_가산(self):
+        # 다른 분기 회피 위해 year_open=2, semester_open=2 (학년 같음, 학기 다름)
+        course = self._course(category='전공필수', year_open=2, semester_open=2)
+        score = self._score(course)
+        self.assertEqual(score, 100 + BONUS_MAJOR_REQUIRED)
+
+    def test_교양필수면_BONUS_LIBERAL_REQUIRED_가산(self):
+        course = self._course(category='교양필수', year_open=2, semester_open=2)
+        score = self._score(course)
+        self.assertEqual(score, 100 + BONUS_LIBERAL_REQUIRED)
+
+    def test_학년_학기_정확히_일치시_BONUS_GRADE_SEMESTER_MATCH_가산(self):
+        course = self._course(category='전공선택', year_open=2, semester_open=1)
+        score = self._score(course)
+        self.assertEqual(score, 100 + BONUS_GRADE_SEMESTER_MATCH)
+
+    def test_권장_학년_초과시_PENALTY_GRADE_EXCEEDED_감점(self):
+        # user 2-1, course 4-1 → 권장 학년 > 사용자 학년 → -10
+        course = self._course(category='전공선택', year_open=4, semester_open=1)
+        score = self._score(course)
+        self.assertEqual(score, 100 - PENALTY_GRADE_EXCEEDED)
+
+    def test_밀린_전공필수면_BACKLOG_가산_포함(self):
+        # course 1-1, user 2-1 → 권장 학년 < 사용자 + 전필 → BACKLOG +10
+        # 전공필수 자체 가산 +25도 함께 발동
+        course = self._course(category='전공필수', year_open=1, semester_open=1)
+        score = self._score(course)
+        self.assertEqual(score, 100 + BONUS_MAJOR_REQUIRED + BONUS_BACKLOG_REQUIRED)
+
+    def test_밀린_교양필수면_BACKLOG_가산_포함(self):
+        # 교양필수 자체 가산 +15도 함께 발동
+        course = self._course(category='교양필수', year_open=1, semester_open=1)
+        score = self._score(course)
+        self.assertEqual(score, 100 + BONUS_LIBERAL_REQUIRED + BONUS_BACKLOG_REQUIRED)
+
+    def test_밀린_전공선택은_BACKLOG_가산_안받음(self):
+        """BACKLOG_REQUIRED_CATEGORIES = ('전공필수','교양필수') — 선택과목은 제외"""
+        course = self._course(category='전공선택', year_open=1, semester_open=1)
+        score = self._score(course)
+        self.assertEqual(score, 100)
+
+    def test_동일학과_선수과목_미이수시_PENALTY_PREREQUISITE_MISSING_감점(self):
+        course = self._course(category='전공선택', major='컴퓨터공학전공')
+        score = self._score(
+            course,
+            user_major='컴퓨터공학전공',
+            course_prerequisite_ids={101},  # 선수과목 있음
+            completed_course_ids=set(),     # 미이수
+        )
+        self.assertEqual(score, 100 - PENALTY_PREREQUISITE_MISSING)
+
+    def test_동일학과_선수과목_이수했으면_감점_없음(self):
+        course = self._course(category='전공선택', major='컴퓨터공학전공')
+        score = self._score(
+            course,
+            user_major='컴퓨터공학전공',
+            course_prerequisite_ids={101},
+            completed_course_ids={101},  # 이수 완료
+        )
+        self.assertEqual(score, 100)
+
+    def test_타과생은_선수과목_미이수여도_감점_없음(self):
+        """spec 5.3.1 정책: 타과생은 선수과목 제한 면제"""
+        course = self._course(category='전공선택', major='컴퓨터공학전공')
+        score = self._score(
+            course,
+            user_major='국문학과',  # 타과
+            course_prerequisite_ids={101},
+            completed_course_ids=set(),
+        )
+        self.assertEqual(score, 100)
