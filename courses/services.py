@@ -345,10 +345,10 @@ def recommend_next_semester_courses(user):
     excluded_codes = taken_codes | current_codes
 
     # Hard Filter — 이미 이수했거나 수강 중인 과목은 후보에서 제외
-    # prefetch_related로 선수과목 N+1 쿼리 방지
+    # prefetch_related로 선수과목 + 시간표 N+1 쿼리 방지 (view에서 schedules 직렬화)
     candidates = list(
         Course.objects.exclude(course_code__in=excluded_codes)
-        .prefetch_related('prerequisites')
+        .prefetch_related('prerequisites', 'schedules')
     )
 
     # 졸업요건 부족 카테고리 (점수 +15용)
