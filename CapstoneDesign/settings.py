@@ -189,6 +189,17 @@ OPENAI_MAX_RETRIES = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
 # VLM 전처리(spec 9.1.6): 한 공지당 VLM에 보낼 이미지 최대 장수
 OPENAI_VLM_MAX_IMAGES = int(os.getenv('OPENAI_VLM_MAX_IMAGES', '5'))
 
+# 카카오 OAuth (spec 5.1.3 / 6.1)
+#
+# REST API 키와 Redirect URI는 카카오 개발자 콘솔(developers.kakao.com)에서 발급/등록.
+# REDIRECT_URI는 콘솔 등록값과 정확히 일치해야 함 (trailing slash·http/https 포함).
+
+KAKAO_REST_API_KEY = os.getenv('KAKAO_REST_API_KEY', '')
+KAKAO_CLIENT_SECRET = os.getenv('KAKAO_CLIENT_SECRET', '')
+KAKAO_REDIRECT_URI = os.getenv('KAKAO_REDIRECT_URI', '')
+KAKAO_REQUEST_TIMEOUT = int(os.getenv('KAKAO_REQUEST_TIMEOUT', '10'))
+
+
 # Email
 
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
