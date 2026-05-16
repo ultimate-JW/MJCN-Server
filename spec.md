@@ -839,11 +839,23 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 - 이메일 미인증 사용자 로그인 시도 시 → "이메일 인증을 완료해주세요" 안내 + 인증 메일 재발송 유도
 
 **카카오 로그인**
-- 카카오톡 OAuth2 인증을 통한 소셜 로그인
-- 프론트에서 카카오 SDK로 인가 코드 획득 → 백엔드에 전달 → 카카오 API로 사용자 정보 조회
-- 최초 로그인 시 자동 회원가입 처리 (이메일, 카카오 고유 ID 저장) → 온보딩 플로우로 이동
-- 기존 회원인 경우 JWT 토큰 발급 후 메인 화면으로 이동
-- 카카오 계정 이메일과 기존 이메일 가입 계정이 동일한 경우 계정 연동 처리
+- 카카오톡 OAuth2 인증을 통한 소셜 로그인 (Authorization Code Grant)
+- 프론트에서 카카오 SDK로 인가 코드 획득 → 백엔드에 `authorization_code` 전달
+- 백엔드 처리 4단계:
+  1. `code` → `access_token` 교환 (`https://kauth.kakao.com/oauth/token`)
+  2. `access_token`으로 카카오 사용자 정보 조회 (`https://kapi.kakao.com/v2/user/me`)
+  3. `kakao_id` 기준 `User.objects.get_or_create()` 분기
+     - **신규**: `User` 생성 + `set_unusable_password()` + `is_email_verified=True` + 닉네임·이메일(있으면) 저장 → 온보딩 플로우(`is_onboarding_completed=False`)
+     - **기존**: 그대로 사용 (재로그인)
+  4. SimpleJWT 토큰 발급 → `{access, refresh, is_new_user, user}` 응답
+- 카카오 계정 이메일과 기존 이메일 가입 계정이 동일한 경우 계정 연동 처리 (`kakao_id`만 추가)
+- 이메일 동의 거부 케이스: `kakao_account.email`이 응답에 없으면 `email=''`로 저장 (placeholder), 추후 설정 화면에서 이메일 등록 유도
+- 카카오 전용 계정 식별: `kakao_id IS NOT NULL AND password starts with '!'` (Django `set_unusable_password()` sentinel)
+- 카카오 토큰(access·refresh)은 저장하지 않음 — 사용자 정보 1회 조회 후 폐기 (우리 서비스 JWT만 발급)
+- **환경변수** (`.env`):
+  - `KAKAO_REST_API_KEY` (필수)
+  - `KAKAO_CLIENT_SECRET` (권장, 콘솔에서 발급 시)
+  - `KAKAO_REDIRECT_URI` (콘솔 등록값과 정확히 동일)
 
 **로그아웃**
 - refresh 토큰 무효화 (토큰 소유자와 요청자 일치 검증 후 블랙리스트)
@@ -1230,12 +1242,55 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | POST | `/api/v1/accounts/verify-email/` | X | 이메일 인증 (인증 코드 검증) | `{email, code}` |
 | POST | `/api/v1/accounts/verify-email/resend/` | X | 인증 코드 재발송 | `{email}` |
 | POST | `/api/v1/accounts/login/` | X | 로그인 (JWT 발급) | `{email, password}` |
-| POST | `/api/v1/accounts/login/kakao/` | X | 카카오 로그인 | `{authorization_code}` |
+| POST | `/api/v1/accounts/login/kakao/` | X | 카카오 로그인 (신규/기존 분기) | `{authorization_code}` |
 | POST | `/api/v1/accounts/token/refresh/` | X | 토큰 갱신 | `{refresh}` |
 | POST | `/api/v1/accounts/logout/` | O | 로그아웃 (refresh + access 무효화) | `{refresh}` |
 | POST | `/api/v1/accounts/password/reset/` | X | 비밀번호 재설정 인증 코드 발송 | `{email}` |
 | POST | `/api/v1/accounts/password/reset/verify/` | X | 인증 코드 검증 | `{email, code}` |
 | POST | `/api/v1/accounts/password/reset/confirm/` | X | 새 비밀번호 설정 | `{email, code, new_password}` |
+
+#### 카카오 로그인 응답 스키마
+
+요청:
+```json
+{ "authorization_code": "abc123..." }
+```
+
+성공 응답 (200 OK) — 신규 가입:
+```json
+{
+  "access": "<JWT access token>",
+  "refresh": "<JWT refresh token>",
+  "is_new_user": true,
+  "user": {
+    "id": 42,
+    "email": "user@kakao.com",
+    "name": "홍길동",
+    "is_email_verified": true,
+    "is_onboarding_completed": false
+  }
+}
+```
+
+성공 응답 (200 OK) — 기존 사용자 재로그인:
+```json
+{
+  "access": "...",
+  "refresh": "...",
+  "is_new_user": false,
+  "user": { "...": "..." }
+}
+```
+
+오류 응답:
+- `400 Bad Request` — `authorization_code` 누락/형식 오류
+- `401 Unauthorized` — 카카오 token 교환 실패 (만료된 code, redirect_uri 불일치 등)
+- `502 Bad Gateway` — 카카오 API 호출 자체가 실패 (네트워크/카카오 측 장애)
+
+엣지 케이스:
+- 이메일 동의 거부: `user.email = ''` 로 저장, 프론트는 `is_new_user && !email` 조건으로 이메일 등록 화면 노출
+- 이메일 중복: 동일 이메일의 기존 일반 가입 계정이 있으면 → 기존 계정에 `kakao_id` 추가 (계정 연동)
+- 재로그인: `is_new_user=false` + `is_onboarding_completed`에 따라 메인/온보딩 분기
 
 
 ### 6.2 프로필 / 설정 (accounts)
@@ -1917,6 +1972,10 @@ Notice.extracted_content에 추출 텍스트 저장
 3. **환경변수 관리** - `python-dotenv` 또는 `django-environ` 도입
    - 필수 키: `SECRET_KEY`, `DEBUG`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`
    - AI 파이프라인: `OPENAI_API_KEY` (필수), `OPENAI_MODEL` (선택, 기본 `gpt-4o-mini`)
+   - 카카오 로그인 (spec 5.1.3):
+     - `KAKAO_REST_API_KEY` (필수, 카카오 콘솔 "앱 키" 화면의 REST API 키)
+     - `KAKAO_CLIENT_SECRET` (권장, 콘솔 "보안" 또는 "고급" 메뉴에서 발급)
+     - `KAKAO_REDIRECT_URI` (필수, 콘솔 등록값과 정확히 일치 — trailing slash·http/https 포함)
 4. **LANGUAGE_CODE / TIME_ZONE** - `ko-kr`, `Asia/Seoul`로 변경
 5. **`.gitignore`** - `.env`, `db.sqlite3`, `media/`, `__pycache__/` 등
 6. **requirements.txt 핵심 패키지**:
