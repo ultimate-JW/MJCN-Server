@@ -23,7 +23,10 @@ from .serializers import (
     InterestAreaSerializer, CourseHistorySerializer, CurrentCourseSerializer,
     WithdrawSerializer,
 )
-from .services import send_verification_email, verify_code
+from .services import (
+    send_verification_email, verify_code,
+    KakaoOAuthError, exchange_kakao_token, fetch_kakao_user, extract_kakao_profile,
+)
 
 User = get_user_model()
 
@@ -145,10 +148,92 @@ def login_view(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def kakao_login(request):
+    """카카오 OAuth 로그인 (spec 5.1.3 / 6.1).
+
+    플로우:
+      1. authorization_code → 카카오 access_token 교환
+      2. access_token → 카카오 사용자 정보 조회
+      3. kakao_id 기준 User get_or_create (신규/기존 분기)
+         - 이메일 중복 시 기존 계정에 kakao_id 연동
+         - 신규는 set_unusable_password + is_email_verified=True
+      4. SimpleJWT 발급 후 {access, refresh, is_new_user, user} 응답
+    """
     serializer = KakaoLoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    # TODO: 카카오 OAuth2 연동 구현
-    return Response({'detail': '카카오 로그인은 아직 구현되지 않았습니다.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+    code = serializer.validated_data['authorization_code']
+
+    # 1~2. 카카오 API 호출
+    try:
+        token_data = exchange_kakao_token(code)
+        user_info = fetch_kakao_user(token_data['access_token'])
+    except KakaoOAuthError as e:
+        if e.kind == 'upstream':
+            return Response(
+                {'detail': '카카오 인증 서버와 통신할 수 없습니다.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        # invalid_code, malformed 등은 클라이언트 측 문제로 처리
+        return Response(
+            {'detail': '카카오 인증에 실패했습니다.'},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    profile = extract_kakao_profile(user_info)
+    kakao_id = profile['kakao_id']
+
+    # 3. User get_or_create (kakao_id 우선, 이메일 중복 시 연동)
+    is_new_user = False
+    user = User.objects.filter(kakao_id=kakao_id).first()
+    if user is None:
+        # kakao_id 매칭 없음 → 이메일로 기존 계정 확인 (계정 연동)
+        existing_by_email = None
+        if profile['email']:
+            existing_by_email = User.objects.filter(
+                email__iexact=profile['email']
+            ).first()
+
+        if existing_by_email and not existing_by_email.kakao_id:
+            # 기존 이메일 가입 계정 + 카카오 미연동 → 연동
+            existing_by_email.kakao_id = kakao_id
+            existing_by_email.save(update_fields=['kakao_id'])
+            user = existing_by_email
+        else:
+            # 진짜 신규 가입
+            try:
+                with transaction.atomic():
+                    user = User.objects.create(
+                        email=profile['email'],
+                        name=profile['name'],
+                        kakao_id=kakao_id,
+                        is_email_verified=True,  # 카카오 인증 거침
+                        is_onboarding_completed=False,  # 온보딩 플로우로 유도
+                    )
+                    user.set_unusable_password()
+                    user.save(update_fields=['password'])
+            except IntegrityError:
+                # 동시 가입 경쟁 — 다시 조회
+                user = User.objects.filter(kakao_id=kakao_id).first()
+                if user is None:
+                    return Response(
+                        {'detail': '회원 생성 중 오류가 발생했습니다.'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+            is_new_user = True
+
+    # 4. JWT 발급
+    refresh = RefreshToken.for_user(user)
+    return Response({
+        'access': str(refresh.access_token),
+        'refresh': str(refresh),
+        'is_new_user': is_new_user,
+        'user': {
+            'id': user.id,
+            'email': user.email,
+            'name': user.name,
+            'is_email_verified': user.is_email_verified,
+            'is_onboarding_completed': user.is_onboarding_completed,
+        },
+    })
 
 
 @api_view(['POST'])
