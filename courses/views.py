@@ -14,7 +14,7 @@ from .serializers import (
     CurriculumPlanSerializer,
     NextSemesterRecommendationSerializer,
 )
-from .services import calc_graduation_progress
+from .services import calc_graduation_progress, recommend_next_semester_courses
 
 
 # 과목 검색
@@ -148,63 +148,38 @@ class GraduationProgressView(APIView):
 
 # 다음학기 추천
 class NextSemesterRecommendView(APIView):
-    """GET /api/v1/courses/recommend/next/ - 다음학기 수강과목 추천"""
+    """
+    GET /api/v1/courses/recommend/next/ - 다음학기 수강과목 추천 (spec 5.3.1)
+
+    spec 5.3.1 규칙 기반 점수 알고리즘으로 정렬된 단일 리스트 응답.
+    Hard Filter(이수/수강 중)는 services에서 처리, Soft Constraint는 점수에 반영.
+
+    TODO(별도 이슈): 학교 PDF로 받은 "다음 학기 실제 개설 과목" 정보가 DB에
+    들어오면 후보를 그 학기 개설분으로 한정하고 본 view에 학기 인자(쿼리 파라미터)
+    노출. 지금은 시드/임시 데이터 기반이라 학기 적합성은 점수로만 반영.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = request.user
+        # services 레이어에서 점수 계산 + 정렬까지 마친 (score, Course) 튜플 리스트
+        results = recommend_next_semester_courses(request.user)
 
-        from accounts.models import CourseHistory, CurrentCourse
+        # 응답 dict 변환 — Course 객체는 schedules가 prefetch된 상태
+        items = [
+            {
+                'score': score,
+                'course_code': course.course_code,
+                'name': course.name,
+                'category': course.category,
+                'credits': course.credits,
+                'professor': course.professor,
+                'schedules': list(course.schedules.all()),
+            }
+            for score, course in results
+        ]
 
-        completed_names = set(
-            CourseHistory.objects.filter(user=user).values_list('course_name', flat=True)
-        )
-        current_names = set(
-            CurrentCourse.objects.filter(user=user).values_list('course_name', flat=True)
-        )
-        taken_names = completed_names | current_names
-
-        next_year, next_semester = self._next_semester(user.semester)
-
-        # 해당 전공 + 교양 과목 중 미이수 과목
-        candidates = Course.objects.filter(
-            Q(major=user.major) | Q(category__in=['교양필수', '교양선택']),
-            year_open=next_year,
-            semester_open=next_semester,
-        ).prefetch_related('schedules').exclude(name__in=taken_names)
-
-        # 선수과목 미이수 과목 제외
-        filtered = []
-        for course in candidates:
-            prereq_names = set(
-                CoursePrerequisite.objects.filter(course=course)
-                .values_list('prerequisite__name', flat=True)
-            )
-            if prereq_names.issubset(completed_names):
-                filtered.append(course)
-
-        # 카테고리별 분류
-        category_map = {
-            '전공필수': 'major_required',
-            '전공선택': 'major_elective',
-            '교양필수': 'liberal_required',
-            '교양선택': 'liberal_elective',
-        }
-        result = {v: [] for v in category_map.values()}
-
-        for course in filtered:
-            key = category_map.get(course.category)
-            if key:
-                result[key].append(_serialize_course(course))
-
-        serializer = NextSemesterRecommendationSerializer(result)
+        serializer = NextSemesterRecommendationSerializer(items, many=True)
         return Response(serializer.data)
-
-    def _next_semester(self, current_semester):
-        current_year = date.today().year
-        if current_semester in (1, 2):
-            return current_year, 2
-        return current_year + 1, 1
 
 
 # 졸업까지 전체 커리큘럼 추천

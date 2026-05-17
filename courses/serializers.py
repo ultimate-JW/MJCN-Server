@@ -93,10 +93,18 @@ class RecommendedCourseSerializer(serializers.Serializer):
 
 
 class NextSemesterRecommendationSerializer(serializers.Serializer):
-    major_required = RecommendedCourseSerializer(many=True)
-    major_elective = RecommendedCourseSerializer(many=True)
-    liberal_required = RecommendedCourseSerializer(many=True)
-    liberal_elective = RecommendedCourseSerializer(many=True)
+    """다음학기 추천 한 과목 응답 (spec 5.3.1).
+
+    View에서 many=True로 호출되어 점수 내림차순 정렬된 리스트를 직렬화한다.
+    `score`는 디버깅·튜닝 시 우선순위 검증용으로 함께 노출한다.
+    """
+    score = serializers.IntegerField()
+    course_code = serializers.CharField()
+    name = serializers.CharField()
+    category = serializers.CharField()
+    credits = serializers.IntegerField()
+    professor = serializers.CharField()
+    schedules = CourseScheduleSerializer(many=True)
 
 
 class SemesterPlanSerializer(serializers.Serializer):

@@ -19,6 +19,7 @@ class Course(models.Model):
     year_open = models.IntegerField()
     semester_open = models.IntegerField()
     professor = models.CharField(max_length=50, blank=True, default='')
+    tags = models.JSONField(default=list, blank=True)  # 관심사 매칭용 태그 (옵션 A, spec 5.3.1)
 
     class Meta:
         db_table = 'courses_course'
