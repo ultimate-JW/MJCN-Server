@@ -459,13 +459,13 @@ def _remaining_regular_semesters(user):
 def generate_curriculum_plans(
     user,
     *,
-    max_credits=DEFAULT_MAX_CREDITS,
-    category_weights=None,
-    interest_weight=DEFAULT_INTEREST_WEIGHT,
-    include_summer=False,
+    max_credits=DEFAULT_MAX_CREDITS,  # 한 학기 최대 학점 (예: 18, 21)
+    category_weights=None,            # 카테고리별 가중치 (예: 교양 더 듣고싶으면 {"교양선택": 1.5})
+    interest_weight=DEFAULT_INTEREST_WEIGHT, # 관심사 매칭 가중치
+    include_summer=False,             # 계절학기 포함 여부
     include_winter=False,
-    num_plans=DEFAULT_NUM_PLANS,
-):
+    num_plans=DEFAULT_NUM_PLANS,      # 만들 plan 개수
+):  
     """졸업까지 학기별 추천 커리큘럼을 2~5안 반환한다 (spec 5.3.2, #25).
 
     학기 매핑: semester_open=1/2 정규, =3 하계, =4 동계.

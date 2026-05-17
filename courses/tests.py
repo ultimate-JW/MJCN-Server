@@ -606,42 +606,197 @@ class NextSemesterRecommendAPITests(APITestCase):
 
 
 class CurriculumRecommendAPITests(APITestCase):
+    """전체 커리큘럼 추천 API 통합 테스트 (spec 5.3.2, #25).
+
+    POST + body 노브 (max_credits / category_weights / interest_weight /
+    include_summer / include_winter / num_plans) 기반. 응답은
+    {plans: [...], note?: 'insufficient_data'} 구조. 학기는 4 카테고리 키 분리.
+    """
     url = '/api/v1/courses/recommend/curriculum/'
 
-    def setUp(self):
-        self.user = _make_user()
-        GraduationRequirement.objects.create(
-            department='데이터테크놀로지전공', admission_year=2024,
-            category='전공필수', required_credits=9, total_required=12,
-        )
-        _make_course(course_code='CSE1001', name='프로그래밍기초', category='전공필수',
-                     year_open=1, semester_open=1)
-        _make_course(course_code='CSE2001', name='자료구조', category='전공필수',
-                     year_open=2, semester_open=1)
-        _make_course(course_code='CSE3001', name='알고리즘', category='전공필수',
-                     year_open=3, semester_open=1)
+    # 4 카테고리 응답 키
+    CAT_KEYS = ('major_required', 'major_elective', 'liberal_required', 'liberal_elective')
 
+    def setUp(self):
+        # 사용자: 2학년 2학기, 데이터테크놀로지전공 (graduation 2027.8)
+        self.user = _make_user()
+
+        # 졸업요건 — 4 카테고리 모두 부족하도록 설정
+        for cat, req in [('전공필수', 12), ('전공선택', 8), ('교양필수', 6), ('교양선택', 4)]:
+            GraduationRequirement.objects.create(
+                department='데이터테크놀로지전공', admission_year=2024,
+                category=cat, required_credits=req, total_required=40,
+            )
+
+        # 후보 과목 — 학기/카테고리/학점 다양하게 풍성히 (변형 plan dedupe 회피용)
+        # 1학기 (semester_open=1)
+        _make_course(course_code='CSE2001', name='자료구조', category='전공필수',
+                     year_open=2, semester_open=1, credits=3, tags=['IT/개발'])
+        _make_course(course_code='CSE2003', name='운영체제', category='전공필수',
+                     year_open=2, semester_open=1, credits=3, tags=['IT/개발'])
+        _make_course(course_code='CSE3001', name='알고리즘', category='전공필수',
+                     year_open=3, semester_open=1, credits=3, tags=['IT/개발'])
+        _make_course(course_code='CSE3005', name='데이터베이스', category='전공선택',
+                     year_open=3, semester_open=1, credits=3, tags=['IT/개발'])
+        _make_course(course_code='GEN1001', name='글쓰기', category='교양필수',
+                     department='교양', major='교양',
+                     year_open=1, semester_open=1, credits=2, tags=[])
+        _make_course(course_code='GEN1003', name='교양영어', category='교양선택',
+                     department='교양', major='교양',
+                     year_open=1, semester_open=1, credits=2, tags=[])
+        # 2학기 (semester_open=2)
+        _make_course(course_code='CSE2002', name='이산수학', category='전공필수',
+                     year_open=2, semester_open=2, credits=3, tags=['IT/개발'])
+        _make_course(course_code='CSE3002', name='컴퓨터구조', category='전공필수',
+                     year_open=3, semester_open=2, credits=3, tags=['IT/개발'])
+        _make_course(course_code='CSE3006', name='네트워크', category='전공선택',
+                     year_open=3, semester_open=2, credits=3, tags=['IT/개발'])
+        _make_course(course_code='GEN1002', name='발표와토론', category='교양필수',
+                     department='교양', major='교양',
+                     year_open=1, semester_open=2, credits=2, tags=[])
+
+    # ── 헬퍼 ──
+    def _all_course_codes(self, plans):
+        """plan 묶음 안의 모든 추천 과목 course_code set."""
+        codes = set()
+        for plan in plans:
+            for semester in plan['semesters']:
+                for key in self.CAT_KEYS:
+                    for c in semester.get(key, []):
+                        codes.add(c['course_code'])
+        return codes
+
+    def _post(self, **body):
+        self.client.force_authenticate(user=self.user)
+        return self.client.post(self.url, body, format='json')
+
+    # ── 기본 동작 ──
     def test_인증_없으면_401(self):
-        res = self.client.get(self.url)
+        res = self.client.post(self.url, {}, format='json')
         self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_플랜_배열_반환(self):
+    def test_GET은_405_POST_전용(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertIsInstance(res.data, list)
-        self.assertGreater(len(res.data), 0)
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
-    def test_각_플랜은_plan_number와_semesters를_가짐(self):
-        self.client.force_authenticate(user=self.user)
-        res = self.client.get(self.url)
-        for plan in res.data:
-            self.assertIn('plan_number', plan)
-            self.assertIn('semesters', plan)
+    def test_plans_키로_응답_감쌈(self):
+        res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('plans', res.data)
+        self.assertIsInstance(res.data['plans'], list)
+
+    # ── #25 핵심 5 케이스 ──
+
+    def test_plan_개수_2_5_범위(self):
+        """spec: 최소 2안 이상, 최대 5안 이하. 데이터 부족 시 note 동반 1안 허용 (#25)"""
+        res = self._post(num_plans=5)
+        plans = res.data['plans']
+        if 'note' in res.data:                  # fallback 동반이면 1안도 OK
+            self.assertGreaterEqual(len(plans), 1)
+        else:
+            self.assertGreaterEqual(len(plans), 2)
+        self.assertLessEqual(len(plans), 5)
+
+    def test_plan들이_서로_다른지(self):
+        """변형 plan은 학기-과목 시그니처가 서로 달라야 함 (가짜 복제 X, #25)"""
+        res = self._post(num_plans=5)
+        plans = res.data['plans']
+        if len(plans) < 2:
+            self.skipTest('plan이 충분히 생성되지 않음 (시드 부족)')
+        signatures = []
+        for p in plans:
+            sig = tuple(
+                (s['year'], s['semester'], tuple(sorted(
+                    c['course_code']
+                    for key in self.CAT_KEYS for c in s.get(key, [])
+                )))
+                for s in p['semesters']
+            )
+            signatures.append(sig)
+        self.assertEqual(len(set(signatures)), len(plans))
+
+    def test_학기별_4_카테고리_키_구조(self):
+        """각 학기에 4 카테고리 키 모두 존재 + courses 단일 배열 키 없음 (#25)"""
+        res = self._post()
+        for plan in res.data['plans']:
             for sem in plan['semesters']:
+                for key in self.CAT_KEYS:
+                    self.assertIn(key, sem)
+                    self.assertIsInstance(sem[key], list)
                 self.assertIn('year', sem)
                 self.assertIn('semester', sem)
-                self.assertIn('courses', sem)
+                self.assertNotIn('courses', sem)        # 옛 단일 배열 키 잔재 X
+
+    def test_include_summer_토글(self):
+        """include_summer=True일 때만 하계(semester_open=3) 과목 등장 (#25)"""
+        _make_course(
+            course_code='CSE3091', name='알고리즘심화특강',
+            category='전공선택', year_open=3, semester_open=3,    # 하계
+            credits=2, tags=['IT/개발'],
+        )
+        # 토글 off → 등장 X
+        res_off = self._post(include_summer=False)
+        self.assertNotIn('CSE3091', self._all_course_codes(res_off.data['plans']))
+        # 토글 on → 등장 O
+        res_on = self._post(include_summer=True)
+        self.assertIn('CSE3091', self._all_course_codes(res_on.data['plans']))
+
+    def test_include_winter_토글(self):
+        """include_winter=True일 때만 동계(semester_open=4) 과목 등장 (#25).
+
+        동계 슬롯(sem=4)은 2학기 직후에 옴 — 마지막 정규학기가 2학기면
+        루프 종료로 진입 불가. graduation을 미래로 밀어 동계 도달 보장.
+        """
+        _make_course(
+            course_code='CSE3092', name='데이터분석실무특강',
+            category='전공선택', year_open=3, semester_open=4,    # 동계
+            credits=2, tags=['IT/개발'],
+        )
+        self.user.graduation_year = 2028
+        self.user.save()
+
+        res_off = self._post(include_winter=False)
+        self.assertNotIn('CSE3092', self._all_course_codes(res_off.data['plans']))
+        res_on = self._post(include_winter=True)
+        self.assertIn('CSE3092', self._all_course_codes(res_on.data['plans']))
+
+    def test_관심사_반영_plan(self):
+        """관심사 등록 + interest_weight 가중 시 관심사 매칭 과목 추천 결과에 포함 (#25)"""
+        self.user.interests.create(category='IT/개발')
+        res = self._post(interest_weight=2.0)
+        codes = self._all_course_codes(res.data['plans'])
+        # IT/개발 태그 달린 후보 중 최소 하나는 추천 등장
+        it_tagged = {'CSE2001', 'CSE2002', 'CSE2003', 'CSE3001', 'CSE3002'}
+        self.assertTrue(it_tagged & codes, msg='관심사 매칭 과목이 plan에 하나도 없음')
+
+    # ── 추가 검증 ──
+
+    def test_max_credits_노브가_학기_학점_상한에_반영(self):
+        """body.max_credits 작게 보내면 학기당 학점 합이 그 이하 (변형 오프셋 포함)"""
+        res = self._post(max_credits=6, num_plans=2)
+        for plan in res.data['plans']:
+            for sem in plan['semesters']:
+                total = sum(
+                    c['credits']
+                    for key in self.CAT_KEYS for c in sem[key]
+                )
+                self.assertLessEqual(total, plan['max_credits'])
+
+    def test_fallback_데이터_부족시_note_insufficient_data(self):
+        """후보 없는 사용자 → plan 부족 + note='insufficient_data' (#25 fallback 정책)"""
+        empty_user = _make_user(email='empty@x.com', major='없는학과')
+        self.client.force_authenticate(user=empty_user)
+        res = self.client.post(self.url, {}, format='json')
+        # 후보 0이면 plan 0~1개. plan < 2면 note 필수
+        if len(res.data['plans']) < 2:
+            self.assertEqual(res.data.get('note'), 'insufficient_data')
+
+    def test_body_없이_호출해도_기본값으로_동작(self):
+        """노브 전체 미지정 시 기본값으로 polite 200 응답"""
+        res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('plans', res.data)
 
 
 # 졸업까지 진척도(%) API (spec 5.3.5)

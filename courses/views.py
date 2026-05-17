@@ -259,7 +259,7 @@ class CurriculumRecommendView(APIView):
             ]
           }, ...
         ],
-        "note": "..."   # 데이터 부족 등 fallback 발생 시에만 포함
+        "note": "insufficient_data"   # fallback 발생 시에만 포함 (머신 코드, LLM이 사용자 표현 결정)
       }
     """
     permission_classes = [IsAuthenticated]
@@ -289,7 +289,8 @@ class CurriculumRecommendView(APIView):
         serializer = CurriculumPlanSerializer(payload, many=True)
 
         response = {'plans': serializer.data}
-        # Fallback — spec은 최소 2안이지만, 데이터 부족 시 복제 X. 호출자에게 명시
+        # Fallback — spec은 최소 2안이지만, 데이터 부족 시 복제 X.
+        # note는 머신 코드로 — 사용자 표현은 LLM/프론트가 결정 (#25)
         if len(plans) < 2:
-            response['note'] = '추천 가능한 과목 데이터가 부족하여 plan을 충분히 생성하지 못했습니다.'
+            response['note'] = 'insufficient_data'
         return Response(response)
