@@ -37,6 +37,8 @@ class NoticeListSerializer(_NoticeBaseSerializerMixin, serializers.ModelSerializ
     summary = serializers.SerializerMethodField()
     department_display = serializers.SerializerMethodField()
     title_without_dept = serializers.SerializerMethodField()
+    # spec 5.10 — 관심사 매칭 점수. view에서 instance에 attribute로 부여.
+    match_score = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Notice
@@ -45,6 +47,7 @@ class NoticeListSerializer(_NoticeBaseSerializerMixin, serializers.ModelSerializ
             'department', 'department_display',
             'title', 'title_without_dept', 'summary',
             'published_at', 'end_date', 'url', 'tags',
+            'match_score',
         ]
 
     def get_summary(self, obj):
