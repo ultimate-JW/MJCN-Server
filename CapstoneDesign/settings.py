@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'accounts',
     'common',
     'courses',
+    'notifications',
     'notices',
     'information',
 ]
