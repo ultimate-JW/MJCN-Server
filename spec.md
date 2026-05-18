@@ -1129,8 +1129,19 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 
 #### 5.4.2 맞춤형 보기 (기본값)
 
-- 개인화 데이터 기반 필터링
-- 전체보기 ↔ 맞춤형 보기 토글 전환
+목록 조회 시 사용자 관심사 기반으로 **관련도 점수**를 매겨 정렬한다. 점수 산출 알고리즘은 5.10 매칭 로직 참조.
+
+- **엔드포인트**: `GET /api/v1/notices/?view=personalized` (기본값) / `?view=all` (전체보기 토글)
+- **정렬 기준**:
+  - 1순위: 관련도 점수 내림차순 (높은 것 위)
+  - 2순위: `published_at` 내림차순 (최근 것 위)
+- **점수 0인 항목 포함 여부**: 점수 0 (관심사 매칭 없음)인 공지도 응답에 포함하되 최하위 정렬. 이유: 신규 사용자/관심사 미설정 사용자가 빈 화면을 보지 않도록.
+- **사용자 데이터 출처**:
+  - `User.major` (전공명) → 키워드 추출
+  - `InterestArea.category` (선택형 직업군) → 그대로 사용
+  - `InterestArea.custom_text` (자유 텍스트) → 콤마/공백 분리 후 사용
+- **콘텐츠 매칭 대상**: `Notice.tags` (AI 자동 태깅 키워드)
+- **응답에 점수 노출**: `match_score` 필드 추가 (프론트가 디버깅/표시에 활용)
 
 #### 5.4.3 공지 유형 자동 분류
 
@@ -1189,8 +1200,16 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 
 #### 5.5.2 맞춤형 보기 (기본값)
 
-- 관심분야 기반 필터링
-- 토글 전환
+목록 조회 시 사용자 관심사 ↔ `Information.categories` 매칭 점수 기반 정렬. 5.10 매칭 로직 참조.
+
+- **엔드포인트**: `GET /api/v1/information/?view=personalized` (기본값) / `?view=all`
+- **정렬 기준**:
+  - 1순위: 관련도 점수 내림차순
+  - 2순위: `end_date` 빠른 순 (D-day 임박 우선, 기존 정렬과 동일)
+- **사용자 데이터 출처**: notices와 동일 (User.major + InterestArea.category + custom_text)
+- **콘텐츠 매칭 대상**: `Information.categories`
+- **응답에 점수 노출**: `match_score` 필드 추가
+- **기존 필터와 조합 가능**: `?view=personalized&category=공모전` 같이 카테고리 필터 + 맞춤 정렬 동시 적용
 
 #### 5.5.3 정보 북마크
 
@@ -1276,6 +1295,64 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 - 전체 알림 리스트 API (최신순, 페이지네이션)
 - 각 알림에 is_read 필드 포함
 - related_url 필드로 프론트에서 이동할 경로 제공
+
+### 5.10 매칭 로직 (공통)
+
+공지·정보의 맞춤형 보기 + 대시보드의 관심사 기반 콘텐츠 노출에 공통으로 사용되는 매칭 알고리즘. 별도 공통 모듈 (`common/matching.py`)로 분리해 중복 구현 방지.
+
+> 참고: 본 절은 `태그매칭추천로직.md` 설계 문서 기반. spec 일치를 위해 핵심 알고리즘만 여기 명시.
+
+#### 5.10.1 사용자 키워드 집합
+
+매 요청마다 사용자의 키워드 집합을 추출.
+
+| 출처 | 처리 |
+|------|------|
+| `User.major` | 전공명 그대로 1개 키워드로 (예: "컴퓨터공학전공") |
+| `InterestArea.category` (FK 1:N) | 모든 카테고리 값 그대로 추가 (예: "IT/개발", "AI") |
+| `InterestArea.custom_text` (FK 1:N) | 콤마(`,`) 또는 공백으로 분리해 각각 추가 (예: "머신러닝, 백엔드" → ["머신러닝", "백엔드"]) |
+
+→ 최종 set(str)로 합침. 중복 제거.
+
+#### 5.10.2 콘텐츠 태그 집합
+
+| 콘텐츠 | 출처 |
+|--------|------|
+| Notice | `Notice.tags` (JSONField, AI 자동 태깅 키워드) |
+| Information | `Information.categories` (JSONField, 크롤링 시 수집된 분류) |
+| Course | `Course.tags` (현재 spec 4.x에 존재, 추천 로직에서 이미 사용 중) |
+
+→ set(str)로 변환.
+
+#### 5.10.3 점수 산출
+
+```
+score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
+```
+
+- **완전 일치만 카운트**: 부분 문자열 매칭은 v1에서 적용 안 함 (오탐 방지 + 단순화)
+- **카테고리별 가중치 없음** (v1): 모든 출처 동등 가중. 정밀도 부족하면 v2에서 카테고리별 가중치 추가
+- **점수 0 케이스**: 관심사 미설정 사용자 또는 매칭 없는 경우 → 0점. 응답에 그대로 포함 (정렬 최하위)
+
+#### 5.10.4 응답 노출 필드
+
+목록 응답의 각 항목에 `match_score: int` 추가. 프론트가 디버깅·표시에 활용 가능 (필수는 아님).
+
+#### 5.10.5 성능 고려
+
+- 사용자 키워드 추출은 요청당 1회 (캐시 없음)
+- 콘텐츠 태그 비교는 페이지네이션된 항목(기본 20개) 만 대상 → DB에서 가져온 후 Python에서 점수 계산
+- 점수 기반 정렬도 Python 레벨 (`sorted(...)`) — 페이지네이션과 호환을 위해 전체 queryset을 fetch 후 정렬 → 페이지 적용
+- 데이터 규모 (Notice ~100건, Information ~30건)에서는 충분히 빠름. 만 단위로 늘어나면 DB 레벨 점수 계산 (raw SQL 또는 PostgreSQL `array` 함수)으로 마이그레이션 검토
+
+#### 5.10.6 사용 위치
+
+| 사용처 | 적용 방식 |
+|--------|-----------|
+| `GET /api/v1/notices/?view=personalized` | NoticeListView에서 점수 계산 → 정렬 |
+| `GET /api/v1/information/?view=personalized` | InformationListView 동일 |
+| `GET /api/v1/dashboard/` (5.8) | "관심사 기반 최근 공지·정보 N개" 노출에 사용 |
+| `courses/services.py` 기존 코드 | 이미 자체 구현됨 (`BONUS_INTEREST_MATCH`). 추후 공통 모듈로 통합 검토 가능 |
 
 ---
 
@@ -1401,10 +1478,14 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
-| GET | `/api/v1/notices/` | O | 공지 목록 (맞춤형 기본) |
-| GET | `/api/v1/notices/?view=all` | O | 공지 전체보기 |
+| GET | `/api/v1/notices/` | O | 공지 목록 (맞춤형 기본 — `view=personalized` 동작) |
+| GET | `/api/v1/notices/?view=all` | O | 공지 전체보기 (최신순) |
+| GET | `/api/v1/notices/?view=personalized` | O | 명시적 맞춤형 보기 (5.10 매칭 로직 적용) |
 | GET | `/api/v1/notices/?q=<검색어>` | O | 공지 검색 |
+| GET | `/api/v1/notices/?source=academic` | O | 출처 필터 |
 | GET | `/api/v1/notices/<id>/` | O | 공지 상세 |
+
+응답에 `match_score: int` 필드 포함 (`view=personalized` 시 의미 있음, 그 외는 0).
 
 #### 응답 필드 — 부서명 표시
 
@@ -1443,10 +1524,14 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
-| GET | `/api/v1/information/` | O | 정보 목록 (맞춤형 기본) |
-| GET | `/api/v1/information/?view=all` | O | 정보 전체보기 |
+| GET | `/api/v1/information/` | O | 정보 목록 (맞춤형 기본 — `view=personalized` 동작) |
+| GET | `/api/v1/information/?view=all` | O | 정보 전체보기 (마감일 빠른 순) |
+| GET | `/api/v1/information/?view=personalized` | O | 명시적 맞춤형 보기 (5.10 매칭 로직 적용) |
 | GET | `/api/v1/information/?q=<검색어>` | O | 정보 검색 |
+| GET | `/api/v1/information/?category=공모전` | O | 카테고리 필터 |
 | GET | `/api/v1/information/<id>/` | O | 정보 상세 |
+
+응답에 `match_score: int` 필드 포함 (`view=personalized` 시 의미 있음, 그 외는 0). `?view=personalized&category=공모전` 같이 조합 가능.
 
 ### 6.9 알림 (notifications)
 
