@@ -1459,6 +1459,67 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 | POST | `/api/v1/notifications/devices/` | O | FCM 디바이스 토큰 등록/갱신 |
 | DELETE | `/api/v1/notifications/devices/` | O | FCM 디바이스 토큰 삭제 (로그아웃 시) |
 
+#### 응답 정책
+
+**본인 알림만 접근 가능**: 다른 사용자의 알림 ID로 PATCH 시도 → **404 Not Found** (존재 자체 노출 방지 — enumeration 방어).
+
+**알림 생성 트리거**: 다른 앱(notices, information, courses 등)에서 이벤트 발생 시 `notifications.services.create_notification(user, ...)` 헬퍼 호출. 사용자의 `notification_enabled` 와 카테고리별 토글(`notification_notice`, `notification_information` 등)을 체크해 INSERT 결정.
+
+**FCM 디바이스 멱등 등록**: 같은 사용자가 같은 토큰 두 번 POST해도 1행만 저장. `is_active=True` 갱신 + `updated_at` 갱신. 다른 사용자가 같은 토큰을 보내면(디바이스 양도 케이스) 기존 사용자 매핑 해제 후 새 사용자에 연결.
+
+**알림 카테고리별 토글**: User 모델의 `notification_enabled`, `notification_notice`, `notification_information`, `notification_chat` 4개 플래그 기준 노출 제어. 전체 OFF면 INSERT 자체 안 함.
+
+#### 응답 스키마 — 목록
+
+```json
+{
+  "count": 12,
+  "next": "...",
+  "previous": null,
+  "results": [
+    {
+      "id": 7,
+      "title": "수강신청 정정 안내",
+      "message": "수강신청 정정 기간이 시작되었습니다",
+      "notification_type": "notice",
+      "related_id": 42,
+      "is_read": false,
+      "is_pushed": false,
+      "created_at": "2026-05-17T10:00:00Z"
+    }
+  ]
+}
+```
+
+#### 응답 스키마 — `unread-count`
+
+```json
+{ "unread_count": 5 }
+```
+
+#### 응답 스키마 — `devices` POST
+
+요청:
+```json
+{ "registration_token": "fcm_token_string..." }
+```
+
+응답: 201 Created (신규) 또는 200 OK (기존 갱신)
+```json
+{
+  "id": 3,
+  "registration_token": "fcm_token_string...",
+  "is_active": true,
+  "created_at": "2026-05-17T10:00:00Z",
+  "updated_at": "2026-05-17T10:00:00Z"
+}
+```
+
+#### Out of Scope (다음 PR)
+
+- 실제 FCM 푸시 송신 (Firebase Admin SDK 통합, 이벤트 → push 발송 트리거)
+- 알림 스케줄링 (spec 7 — 마감일 D-1 자동 발송 등)
+
 ### 6.10 대시보드 (dashboard)
 
 | Method | URL | 인증 | 설명 |
