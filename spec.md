@@ -827,7 +827,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 >
 > - **MVP 범위**: 컴퓨터공학전공 과목 데이터만 우선 구축(시간 남으면 전공 1개 더 추가)
 > - **시딩 대상 테이블**: Course, CourseSchedule, CoursePrerequisite, GraduationRequirement
-> - **데이터 출처**: 명지대학교 학사 시스템 (수강편람, 교육과정표 등)
+> - **데이터 출처**: 명지대학교 학사 시스템 MSI의 "강의시간표"
 > - **시딩 방법**: Django fixture 또는 management command
 > - **타 학과 확장**: MVP 이후 순차 확대 예정
 
