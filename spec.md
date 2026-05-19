@@ -1616,6 +1616,40 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 
 **알림 카테고리별 토글**: User 모델의 `notification_enabled`, `notification_notice`, `notification_information`, `notification_chat` 4개 플래그 기준 노출 제어. 전체 OFF면 INSERT 자체 안 함.
 
+#### 공지·정보 자동 fanout 정책
+
+크롤링으로 신규 콘텐츠가 등록될 때 관심사 매칭 사용자에게 인앱 알림을 자동 생성한다. spec 5.10 매칭 로직(`common.matching.score_match`)을 그대로 활용.
+
+**적용 대상 (언제)**:
+- `crawl_notices` 실행 중 `Notice`가 **신규 생성된 경우만** (upsert에서 `created=True`). 기존 항목 갱신(`updated=True`)은 알림 미발송 — 사용자 도배 방지.
+- `crawl_information` 도 동일 — `Information` 신규 생성 시에만.
+
+**대상 사용자 (누구에게)**:
+- `is_active=True` 사용자 중에서
+- `extract_user_keywords(user)` 와 콘텐츠의 `tags`(공지) / `categories`(정보) 간 `score_match` ≥ 1
+- 사용자의 알림 토글(`notification_enabled` + 카테고리별)이 모두 ON
+- 매칭 점수 0인 사용자에게는 알림을 만들지 않는다 — "관심 있는 사용자에게만" 원칙.
+
+**백필 가드**:
+- `Notice.published_at` 이 **최근 7일 이내**인 항목만 fanout 대상. 초기 백필이나 `--max-pages` 큰 값으로 과거 공지를 대량 수집할 때 알림 폭주를 방지.
+- `Information` 은 `end_date` 가 없거나 `end_date >= today` 인 항목만 (마감 지난 정보로 알림 보내지 않음).
+
+**알림 본문**:
+- `title`: 콘텐츠 제목 그대로 (`Notice.title` / `Information.title`)
+- `message`: 짧은 안내 문구 ("관심사 기반 새 공지가 등록되었습니다" 등). 본문 요약은 클라이언트가 상세 페이지에서 조회.
+- `notification_type`: `notice` 또는 `information`
+- `related_id`: `Notice.id` 또는 `Information.id`
+
+**호출 위치**:
+- 공지: `BaseNoticeCrawler.save()` 또는 명령 핸들러에서 created 직후 호출. AI 처리(`process_notices_ai`)와는 독립 — AI 실패해도 알림은 발송됨.
+- 정보: `BaseInformationCrawler.save()` 동일.
+- LLM 호출이나 외부 HTTP는 fanout 안에서 하지 않는다 — 단순 DB INSERT 반복.
+
+**성능**:
+- 사용자 N × 신규 콘텐츠 M = N×M INSERT. 현 단계는 단순 루프 (`create_notification` 호출). bulk 최적화는 별 PR.
+
+**FCM 푸시 송신**: 위 fanout은 인앱 알림(Notification row)만 생성. 실제 디바이스 푸시는 Out of Scope (Firebase Admin SDK 통합 PR).
+
 #### 응답 스키마 — 목록
 
 ```json
