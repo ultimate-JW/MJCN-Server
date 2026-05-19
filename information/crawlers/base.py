@@ -128,12 +128,22 @@ class BaseInformationCrawler:
         )
 
     def save(self, informations: Iterable[CrawledInformation]) -> CrawlResult:
+        # 지연 import — 순환 import 회피
+        from information.fanout import fanout_new_information
+
         result = CrawlResult(source=self.SOURCE)
         for info in informations:
             try:
-                _, created = self._upsert(info)
+                obj, created = self._upsert(info)
                 if created:
                     result.created += 1
+                    # 신규 Information만 fanout (spec 6.9). 실패해도 크롤링 계속.
+                    try:
+                        fanout_new_information(obj)
+                    except Exception:
+                        logger.exception(
+                            '[%s] fanout 실패: %s', self.SOURCE, obj.url,
+                        )
                 else:
                     result.updated += 1
             except IntegrityError:
