@@ -19,6 +19,7 @@ from django.db.models import Q
 from .models import (
     AcademicCalendar,
     Course,
+    CourseOffering,
     CoursePrerequisite,
     GraduationRequirement,
 )
@@ -320,23 +321,39 @@ def _build_short_categories(user):
     }
 
 
-def recommend_next_semester_courses(user):
+def recommend_next_semester_courses(user, *, target_year=None, target_semester=None):
     """
-    한 사용자에 대해 다음학기 추천 과목 리스트를 반환한다. (spec 5.3.1)
+    한 사용자에 대해 다음학기 추천 과목 리스트를 반환한다. (spec 5.3.1, #36)
 
     DRF Request/Response에 의존하지 않는 순수 도메인 함수. view 등 호출자가
     User 인스턴스를 넘기면 (점수, Course) 튜플 리스트를 정렬해 반환한다.
 
+    학기 인자:
+      target_year / target_semester 둘 다 None 이면 _curriculum_first_slot(user)
+      로 자동 결정 (5.3.2와 동일 로직 — 1학기 듣는 중 → 같은 해 2학기, 2학기 듣는
+      중 → 다음 해 1학기).
+      값이 지정되면 그 학기에 개설된 CourseOffering 이 있는 Course 만 후보.
+      Offering 자체가 없는 Course (기존 더미 시드 등)는 학기 정보 없음 → 통과.
+
     처리 흐름:
       1. 사용자 데이터 조회 — 수강이력 / 현재수강 / 관심사
-      2. Hard Filter — 이미 이수했거나 현재 수강 중인 course_code 제외
-      3. 졸업요건 잔여학점 분석 → 부족 카테고리 set 빌드
-      4. 후보 과목 각각에 calculate_recommendation_score 호출
-      5. 정렬 — score DESC → CATEGORY_PRIORITY ASC → course_code ASC
-      6. (score, Course) 튜플 리스트 반환
+      2. target 학기 결정 (인자 우선, 미지정 시 자동)
+      3. Hard Filter — 이수/수강 중 제외 + 학기 Offering 매칭
+      4. 졸업요건 잔여학점 분석 → 부족 카테고리 set 빌드
+      5. 후보 과목 각각에 calculate_recommendation_score 호출
+      6. 정렬 — score DESC → CATEGORY_PRIORITY ASC → course_code ASC
+      7. (score, Course) 튜플 리스트 반환
 
     반환: list[tuple[int, Course]] — 정렬된 추천 결과 (상위가 가장 추천 강함)
     """
+    # target 학기 결정 — 인자 우선, 둘 중 하나라도 빠지면 자동 결정값으로 보충
+    if target_year is None or target_semester is None:
+        auto_year, auto_sem = _curriculum_first_slot(user)
+        if target_year is None:
+            target_year = auto_year
+        if target_semester is None:
+            target_semester = auto_sem
+
     # 사용자 관심사 카테고리 집합 — InterestArea.category 값 모음
     user_interest_categories = set(
         user.interests.values_list('category', flat=True)
@@ -351,10 +368,20 @@ def recommend_next_semester_courses(user):
     )
     excluded_codes = taken_codes | current_codes
 
-    # Hard Filter — 이미 이수했거나 수강 중인 과목은 후보에서 제외
+    # Hard Filter — 이수/수강 중 제외 + 학기 Offering 매칭
+    # Offering 있는 Course 는 target 학기 매칭만 통과, Offering 자체 없으면 통과 (#36)
+    # 후자는 기존 #24/#25 더미 시드 호환용 — 운영 데이터는 전부 Offering 동반
+    has_offering_qs = CourseOffering.objects.values_list('course_id', flat=True)
+    matching_qs = CourseOffering.objects.filter(
+        year=target_year, semester=target_semester,
+    ).values_list('course_id', flat=True)
+
     # prefetch_related로 선수과목 + 시간표 N+1 쿼리 방지 (view에서 schedules 직렬화)
     candidates = list(
-        Course.objects.exclude(course_code__in=excluded_codes)
+        Course.objects
+        .exclude(course_code__in=excluded_codes)
+        .filter(Q(pk__in=matching_qs) | ~Q(pk__in=has_offering_qs))
+        .distinct()
         .prefetch_related('prerequisites', 'schedules')
     )
 

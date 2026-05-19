@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from django.db.models import Q
+from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -152,20 +153,30 @@ class GraduationProgressView(APIView):
 # 다음학기 추천
 class NextSemesterRecommendView(APIView):
     """
-    GET /api/v1/courses/recommend/next/ - 다음학기 수강과목 추천 (spec 5.3.1)
+    GET /api/v1/courses/recommend/next/ - 다음학기 수강과목 추천 (spec 5.3.1, #36)
 
     spec 5.3.1 규칙 기반 점수 알고리즘으로 정렬된 단일 리스트 응답.
-    Hard Filter(이수/수강 중)는 services에서 처리, Soft Constraint는 점수에 반영.
+    Hard Filter(이수/수강 중 + 학기 Offering 매칭)는 services에서 처리,
+    Soft Constraint는 점수에 반영.
 
-    TODO(#36): 강의시간표 엑셀 import로 들어온 CourseOffering 데이터가 쌓이면
-    후보를 그 학기 개설분으로 한정하고 본 view에 학기 인자(쿼리 파라미터) 노출.
-    지금은 시드/임시 데이터 기반이라 학기 적합성은 점수로만 반영.
+    쿼리 파라미터 (선택):
+      year     — 추천 대상 연도 (예: 2026)
+      semester — 추천 대상 학기 (1/2/3/4)
+      미지정 시 사용자의 현재 학기 기반 자동 결정 (services 참조).
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        target_year, target_semester = self._parse_term(request)
+        if isinstance(target_year, Response):
+            return target_year  # 검증 에러 응답 그대로 반환
+
         # services 레이어에서 점수 계산 + 정렬까지 마친 (score, Course) 튜플 리스트
-        results = recommend_next_semester_courses(request.user)
+        results = recommend_next_semester_courses(
+            request.user,
+            target_year=target_year,
+            target_semester=target_semester,
+        )
 
         # 응답 dict 변환 — Course 객체는 schedules가 prefetch된 상태
         items = [
@@ -183,6 +194,29 @@ class NextSemesterRecommendView(APIView):
 
         serializer = NextSemesterRecommendationSerializer(items, many=True)
         return Response(serializer.data)
+
+    @staticmethod
+    def _parse_term(request):
+        """?year=&semester= 파싱. 미지정은 (None, None) — services에서 자동 결정.
+
+        잘못된 형식은 (400 Response, None) 반환. semester는 1/2/3/4만 허용.
+        """
+        year_raw = request.query_params.get('year')
+        sem_raw = request.query_params.get('semester')
+        try:
+            year = int(year_raw) if year_raw not in (None, '') else None
+            sem = int(sem_raw) if sem_raw not in (None, '') else None
+        except ValueError:
+            return Response(
+                {'detail': 'year/semester는 정수여야 합니다.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
+        if sem is not None and sem not in (1, 2, 3, 4):
+            return Response(
+                {'detail': 'semester는 1/2/3/4 중 하나여야 합니다.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
+        return year, sem
 
 
 # 카테고리 → 응답 키 매핑 (spec 5.3.2 4키 분리, #25)

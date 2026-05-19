@@ -9,9 +9,11 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import CourseHistory, CurrentCourse
+from courses.management.commands.import_courses_from_xlsx import parse_year_open
 from courses.models import (
     AcademicCalendar,
     Course,
+    CourseOffering,
     CoursePrerequisite,
     CourseSchedule,
     GraduationRequirement,
@@ -603,6 +605,71 @@ class NextSemesterRecommendAPITests(APITestCase):
             gen_score = next(i['score'] for i in res.data if i['course_code'] == 'GEN1001')
             if cse_score == gen_score:
                 self.assertLess(ordered.index('CSE0001'), ordered.index('GEN1001'))
+
+    # ----- 학기 필터 (Offering 매칭) + 쿼리 파라미터 (#36) -----
+
+    def test_쿼리_파라미터_미지정시_자동결정_동작(self):
+        """파라미터 안 줘도 정상 응답 — services가 사용자 학기 기반 자동 결정"""
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # setUp 4개 과목 다 Offering 없음 → 학기 필터 영향 없이 통과
+        self.assertEqual(len(res.data), 4)
+
+    def test_학기_파라미터_지정시_offering_매칭만_후보(self):
+        """Offering 있는 Course는 target 학기 매칭만, Offering 없는 Course는 통과 (호환)"""
+        CourseOffering.objects.create(
+            course=self.base, year=2026, semester=1, section_no='B100',
+        )
+        CourseOffering.objects.create(
+            course=self.mid, year=2026, semester=2, section_no='M200',
+        )
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'year': 2026, 'semester': 1})
+        codes = {item['course_code'] for item in res.data}
+        self.assertIn('CSE1001', codes)       # base — 2026-1 매칭
+        self.assertNotIn('CSE2001', codes)    # mid — 2026-2만 있음 → 제외
+        self.assertIn('CSE3001', codes)       # elective — Offering 없음 → 통과
+        self.assertIn('GEN1001', codes)       # liberal — Offering 없음 → 통과
+
+    def test_잘못된_year_쿼리_파라미터_400(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'year': 'abc'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_잘못된_semester_쿼리_파라미터_400(self):
+        """semester는 1/2/3/4만 허용"""
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'semester': '5'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ===== parse_year_open 단위 테스트 (#36) =====
+
+class ParseYearOpenTests(SimpleTestCase):
+    """import_courses_from_xlsx.parse_year_open — 학년 셀 표현을 정수로 정규화."""
+
+    def test_숫자_문자열은_정수_변환(self):
+        self.assertEqual(parse_year_open('1'), 1)
+        self.assertEqual(parse_year_open('4'), 4)
+
+    def test_정수는_그대로(self):
+        self.assertEqual(parse_year_open(2), 2)
+
+    def test_전학년은_0_sentinel(self):
+        self.assertEqual(parse_year_open('전학년'), 0)
+
+    def test_빈값은_0(self):
+        self.assertEqual(parse_year_open(None), 0)
+        self.assertEqual(parse_year_open(''), 0)
+
+    def test_숫자_접두_텍스트는_정수_부분_추출(self):
+        # 학교 양식에서 '1학년' 같이 들어와도 1로 잡힘
+        self.assertEqual(parse_year_open('1학년'), 1)
+        self.assertEqual(parse_year_open('3학년'), 3)
+
+    def test_알수없는_텍스트는_0_fallback(self):
+        self.assertEqual(parse_year_open('abc'), 0)
 
 
 class CurriculumRecommendAPITests(APITestCase):
