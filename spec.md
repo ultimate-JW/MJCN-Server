@@ -519,9 +519,18 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 #### CourseOffering (학기·분반별 개설 정보, #36)
 
-`Course`가 과목 정체성이라면 `CourseOffering`은 학기별 실제 개설 단위.
-한 `Course`에 학기/분반별 여러 Offering이 붙는다. 강좌번호(`section_no`)가
-같은 학기 안에서 유일 식별자.
+`Course`는 **과목 그 자체** (예: 과목코드 `컴공201` AI프로그래밍 = Course 1개).
+`CourseOffering`은 그 과목이 **특정 학기에 열린 분반 한 개**.
+**분반 구분 기준은 강좌번호(`section_no`) 단독** — 교수/시간/정원이 같아도
+강좌번호가 다르면 별개 Offering.
+
+같은 강좌번호의 여러 엑셀 행은 같은 Offering이며 **요일(스케줄)만** 다른 것.
+즉 엑셀 한 행 = `(Course, Offering, Schedule(요일 1개))` 한 조합.
+
+예: `컴공201`이 2026-1학기에 0753반 / 0754반으로 열렸고 각 분반이 월/수에
+걸쳐있다면 → 엑셀 4행 / **Course 1 / Offering 2 / Schedule 4**.
+
+`section_no`는 같은 학기 안에서 분반 유일 식별자.
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
