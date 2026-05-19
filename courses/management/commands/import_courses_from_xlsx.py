@@ -24,6 +24,9 @@ from django.db import transaction
 
 from courses.models import Course, CourseOffering, CourseSchedule
 
+# CourseSchedule.day_of_week 가능 값. 토/일 강의는 현재 모델 미지원이라 skip.
+VALID_DAYS = {'월', '화', '수', '목', '금'}
+
 
 # 기대 컬럼 — 헤더가 정확히 이 순서로 와야 함 (spec 5.1)
 EXPECTED_COLUMNS = [
@@ -145,6 +148,7 @@ class Command(BaseCommand):
 
         n_course_new = n_offering_new = n_schedule_new = 0
         n_rows = 0
+        n_schedule_skipped = 0  # 시간/요일 누락된 행 (사이버·계약 강의 등)
 
         for row in ws.iter_rows(min_row=2, values_only=True):
             if not row[0]:  # 학년 비어있는 행 skip (엑셀 trailing 빈줄 등)
@@ -185,16 +189,27 @@ class Command(BaseCommand):
             if created:
                 n_offering_new += 1
 
-            # CourseSchedule — (offering, 요일) 1행. course FK도 동시 채움 (기존 추천 알고리즘이 course.schedules 참조)
+            # CourseSchedule — (offering, 요일) 1행. course FK도 동시 채움.
+            # 사이버/계약 강의는 요일='미입력' + 시간/강의실 빈값 → Schedule 생성 skip (Offering 만 존재)
+            start_t = to_time(start)
+            end_t = to_time(end)
+            day_clean = str(day or '').strip()
+            if day_clean not in VALID_DAYS or start_t is None or end_t is None:
+                n_schedule_skipped += 1
+                continue
+
+            room_clean = str(room or '').strip()
+            if room_clean == '미입력':
+                room_clean = ''
             _, created = CourseSchedule.objects.update_or_create(
                 offering=offering,
-                day_of_week=day,
+                day_of_week=day_clean,
                 defaults={
                     'course': course,
-                    'start_time': to_time(start),
-                    'end_time': to_time(end),
+                    'start_time': start_t,
+                    'end_time': end_t,
                     'building': '',
-                    'room': str(room) if room else '',
+                    'room': room_clean,
                 },
             )
             if created:
@@ -205,7 +220,8 @@ class Command(BaseCommand):
             f"  학기: {year}-{semester}\n"
             f"  매핑: college={college!r} dept={department!r} major={major!r} category={category!r}\n"
             f"  처리 행 수: {n_rows}\n"
-            f"  신규 Course: {n_course_new} / Offering: {n_offering_new} / Schedule: {n_schedule_new}"
+            f"  신규 Course: {n_course_new} / Offering: {n_offering_new} / Schedule: {n_schedule_new}\n"
+            f"  Schedule skip (시간·요일 누락): {n_schedule_skipped}"
         )
         if csv_dump_path:
             msg += f"\n  CSV dump: {csv_dump_path}"
