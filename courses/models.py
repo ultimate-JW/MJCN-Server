@@ -9,6 +9,15 @@ class Course(models.Model):
         ('교양선택', '교양선택'),
     ]
 
+    # 학기 개설 값 매핑 (spec 5.3.2, #25)
+    #   1 = 1학기 / 2 = 2학기 / 3 = 하계 계절학기 / 4 = 동계 계절학기
+    SEMESTER_OPEN_CHOICES = [
+        (1, '1학기'),
+        (2, '2학기'),
+        (3, '하계 계절학기'),
+        (4, '동계 계절학기'),
+    ]
+
     course_code = models.CharField(max_length=20, unique=True)
     name = models.CharField(max_length=100)
     college = models.CharField(max_length=50)
@@ -17,7 +26,7 @@ class Course(models.Model):
     category = models.CharField(max_length=10, choices=CATEGORY_CHOICES)
     credits = models.IntegerField()
     year_open = models.IntegerField()
-    semester_open = models.IntegerField()
+    semester_open = models.IntegerField(choices=SEMESTER_OPEN_CHOICES)
     professor = models.CharField(max_length=50, blank=True, default='')
     tags = models.JSONField(default=list, blank=True)  # 관심사 매칭용 태그 (옵션 A, spec 5.3.1)
 

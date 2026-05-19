@@ -1,5 +1,4 @@
 from collections import defaultdict
-from datetime import date
 
 from django.db.models import Q
 from rest_framework.generics import ListAPIView
@@ -7,14 +6,18 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Course, CoursePrerequisite, GraduationRequirement
+from .models import Course, GraduationRequirement
 from .serializers import (
     CompletionStatusSerializer,
     CourseListSerializer,
     CurriculumPlanSerializer,
     NextSemesterRecommendationSerializer,
 )
-from .services import calc_graduation_progress, recommend_next_semester_courses
+from .services import (
+    calc_graduation_progress,
+    generate_curriculum_plans,
+    recommend_next_semester_courses,
+)
 
 
 # 과목 검색
@@ -182,134 +185,14 @@ class NextSemesterRecommendView(APIView):
         return Response(serializer.data)
 
 
-# 졸업까지 전체 커리큘럼 추천
-class CurriculumRecommendView(APIView):
-    """GET /api/v1/courses/recommend/curriculum/ - 전체 커리큘럼 추천"""
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        user = request.user
-
-        from accounts.models import CourseHistory, CurrentCourse
-
-        completed_names = set(
-            CourseHistory.objects.filter(user=user).values_list('course_name', flat=True)
-        )
-        current_names = set(
-            CurrentCourse.objects.filter(user=user).values_list('course_name', flat=True)
-        )
-        taken_names = completed_names | current_names
-
-        # 카테고리별 이수학점
-        completed_credits = defaultdict(int)
-        for h in CourseHistory.objects.filter(user=user):
-            completed_credits[h.category] += h.credits
-
-        # 졸업요건
-        requirements = GraduationRequirement.objects.filter(
-            department=user.major,
-            admission_year=user.admission_year,
-        )
-        remaining_by_cat = {}
-        for req in requirements:
-            done = completed_credits.get(req.category, 0)
-            remaining_by_cat[req.category] = max(0, req.required_credits - done)
-
-        # 미이수 과목 풀
-        available = list(
-            Course.objects.filter(
-                Q(major=user.major) | Q(category__in=['교양필수', '교양선택']),
-            ).exclude(name__in=taken_names).prefetch_related('schedules')
-        )
-
-        remaining_semesters = self._calc_remaining_semesters(user)
-
-        plans = self._generate_plans(
-            available, remaining_by_cat, remaining_semesters,
-            completed_names, taken_names, user,
-        )
-
-        serializer = CurriculumPlanSerializer(plans, many=True)
-        return Response(serializer.data)
-
-    def _calc_remaining_semesters(self, user):
-        now = date.today()
-        current_year = now.year
-        current_sem = 1 if 3 <= now.month <= 8 else 2
-
-        if user.graduation_year and user.graduation_month:
-            grad_sem = 1 if user.graduation_month <= 8 else 2
-            semesters = (user.graduation_year - current_year) * 2 + (grad_sem - current_sem)
-            return max(1, semesters)
-        return max(1, (4 - user.grade) * 2 + (2 if user.semester <= 2 else 1))
-
-    def _generate_plans(self, available, remaining_by_cat, remaining_semesters, completed_names, taken_names, user):
-        courses_by_cat = defaultdict(list)
-        for course in available:
-            courses_by_cat[course.category].append(course)
-
-        priority = ['전공필수', '교양필수', '전공선택', '교양선택']
-        credit_targets = [18, 21, 15]
-        plans = []
-
-        for plan_idx, target in enumerate(credit_targets):
-            semesters = []
-            used_names = set()
-            year, sem = self._first_semester(user)
-            local_remaining = dict(remaining_by_cat)
-
-            for _ in range(remaining_semesters):
-                semester_courses = []
-                semester_credits = 0
-
-                for cat in priority:
-                    if local_remaining.get(cat, 0) <= 0:
-                        continue
-                    for course in courses_by_cat.get(cat, []):
-                        if course.name in taken_names or course.name in used_names:
-                            continue
-                        if semester_credits + course.credits > target:
-                            continue
-                        prereq_names = set(
-                            CoursePrerequisite.objects.filter(course=course)
-                            .values_list('prerequisite__name', flat=True)
-                        )
-                        if not prereq_names.issubset(completed_names | used_names):
-                            continue
-
-                        semester_courses.append(_serialize_course(course))
-                        semester_credits += course.credits
-                        used_names.add(course.name)
-                        local_remaining[cat] = local_remaining.get(cat, 0) - course.credits
-
-                if semester_courses:
-                    semesters.append({
-                        'year': year,
-                        'semester': sem,
-                        'courses': semester_courses,
-                    })
-
-                if sem == 1:
-                    sem = 2
-                else:
-                    sem = 1
-                    year += 1
-
-            if semesters:
-                plans.append({
-                    'plan_number': plan_idx + 1,
-                    'semesters': semesters,
-                })
-
-        if len(plans) < 2:
-            plans = plans * 2
-        return plans[:5]
-
-    def _first_semester(self, user):
-        now = date.today()
-        if user.semester in (1, 2):
-            return now.year, 2
-        return now.year + 1, 1
+# 카테고리 → 응답 키 매핑 (spec 5.3.2 4키 분리, #25)
+#   일반선택은 4키 밖이라 추천 결과에서 제외됨 (이슈 #25 명시)
+_CATEGORY_TO_KEY = {
+    '전공필수': 'major_required',
+    '전공선택': 'major_elective',
+    '교양필수': 'liberal_required',
+    '교양선택': 'liberal_elective',
+}
 
 
 def _serialize_course(course):
@@ -330,3 +213,84 @@ def _serialize_course(course):
             for s in course.schedules.all()
         ],
     }
+
+
+def _split_semester_by_category(semester):
+    """학기 dict의 courses 리스트를 4 카테고리 키로 분리.
+
+    빈 카테고리도 키 유지 (빈 배열) — 프론트가 키 존재 체크 안 해도 됨.
+    매핑에 없는 카테고리(예: 일반선택)는 응답에서 누락.
+    """
+    buckets = {key: [] for key in _CATEGORY_TO_KEY.values()}
+    for course in semester['courses']:
+        key = _CATEGORY_TO_KEY.get(course.category)
+        if key:
+            buckets[key].append(_serialize_course(course))
+    return {
+        'year': semester['year'],
+        'semester': semester['semester'],
+        **buckets,
+    }
+
+
+# 졸업까지 전체 커리큘럼 추천
+class CurriculumRecommendView(APIView):
+    """POST /api/v1/courses/recommend/curriculum/ - 전체 커리큘럼 추천 (spec 5.3.2, #25)
+
+    Body (모두 옵셔널, 없으면 합리적 기본값):
+      - max_credits        : int, 학기당 학점 상한 베이스 (기본 18)
+      - category_weights   : {카테고리: float}, 카테고리 가중치 배수 (기본 모두 1.0)
+      - interest_weight    : float, 관심사 매칭 가중치 배수 (기본 1.0)
+      - include_summer     : bool, 하계 계절학기(semester_open=3) 포함 (기본 false)
+      - include_winter     : bool, 동계 계절학기(semester_open=4) 포함 (기본 false)
+      - num_plans          : int, 변형 plan 개수 2~5 (기본 3)
+
+    응답:
+      {
+        "plans": [
+          {
+            "plan_number": int, "max_credits": int,
+            "semesters": [
+              {
+                "year": int, "semester": int,         # semester: 1/2/3/4
+                "major_required": [...], "major_elective": [...],
+                "liberal_required": [...], "liberal_elective": [...]
+              }, ...
+            ]
+          }, ...
+        ],
+        "note": "insufficient_data"   # fallback 발생 시에만 포함 (머신 코드, LLM이 사용자 표현 결정)
+      }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        body = request.data or {}
+
+        plans = generate_curriculum_plans(
+            request.user,
+            max_credits=int(body.get('max_credits') or 18),
+            category_weights=body.get('category_weights') or {},
+            interest_weight=float(body.get('interest_weight') or 1.0),
+            include_summer=bool(body.get('include_summer', False)),
+            include_winter=bool(body.get('include_winter', False)),
+            num_plans=int(body.get('num_plans') or 3),
+        )
+
+        # 학기별 4 카테고리 분리
+        payload = [
+            {
+                'plan_number': p['plan_number'],
+                'max_credits': p['max_credits'],
+                'semesters': [_split_semester_by_category(s) for s in p['semesters']],
+            }
+            for p in plans
+        ]
+        serializer = CurriculumPlanSerializer(payload, many=True)
+
+        response = {'plans': serializer.data}
+        # Fallback — spec은 최소 2안이지만, 데이터 부족 시 복제 X.
+        # note는 머신 코드로 — 사용자 표현은 LLM/프론트가 결정 (#25)
+        if len(plans) < 2:
+            response['note'] = 'insufficient_data'
+        return Response(response)

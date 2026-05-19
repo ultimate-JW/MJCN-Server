@@ -9,13 +9,17 @@ View / dashboard / chat 등 여러 곳에서 재사용 가능한 도메인 로�
   - calc_graduation_progress(user)            : 졸업까지 진척도 % (spec 5.3.5)
   - calculate_recommendation_score(...)       : 다음학기 추천 점수 (spec 5.3.1)
   - recommend_next_semester_courses(user)     : 다음학기 추천 호출자 (spec 5.3.1)
+  - generate_curriculum_plans(user, **knobs)  : 전체 커리큘럼 추천 (spec 5.3.2)
 """
 
 from datetime import date
 
+from django.db.models import Q
+
 from .models import (
     AcademicCalendar,
     Course,
+    CoursePrerequisite,
     GraduationRequirement,
 )
 
@@ -384,3 +388,295 @@ def recommend_next_semester_courses(user):
         x[1].course_code,
     ))
     return scored
+
+
+# ────────────────────────────────────────
+# 5.3.2 전체 커리큘럼 추천
+# ────────────────────────────────────────
+
+# 학기 매핑 (spec 5.3.2, #25)
+#   semester_open=1 = 1학기
+#   semester_open=2 = 2학기
+#   semester_open=3 = 하계 계절학기 (1↔2 사이)
+#   semester_open=4 = 동계 계절학기 (2↔1 사이)
+
+# 노브 기본값 — LLM이 사용자 방향성을 못 받은 경우 폴백용
+DEFAULT_MAX_CREDITS = 18           # 베이스 학기 학점 상한
+DEFAULT_NUM_PLANS = 3              # 변형 plan 개수 (2~5)
+DEFAULT_INTEREST_WEIGHT = 1.0      # 관심사 가중치 (1.0이면 5.3.1과 동일)
+
+# 변형 plan을 만들 때 베이스 max_credits에 더할 오프셋
+#   index 0=베이스 / 1=+3(빡센) / 2=-3(여유) / 3=+1 / 4=-1 — 최대 5안까지
+CREDIT_OFFSETS = [0, +3, -3, +1, -1]
+
+
+def _next_curriculum_slot(year, sem, *, include_summer, include_winter):
+    """현재 학기 슬롯의 다음 학기 슬롯을 반환한다.
+
+    진행 순서: 1 → 하계(3) → 2 → 동계(4) → 다음해 1 → ...
+    include_summer/winter가 False면 해당 계절학기 슬롯을 건너뜀.
+    """
+    if sem == 1:
+        return (year, 3) if include_summer else (year, 2)   # 1학기 → 하계 또는 2학기
+    if sem == 3:
+        return year, 2                                       # 하계 → 2학기
+    if sem == 2:
+        return (year, 4) if include_winter else (year + 1, 1)  # 2학기 → 동계 또는 다음해 1학기
+    # sem == 4 (동계) → 다음해 1학기
+    return year + 1, 1
+
+
+def _curriculum_first_slot(user):
+    """추천 시작 학기 슬롯 결정. 사용자 입력 학기를 우선 신뢰 (spec 5.3.4 정책 동일)."""
+    today = date.today()
+    if user.semester == 1:
+        return today.year, 2          # 1학기 듣는 중 → 다음은 같은 해 2학기
+    if user.semester == 2:
+        return today.year + 1, 1      # 2학기 듣는 중 → 다음 해 1학기
+    # 학기 정보 없을 때 calendar 기반 fallback
+    if 3 <= today.month <= 8:
+        return today.year, 2          # 봄 시즌이면 같은 해 2학기부터
+    return today.year + 1, 1          # 가을 시즌이면 다음 해 1학기부터
+
+
+def _remaining_regular_semesters(user):
+    """졸업까지 남은 정규학기 수 (계절학기 제외)."""
+    today = date.today()
+    current_year = today.year
+    current_sem = 1 if 3 <= today.month <= 8 else 2
+
+    # 사용자가 graduation_year/month 입력했으면 거기 기반
+    if user.graduation_year and user.graduation_month:
+        grad_sem = 1 if user.graduation_month <= 8 else 2
+        n = (user.graduation_year - current_year) * 2 + (grad_sem - current_sem)
+        return max(1, n)
+    # 미입력 fallback — grade/semester로 추정
+    grade = user.grade or 1
+    semester = user.semester or 1
+    return max(1, (4 - grade) * 2 + (2 - semester))
+
+
+def generate_curriculum_plans(
+    user,
+    *,
+    max_credits=DEFAULT_MAX_CREDITS,  # 한 학기 최대 학점 (예: 18, 21)
+    category_weights=None,            # 카테고리별 가중치 (예: 교양 더 듣고싶으면 {"교양선택": 1.5})
+    interest_weight=DEFAULT_INTEREST_WEIGHT, # 관심사 매칭 가중치
+    include_summer=False,             # 계절학기 포함 여부
+    include_winter=False,
+    num_plans=DEFAULT_NUM_PLANS,      # 만들 plan 개수
+):  
+    """졸업까지 학기별 추천 커리큘럼을 2~5안 반환한다 (spec 5.3.2, #25).
+
+    학기 매핑: semester_open=1/2 정규, =3 하계, =4 동계.
+
+    노브:
+      max_credits         : 한 학기 학점 상한 베이스. 변형 plan은 ±오프셋 적용
+      category_weights    : {카테고리: 배수} — 점수 함수 카테고리 가산점에 추가 배수
+      interest_weight     : 관심사 매칭 시 추가 배수
+      include_summer/winter: 계절학기 슬롯 포함 여부
+      num_plans           : 생성할 변형 plan 개수 (2~5로 clamp)
+
+    반환: list[dict] — 각 plan은 {plan_number, max_credits, semesters: [...]}.
+          semesters의 각 학기는 {year, semester, courses: [Course, ...]}.
+          courses를 4키(major_required 등)로 분리하는 건 view/serializer 책임.
+          데이터 부족으로 1안만 만들어지면 1안만 반환 (복제 X).
+    """
+    num_plans = max(2, min(5, num_plans))               # spec 2~5 clamp
+    category_weights = category_weights or {}
+    context = _build_curriculum_context(
+        user, include_summer=include_summer, include_winter=include_winter,
+    )
+
+    plans = []
+    seen_signatures = set()                              # 동일 plan dedupe
+    for offset in CREDIT_OFFSETS[:num_plans]:
+        variant_credits = max(9, max_credits + offset)   # 너무 낮으면 의미 없음, 최소 9
+        semesters = _build_single_plan(
+            context, user=user,
+            max_credits=variant_credits,
+            category_weights=category_weights,
+            interest_weight=interest_weight,
+            include_summer=include_summer,
+            include_winter=include_winter,
+        )
+        if not semesters:
+            continue
+        signature = _plan_signature(semesters)
+        if signature in seen_signatures:                 # 변형이 같은 결과 내면 skip
+            continue
+        seen_signatures.add(signature)
+        plans.append({
+            'plan_number': len(plans) + 1,
+            'max_credits': variant_credits,
+            'semesters': semesters,
+        })
+        if len(plans) >= num_plans:
+            break
+    return plans
+
+
+def _plan_signature(semesters):
+    """plan dedupe용 시그니처 — 학기별 과목코드 sorted tuple."""
+    return tuple(
+        (s['year'], s['semester'], tuple(sorted(c.course_code for c in s['courses'])))
+        for s in semesters
+    )
+
+
+def _build_curriculum_context(user, *, include_summer, include_winter):
+    """plan 생성에 필요한 사용자 컨텍스트를 한 번에 빌드 (학기 루프 안 N+1 방지)."""
+    interest_categories = set(user.interests.values_list('category', flat=True))
+
+    # Hard filter — 이수 + 현재 수강 중 제외
+    taken_codes = set(user.course_histories.values_list('course_code', flat=True))
+    current_codes = set(user.current_courses.values_list('course_code', flat=True))
+    excluded_codes = taken_codes | current_codes
+
+    # 학기 슬롯 필터 — include_summer/winter에 따라 3/4 토글
+    allowed_sems = [1, 2]
+    if include_summer:
+        allowed_sems.append(3)                          # 하계
+    if include_winter:
+        allowed_sems.append(4)                          # 동계
+
+    # 후보 — 사용자 전공 또는 교양 중에서 위 학기 슬롯에 열리는 것만
+    candidates = list(
+        Course.objects.filter(
+            Q(major=user.major) | Q(category__in=['교양필수', '교양선택']),
+            semester_open__in=allowed_sems,
+        )
+        .exclude(course_code__in=excluded_codes)
+        .prefetch_related('schedules', 'prerequisites')
+    )
+
+    # 졸업요건 잔여학점 (카테고리별) — 점수의 BONUS_CATEGORY_SHORT용
+    completed_credits_by_cat = {}
+    for h in user.course_histories.all():
+        completed_credits_by_cat[h.category] = (
+            completed_credits_by_cat.get(h.category, 0) + h.credits
+        )
+    remaining_by_cat = {}
+    if user.major and user.admission_year:
+        for req in GraduationRequirement.objects.filter(
+            department=user.major, admission_year=user.admission_year,
+        ):
+            done = completed_credits_by_cat.get(req.category, 0)
+            remaining_by_cat[req.category] = max(0, req.required_credits - done)
+
+    # 이수 Course.id set — plan_completed_ids의 시작점 (선수과목 검사용)
+    completed_ids = set(
+        Course.objects.filter(course_code__in=taken_codes).values_list('id', flat=True)
+    )
+
+    # 선수과목 인덱스 한 번에 — 루프 안에서 매번 쿼리 안 날리도록
+    prereq_ids_by_course_id = {}
+    for cp in CoursePrerequisite.objects.filter(
+        course__in=candidates,
+    ).values('course_id', 'prerequisite_id'):
+        prereq_ids_by_course_id.setdefault(cp['course_id'], set()).add(cp['prerequisite_id'])
+
+    first_year, first_sem = _curriculum_first_slot(user)
+
+    return {
+        'candidates': candidates,
+        'completed_ids': completed_ids,
+        'remaining_by_cat': remaining_by_cat,
+        'prereq_ids_by_course_id': prereq_ids_by_course_id,
+        'first_year': first_year,
+        'first_sem': first_sem,
+        'remaining_semesters': _remaining_regular_semesters(user),
+        'interest_categories': interest_categories,
+    }
+
+
+def _build_single_plan(context, *, user, max_credits, category_weights, interest_weight,
+                       include_summer, include_winter):
+    """한 변형 plan 빌드 — 학기마다 점수 계산 후 학점 상한까지 채움.
+
+    선수과목 정책: hard filter (5.3.1과 다름). 같은 plan 안에서 prereq 학기가
+    먼저 와야 함. 미래 학기를 미리 계획하는 5.3.2 성격상 자연스러움.
+    """
+    remaining_by_cat = dict(context['remaining_by_cat'])  # 학기마다 갱신
+    plan_used_codes = set()                                # 이 plan 안에서 추천된 과목
+    plan_completed_ids = set(context['completed_ids'])     # 사용자 이수 + plan 진행분
+
+    year, sem = context['first_year'], context['first_sem']
+    regular_count = 0                                       # 정규학기만 카운트
+    semesters = []
+
+    while regular_count < context['remaining_semesters']:
+        # 이 학기 후보 — 학기 슬롯 일치 + 미사용 + (같은 학과면) prereq 충족
+        eligible = []
+        for course in context['candidates']:
+            if course.course_code in plan_used_codes:
+                continue
+            if course.semester_open != sem:                 # 이번 학기에 안 열림
+                continue
+            prereq_ids = context['prereq_ids_by_course_id'].get(course.id, set())
+            # 같은 학과 학생만 prereq 강제 (타과생은 5.3.1과 동일하게 자유)
+            if user.major and course.major == user.major and prereq_ids:
+                if not prereq_ids.issubset(plan_completed_ids):
+                    continue
+            eligible.append(course)
+
+        # 잔여 카테고리 매 학기 갱신 — 추천 진행분이 차감된 상태
+        short_cats = {cat for cat, rem in remaining_by_cat.items() if rem > 0}
+
+        scored = []
+        for course in eligible:
+            base = calculate_recommendation_score(
+                course,
+                user_grade=user.grade,
+                user_semester=user.semester,
+                user_major=user.major,
+                user_interest_categories=context['interest_categories'],
+                short_categories=short_cats,
+                completed_course_ids=plan_completed_ids,
+                course_prerequisite_ids=context['prereq_ids_by_course_id'].get(course.id, set()),
+                course_tags=course.tags,
+            )
+            # 카테고리 가중치 — 1.0이면 영향 없음. 1.5면 해당 카테고리 강력 우선
+            cat_w = category_weights.get(course.category, 1.0)
+            extra = (cat_w - 1.0) * BONUS_MAJOR_REQUIRED        # 가산 기준값(25)에 비례
+            # 관심사 가중치 — 매칭된 경우에만 추가 스케일
+            if interest_weight != 1.0 and course.tags:
+                if set(course.tags) & context['interest_categories']:
+                    extra += (interest_weight - 1.0) * BONUS_INTEREST_MATCH
+            scored.append((base + extra, course))
+
+        # 점수 DESC → 카테고리 우선순위 → course_code (5.3.1과 동일 키)
+        scored.sort(key=lambda x: (
+            -x[0], CATEGORY_PRIORITY.get(x[1].category, 99), x[1].course_code,
+        ))
+
+        # 학점 상한까지 채움 — 한 과목씩 시도, 넘치면 skip하고 다음 과목
+        sem_courses = []
+        sem_credits = 0
+        for _score, course in scored:
+            if sem_credits + course.credits > max_credits:
+                continue
+            sem_courses.append(course)
+            sem_credits += course.credits
+            plan_used_codes.add(course.course_code)
+            plan_completed_ids.add(course.id)              # 다음 학기 prereq 검사용
+            if course.category in remaining_by_cat:
+                remaining_by_cat[course.category] = max(
+                    0, remaining_by_cat[course.category] - course.credits,
+                )
+
+        if sem_courses:
+            semesters.append({
+                'year': year, 'semester': sem,
+                'courses': sem_courses,
+            })
+
+        # 정규학기만 카운트 — 계절학기는 부수
+        if sem in (1, 2):
+            regular_count += 1
+
+        year, sem = _next_curriculum_slot(
+            year, sem, include_summer=include_summer, include_winter=include_winter,
+        )
+
+    return semesters

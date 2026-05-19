@@ -82,6 +82,28 @@ SAMPLE_COURSES = [
         'professor': '한로로',
         'tags': [],
     },
+    # 계절학기 — semester_open=3 하계, =4 동계 (spec 5.3.2, #25)
+    {
+        'course_code': 'COMP391', 'name': '알고리즘심화특강',
+        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
+        'category': '전공선택', 'credits': 2, 'year_open': 3, 'semester_open': 3,  # 하계
+        'professor': '신다예',
+        'tags': ['IT/개발', '연구/R&D'],
+    },
+    {
+        'course_code': 'GEN201', 'name': '진로탐색특강',
+        'college': '교양', 'department': None, 'major': None,
+        'category': '교양선택', 'credits': 1, 'year_open': 2, 'semester_open': 3,  # 하계
+        'professor': '카레왕',
+        'tags': [],
+    },
+    {
+        'course_code': 'COMP392', 'name': '데이터분석실무특강',
+        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
+        'category': '전공선택', 'credits': 2, 'year_open': 3, 'semester_open': 4,  # 동계
+        'professor': '김윤하',
+        'tags': ['IT/개발'],
+    },
 ]
 
 
@@ -106,6 +128,10 @@ SAMPLE_SCHEDULES = [
     ('COMP302', '목', time(10, 30), time(12, 0), '창조관', '302'),
     ('GEN101', '금', time(9, 0), time(10, 30), '인문관', '101'),
     ('GEN102', '금', time(11, 0), time(12, 30), '인문관', '102'),
+    # 계절학기 — 단기 집중. 시드용 임의 시간표 (#25)
+    ('COMP391', '월', time(9, 0), time(12, 0), '창조관', '391'),   # 하계
+    ('GEN201', '화', time(13, 0), time(15, 0), '인문관', '201'),    # 하계
+    ('COMP392', '수', time(9, 0), time(12, 0), '창조관', '392'),   # 동계
 ]
 
 
