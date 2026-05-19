@@ -13,6 +13,7 @@
     python manage.py import_courses_from_xlsx data/2026_1_교양.xlsx --category 교양선택
 """
 
+import csv
 import re
 from datetime import time
 from pathlib import Path
@@ -53,6 +54,20 @@ def parse_filename(path):
     return year, semester, origin, FILE_NAME_MAPPING.get(origin)
 
 
+def parse_year_open(value):
+    """학년 셀 → 정수. '전학년' 등 학년 무관 표현은 0."""
+    s = str(value or '').strip()
+    if s == '전학년':
+        return 0  # 학년 무관 — 추천 알고리즘에서 별도 처리 필요 (#36 후속)
+    try:
+        return int(s)
+    except ValueError:
+        m = re.match(r'(\d+)', s)
+        if m:
+            return int(m.group(1))
+        return 0
+
+
 def to_time(value):
     """엑셀 셀 값(time / 'HH:MM' / 'HH:MM:SS')을 datetime.time으로 정규화."""
     if value is None or value == '':
@@ -76,6 +91,10 @@ class Command(BaseCommand):
         parser.add_argument('--department', help='학부')
         parser.add_argument('--major', help='전공')
         parser.add_argument('--category', help='이수구분 (전공필수/전공선택/교양필수/교양선택)')
+        parser.add_argument(
+            '--dump-csv', action='store_true',
+            help='엑셀과 같은 폴더에 .csv도 함께 dump (VSCode에서 미리보기/diff용)',
+        )
 
     @transaction.atomic
     def handle(self, *args, **opts):
@@ -111,6 +130,19 @@ class Command(BaseCommand):
                 f"컬럼 불일치.\n  기대: {EXPECTED_COLUMNS}\n  실제: {header}"
             )
 
+        # --dump-csv: 같은 폴더에 .csv 형태로도 dump (VSCode에서 바로 열림 + git diff용)
+        # utf-8-sig: Excel에서도 한글 안 깨지게 BOM 포함
+        csv_dump_path = None
+        if opts['dump_csv']:
+            csv_dump_path = Path(path).with_suffix('.csv')
+            with open(csv_dump_path, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(EXPECTED_COLUMNS)
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if not row[0]:
+                        continue
+                    writer.writerow(['' if c is None else str(c) for c in row])
+
         n_course_new = n_offering_new = n_schedule_new = 0
         n_rows = 0
 
@@ -132,7 +164,7 @@ class Command(BaseCommand):
                     'major': major,
                     'category': category,
                     'credits': int(credits) if credits else 0,
-                    'year_open': int(year_open),
+                    'year_open': parse_year_open(year_open),
                     'semester_open': int(semester),
                     'professor': professor or '',  # 분반 여러 개면 마지막 행 값으로 덮음 (Course.professor는 호환용 레거시)
                 },
@@ -168,10 +200,13 @@ class Command(BaseCommand):
             if created:
                 n_schedule_new += 1
 
-        self.stdout.write(self.style.SUCCESS(
+        msg = (
             f"[OK] {path}\n"
             f"  학기: {year}-{semester}\n"
             f"  매핑: college={college!r} dept={department!r} major={major!r} category={category!r}\n"
             f"  처리 행 수: {n_rows}\n"
             f"  신규 Course: {n_course_new} / Offering: {n_offering_new} / Schedule: {n_schedule_new}"
-        ))
+        )
+        if csv_dump_path:
+            msg += f"\n  CSV dump: {csv_dump_path}"
+        self.stdout.write(self.style.SUCCESS(msg))
