@@ -1,0 +1,177 @@
+"""강의시간표 엑셀(.xlsx) → Course/CourseOffering/CourseSchedule 시딩 (#36).
+
+컬럼 15개 (spec 5.1 정의):
+    학년 / 교과목명 / 과목코드 / 학과코드 / 과목번호 / 학점 / 시간 /
+    담당교수 / 강좌번호 / 제한인원 / 요일 / 시작시간 / 종료시간 / 강의실 / 비고
+
+파일명에서 연도/학기 추출 — 2026_1_컴퓨터공학전공.xlsx → year=2026, semester=1
+파일명 마지막 토큰으로 college/department/major/category 기본값 매핑.
+매핑 없거나 다른 값 쓰고 싶으면 --college 등 인자로 override.
+
+사용 예:
+    python manage.py import_courses_from_xlsx data/2026_1_컴퓨터공학전공.xlsx
+    python manage.py import_courses_from_xlsx data/2026_1_교양.xlsx --category 교양선택
+"""
+
+import re
+from datetime import time
+from pathlib import Path
+
+import openpyxl
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+
+from courses.models import Course, CourseOffering, CourseSchedule
+
+
+# 기대 컬럼 — 헤더가 정확히 이 순서로 와야 함 (spec 5.1)
+EXPECTED_COLUMNS = [
+    '학년', '교과목명', '과목코드', '학과코드', '과목번호', '학점', '시간',
+    '담당교수', '강좌번호', '제한인원', '요일', '시작시간', '종료시간', '강의실', '비고',
+]
+
+# 파일명 마지막 토큰 → (college, department, major, category) 기본 매핑
+# 없는 토큰이면 --college / --category 인자로 보강해야 함
+FILE_NAME_MAPPING = {
+    '컴퓨터공학전공': ('반도체·ICT대학', '컴퓨터정보통신공학부', '컴퓨터공학전공', '전공선택'),
+    '컴퓨터정보통신공학부': ('반도체·ICT대학', '컴퓨터정보통신공학부', None, '전공선택'),
+    '반도체ICT대학': ('반도체·ICT대학', None, None, '전공선택'),
+    '교양': ('교양', None, None, '교양선택'),
+}
+
+FILE_NAME_PATTERN = re.compile(r'(\d{4})_(\d)_(.+)\.xlsx$')
+
+
+def parse_filename(path):
+    name = Path(path).name
+    m = FILE_NAME_PATTERN.match(name)
+    if not m:
+        return None, None, None, None
+    year = int(m.group(1))
+    semester = int(m.group(2))
+    origin = m.group(3)  # 파일명 마지막 토큰 (예: '컴퓨터공학전공')
+    return year, semester, origin, FILE_NAME_MAPPING.get(origin)
+
+
+def to_time(value):
+    """엑셀 셀 값(time / 'HH:MM' / 'HH:MM:SS')을 datetime.time으로 정규화."""
+    if value is None or value == '':
+        return None
+    if isinstance(value, time):
+        return value
+    parts = str(value).strip().split(':')
+    if len(parts) >= 2:
+        return time(int(parts[0]), int(parts[1]))
+    raise ValueError(f"시간 파싱 실패: {value!r}")
+
+
+class Command(BaseCommand):
+    help = '강의시간표 엑셀(.xlsx) → Course/CourseOffering/CourseSchedule 시딩 (#36)'
+
+    def add_arguments(self, parser):
+        parser.add_argument('path', help='엑셀 파일 경로')
+        parser.add_argument('--year', type=int, help='연도 (없으면 파일명에서 추출)')
+        parser.add_argument('--semester', type=int, help='학기 1/2/3/4 (없으면 파일명에서 추출)')
+        parser.add_argument('--college', help='대학 (파일명 매핑 없으면 필요)')
+        parser.add_argument('--department', help='학부')
+        parser.add_argument('--major', help='전공')
+        parser.add_argument('--category', help='이수구분 (전공필수/전공선택/교양필수/교양선택)')
+
+    @transaction.atomic
+    def handle(self, *args, **opts):
+        path = opts['path']
+        f_year, f_semester, origin, mapping = parse_filename(path)
+        # 인자가 있으면 인자 우선, 없으면 파일명 추정값 (fallback)
+        year = opts['year'] or f_year
+        semester = opts['semester'] or f_semester
+        if not year or not semester:
+            raise CommandError(
+                "연도/학기 추출 실패. 파일명 패턴(YYYY_S_*.xlsx) 또는 --year/--semester 필요"
+            )
+
+        default_college = default_dept = default_major = default_category = None
+        if mapping:
+            default_college, default_dept, default_major, default_category = mapping
+        college = opts['college'] or default_college
+        department = opts['department'] or default_dept
+        major = opts['major'] or default_major
+        category = opts['category'] or default_category
+
+        if not college or not category:
+            raise CommandError(
+                f"college/category 필요. 파일명 토큰({origin!r}) 매핑 없으면 "
+                "--college, --category 지정"
+            )
+
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb.active
+        header = [c.value for c in ws[1]]
+        if header != EXPECTED_COLUMNS:
+            raise CommandError(
+                f"컬럼 불일치.\n  기대: {EXPECTED_COLUMNS}\n  실제: {header}"
+            )
+
+        n_course_new = n_offering_new = n_schedule_new = 0
+        n_rows = 0
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row[0]:  # 학년 비어있는 행 skip (엑셀 trailing 빈줄 등)
+                continue
+            (year_open, name, course_code, _dept_code, _course_no, credits, _hours,
+             professor, section_no, capacity, day, start, end, room, note) = row
+            n_rows += 1
+
+            # Course — 과목코드 unique. 같은 과목코드가 분반/요일별로 여러 행에 등장하므로 update_or_create.
+            # semester_open은 권장 학기 의미라 import 학기로 일단 채움 (Course 단위로 더 정확한 값이 없음, 추후 보정)
+            course, created = Course.objects.update_or_create(
+                course_code=course_code,
+                defaults={
+                    'name': name,
+                    'college': college,
+                    'department': department,
+                    'major': major,
+                    'category': category,
+                    'credits': int(credits) if credits else 0,
+                    'year_open': int(year_open),
+                    'semester_open': int(semester),
+                    'professor': professor or '',  # 분반 여러 개면 마지막 행 값으로 덮음 (Course.professor는 호환용 레거시)
+                },
+            )
+            if created:
+                n_course_new += 1
+
+            # CourseOffering — (year, semester, section_no) unique (강좌번호는 학기 안에서 유일)
+            offering, created = CourseOffering.objects.update_or_create(
+                year=year, semester=semester, section_no=str(section_no),
+                defaults={
+                    'course': course,
+                    'professor': professor or '',
+                    'capacity': int(capacity) if capacity else None,
+                    'note': note or '',
+                },
+            )
+            if created:
+                n_offering_new += 1
+
+            # CourseSchedule — (offering, 요일) 1행. course FK도 동시 채움 (기존 추천 알고리즘이 course.schedules 참조)
+            _, created = CourseSchedule.objects.update_or_create(
+                offering=offering,
+                day_of_week=day,
+                defaults={
+                    'course': course,
+                    'start_time': to_time(start),
+                    'end_time': to_time(end),
+                    'building': '',
+                    'room': str(room) if room else '',
+                },
+            )
+            if created:
+                n_schedule_new += 1
+
+        self.stdout.write(self.style.SUCCESS(
+            f"[OK] {path}\n"
+            f"  학기: {year}-{semester}\n"
+            f"  매핑: college={college!r} dept={department!r} major={major!r} category={category!r}\n"
+            f"  처리 행 수: {n_rows}\n"
+            f"  신규 Course: {n_course_new} / Offering: {n_offering_new} / Schedule: {n_schedule_new}"
+        ))
