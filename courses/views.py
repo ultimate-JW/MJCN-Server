@@ -157,9 +157,9 @@ class NextSemesterRecommendView(APIView):
     spec 5.3.1 규칙 기반 점수 알고리즘으로 정렬된 단일 리스트 응답.
     Hard Filter(이수/수강 중)는 services에서 처리, Soft Constraint는 점수에 반영.
 
-    TODO(별도 이슈): 학교 PDF로 받은 "다음 학기 실제 개설 과목" 정보가 DB에
-    들어오면 후보를 그 학기 개설분으로 한정하고 본 view에 학기 인자(쿼리 파라미터)
-    노출. 지금은 시드/임시 데이터 기반이라 학기 적합성은 점수로만 반영.
+    TODO(#36): 강의시간표 엑셀 import로 들어온 CourseOffering 데이터가 쌓이면
+    후보를 그 학기 개설분으로 한정하고 본 view에 학기 인자(쿼리 파라미터) 노출.
+    지금은 시드/임시 데이터 기반이라 학기 적합성은 점수로만 반영.
     """
     permission_classes = [IsAuthenticated]
 

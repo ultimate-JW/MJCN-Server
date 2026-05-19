@@ -828,7 +828,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 > - **MVP 범위**: 컴퓨터공학전공 과목 데이터만 우선 구축(시간 남으면 전공 1개 더 추가)
 > - **시딩 대상 테이블**: Course, CourseSchedule, CoursePrerequisite, GraduationRequirement
 > - **데이터 출처**: 명지대학교 학사 시스템 MSI의 "강의시간표"
-> - **입력 포맷**: 엑셀(.xlsx) 가정 (학교 PDF → 엑셀 변환본)
+> - **입력 포맷**: 엑셀(.xlsx)
 > - **강의시간표 엑셀 컬럼 (입력 스펙, 15개)**:
 >   `학년 / 교과목명 / 과목코드 / 학과코드 / 과목번호 / 학점 / 시간 / 담당교수 / 강좌번호 / 제한인원 / 요일 / 시작시간 / 종료시간 / 강의실 / 비고`
 > - **시딩 방법**: Django fixture 또는 management command (`import_courses_from_xlsx`)

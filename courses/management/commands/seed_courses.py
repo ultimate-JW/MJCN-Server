@@ -24,7 +24,7 @@ from courses.models import (
 
 # 샘플 과목 (컴퓨터공학전공 + 교양 일부)
 # [임시 더미 데이터] tags 포함 전부 개발/테스트용.
-# 실서비스 데이터는 학교 PDF import + 별도 태깅 단계로 처리 예정 (#24 범위 밖, 별도 이슈)
+# 실서비스 데이터는 강의시간표 엑셀 import (#36, import_courses_from_xlsx) + 별도 태깅 단계로 처리.
 SAMPLE_COURSES = [
     {
         'course_code': 'COMP101', 'name': '프로그래밍기초',
