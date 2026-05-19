@@ -989,6 +989,26 @@ class CalculateScoreTests(SimpleTestCase):
         score = self._score(course)
         self.assertEqual(score, 100)
 
+    # ----- year_open=0 (전학년) sentinel — 학년 관련 가감산 모두 skip (#36) -----
+
+    def test_전학년_과목은_학년_비교_가감_모두_skip(self):
+        """year_open=0 — 어떤 학년 학생에게도 중립. 학기 다르고 BACKLOG 대상 아니므로 100."""
+        course = self._course(category='전공선택', year_open=0, semester_open=2)
+        score = self._score(course)
+        self.assertEqual(score, 100)
+
+    def test_전학년_전공필수는_BACKLOG_가산_안받고_전필_자체_가산만(self):
+        """전학년 전공필수 = '밀린 필수' 의미가 아님. BACKLOG +10 발동 X, 전필 +25만."""
+        course = self._course(category='전공필수', year_open=0, semester_open=2)
+        score = self._score(course)
+        self.assertEqual(score, 100 + BONUS_MAJOR_REQUIRED)
+
+    def test_전학년_같은_학기여도_GRADE_SEMESTER_MATCH_가산_없음(self):
+        """학년 비교 자체 skip이라 매칭 조건도 발동 X."""
+        course = self._course(category='전공선택', year_open=0, semester_open=1)
+        score = self._score(course)
+        self.assertEqual(score, 100)
+
     def test_동일학과_선수과목_미이수시_PENALTY_PREREQUISITE_MISSING_감점(self):
         course = self._course(category='전공선택', major='컴퓨터공학전공')
         score = self._score(

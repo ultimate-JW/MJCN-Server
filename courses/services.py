@@ -241,6 +241,11 @@ def calculate_recommendation_score(
             (밀린 필수 과목 — 졸업 지연 방지용 우선 노출)
       -10  course.year_open > user_grade
       -15  user_major == course.major AND 선수과목 미이수
+
+    학년 무관 sentinel:
+      course.year_open == 0 은 "전학년 대상" (강의시간표 import에서 매핑, #36).
+      위 학년 비교 분기(==/</> 셋 다)는 전부 skip — 어떤 학년 학생에게도
+      중립 노출. 카테고리/관심사/선수 가감산은 정상 적용.
     """
     score = 100  # 기준점. 여기에 항목별 가감산
 
@@ -261,19 +266,17 @@ def calculate_recommendation_score(
     if course.category == '교양필수':
         score += BONUS_LIBERAL_REQUIRED
 
-    # 학년/학기 적합성
-    if user_grade is not None and user_semester is not None:
+    # 학년/학기 적합성 — year_open=0 은 "전학년 대상" sentinel (#36 import에서 매핑)
+    # 어떤 학년 학생에게도 동일하게 적합해야 하므로 학년 관련 가감산 전부 skip
+    if user_grade is not None and course.year_open != 0:
         # 권장 학년/학기와 일치 가산
-        if course.year_open == user_grade and course.semester_open == user_semester:
+        if user_semester is not None and course.year_open == user_grade and course.semester_open == user_semester:
             score += BONUS_GRADE_SEMESTER_MATCH
         # 권장 학년이 사용자보다 위 감점
         if course.year_open > user_grade:
             score -= PENALTY_GRADE_EXCEEDED
-
-    # 권장 학년이 지난 "전공필수/교양필수" 가산
-    #    (졸업 지연 방지 목적. 일반선택/전공선택은 해당 없음)
-    if user_grade is not None and course.year_open < user_grade:
-        if course.category in BACKLOG_REQUIRED_CATEGORIES:
+        # 권장 학년이 지난 "전공필수/교양필수" 가산 — 졸업 지연 방지 (일반선택/전공선택 제외)
+        if course.year_open < user_grade and course.category in BACKLOG_REQUIRED_CATEGORIES:
             score += BONUS_BACKLOG_REQUIRED
 
     # 선수과목 미이수 감점
