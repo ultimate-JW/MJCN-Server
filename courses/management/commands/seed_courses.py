@@ -1,138 +1,21 @@
-"""courses 앱 더미 데이터 시딩 명령.
+"""courses 앱 졸업요건·학사일정 시딩 명령.
 
 사용 예:
     python manage.py seed_courses
 
-여러 번 실행해도 안전 (course_code / unique_together 기준 update_or_create).
-실제 학교 데이터는 추후 SAMPLE_* 리스트만 교체하면 됨.
+여러 번 실행해도 안전 (unique_together 기준 update_or_create).
 
+과목/분반/시간표는 강의시간표 엑셀 import(import_courses_from_xlsx, #36)로 들어온다.
+기존 더미 과목(COMP101 등)·더미 시간표·더미 선수과목은 실제 데이터 도입에 따라 제거됨.
+실제 선수과목 관계는 강의시간표 엑셀에 없어 별도 import 경로로 추가 예정 (#36 후속).
 """
 
-from datetime import date, time
+from datetime import date
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from courses.models import (
-    AcademicCalendar,
-    Course,
-    CoursePrerequisite,
-    CourseSchedule,
-    GraduationRequirement,
-)
-
-
-# 샘플 과목 (컴퓨터공학전공 + 교양 일부)
-# [임시 더미 데이터] tags 포함 전부 개발/테스트용.
-# 실서비스 데이터는 강의시간표 엑셀 import (#36, import_courses_from_xlsx) + 별도 태깅 단계로 처리.
-SAMPLE_COURSES = [
-    {
-        'course_code': 'COMP101', 'name': '프로그래밍기초',
-        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
-        'category': '전공필수', 'credits': 3, 'year_open': 1, 'semester_open': 1,
-        'professor': '이설하',
-        'tags': ['IT/개발'],
-    },
-    {
-        'course_code': 'COMP102', 'name': '이산수학',
-        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
-        'category': '전공필수', 'credits': 3, 'year_open': 1, 'semester_open': 2,
-        'professor': '김세훈',
-        'tags': ['IT/개발', '연구/R&D'],
-    },
-    {
-        'course_code': 'COMP201', 'name': '자료구조',
-        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
-        'category': '전공필수', 'credits': 3, 'year_open': 2, 'semester_open': 1,
-        'professor': '최진원',
-        'tags': ['IT/개발'],
-    },
-    {
-        'course_code': 'COMP202', 'name': '객체지향프로그래밍',
-        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
-        'category': '전공필수', 'credits': 3, 'year_open': 2, 'semester_open': 1,
-        'professor': '진소은',
-        'tags': ['IT/개발'],
-    },
-    {
-        'course_code': 'COMP301', 'name': '알고리즘',
-        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
-        'category': '전공필수', 'credits': 3, 'year_open': 3, 'semester_open': 1,
-        'professor': '신다예',
-        'tags': ['IT/개발', '연구/R&D'],
-    },
-    {
-        'course_code': 'COMP302', 'name': '데이터베이스',
-        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
-        'category': '전공선택', 'credits': 3, 'year_open': 3, 'semester_open': 2,
-        'professor': '김윤하',
-        'tags': ['IT/개발'],
-    },
-    {
-        'course_code': 'GEN101', 'name': '대학영어',
-        'college': '교양', 'department': None, 'major': None,
-        'category': '교양필수', 'credits': 2, 'year_open': 1, 'semester_open': 1,
-        'professor': '카레왕',
-        'tags': [],
-    },
-    {
-        'course_code': 'GEN102', 'name': '글쓰기',
-        'college': '교양', 'department': None, 'major': None,
-        'category': '교양필수', 'credits': 2, 'year_open': 1, 'semester_open': 2,
-        'professor': '한로로',
-        'tags': [],
-    },
-    # 계절학기 — semester_open=3 하계, =4 동계 (spec 5.3.2, #25)
-    {
-        'course_code': 'COMP391', 'name': '알고리즘심화특강',
-        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
-        'category': '전공선택', 'credits': 2, 'year_open': 3, 'semester_open': 3,  # 하계
-        'professor': '신다예',
-        'tags': ['IT/개발', '연구/R&D'],
-    },
-    {
-        'course_code': 'GEN201', 'name': '진로탐색특강',
-        'college': '교양', 'department': None, 'major': None,
-        'category': '교양선택', 'credits': 1, 'year_open': 2, 'semester_open': 3,  # 하계
-        'professor': '카레왕',
-        'tags': [],
-    },
-    {
-        'course_code': 'COMP392', 'name': '데이터분석실무특강',
-        'college': '반도체·ICT대학', 'department': '컴퓨터정보통신공학부', 'major': '컴퓨터공학전공',
-        'category': '전공선택', 'credits': 2, 'year_open': 3, 'semester_open': 4,  # 동계
-        'professor': '김윤하',
-        'tags': ['IT/개발'],
-    },
-]
-
-
-# 선수과목 관계 (course_code 기준)
-SAMPLE_PREREQUISITES = [
-    ('COMP201', 'COMP101'),  # 자료구조 ← 프로그래밍기초
-    ('COMP202', 'COMP101'),  # 객체지향프로그래밍 ← 프로그래밍기초
-    ('COMP301', 'COMP201'),  # 알고리즘 ← 자료구조
-    ('COMP302', 'COMP201'),  # 데이터베이스 ← 자료구조
-]
-
-
-# 시간표 (course_code, day, start, end, building, room)
-SAMPLE_SCHEDULES = [
-    ('COMP101', '월', time(9, 0), time(10, 30), '창조관', '101'),
-    ('COMP101', '수', time(9, 0), time(10, 30), '창조관', '101'),
-    ('COMP102', '화', time(10, 30), time(12, 0), '창조관', '102'),
-    ('COMP201', '월', time(13, 0), time(14, 30), '창조관', '201'),
-    ('COMP201', '수', time(13, 0), time(14, 30), '창조관', '201'),
-    ('COMP202', '화', time(13, 0), time(14, 30), '창조관', '202'),
-    ('COMP301', '월', time(15, 0), time(16, 30), '창조관', '301'),
-    ('COMP302', '목', time(10, 30), time(12, 0), '창조관', '302'),
-    ('GEN101', '금', time(9, 0), time(10, 30), '인문관', '101'),
-    ('GEN102', '금', time(11, 0), time(12, 30), '인문관', '102'),
-    # 계절학기 — 단기 집중. 시드용 임의 시간표 (#25)
-    ('COMP391', '월', time(9, 0), time(12, 0), '창조관', '391'),   # 하계
-    ('GEN201', '화', time(13, 0), time(15, 0), '인문관', '201'),    # 하계
-    ('COMP392', '수', time(9, 0), time(12, 0), '창조관', '392'),   # 동계
-]
+from courses.models import AcademicCalendar, GraduationRequirement
 
 
 # 졸업요건 (컴퓨터공학전공 / 2024년 입학)
@@ -176,48 +59,13 @@ SAMPLE_ACADEMIC_CALENDAR = [
 
 
 class Command(BaseCommand):
-    help = 'courses 앱 더미 데이터 시딩 (개발/테스트용)'
+    help = 'courses 앱 졸업요건·학사일정 시딩 (과목 데이터는 import_courses_from_xlsx 사용)'
 
     @transaction.atomic
     def handle(self, *args, **options):
-        course_map = self._seed_courses()
-        self._seed_schedules(course_map)
-        self._seed_prerequisites(course_map)
         self._seed_graduation_requirements()
         self._seed_academic_calendar()
         self.stdout.write(self.style.SUCCESS('시딩 완료'))
-
-    def _seed_courses(self):
-        course_map = {}
-        for data in SAMPLE_COURSES:
-            course, _ = Course.objects.update_or_create(
-                course_code=data['course_code'],
-                defaults={k: v for k, v in data.items() if k != 'course_code'},
-            )
-            course_map[data['course_code']] = course
-        self.stdout.write(f'  Course: {len(course_map)}개')
-        return course_map
-
-    def _seed_schedules(self, course_map):
-        # 시간표는 (course, day, start_time) 조합 기준 중복 제거
-        count = 0
-        for code, day, start, end, building, room in SAMPLE_SCHEDULES:
-            CourseSchedule.objects.update_or_create(
-                course=course_map[code], day_of_week=day, start_time=start,
-                defaults={'end_time': end, 'building': building, 'room': room},
-            )
-            count += 1
-        self.stdout.write(f'  CourseSchedule: {count}개')
-
-    def _seed_prerequisites(self, course_map):
-        count = 0
-        for course_code, prereq_code in SAMPLE_PREREQUISITES:
-            CoursePrerequisite.objects.update_or_create(
-                course=course_map[course_code],
-                prerequisite=course_map[prereq_code],
-            )
-            count += 1
-        self.stdout.write(f'  CoursePrerequisite: {count}개')
 
     def _seed_graduation_requirements(self):
         for data in SAMPLE_GRADUATION_REQUIREMENTS:
