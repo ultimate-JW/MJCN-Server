@@ -14,7 +14,6 @@ from .serializers import (
     NextSemesterRecommendationSerializer,
 )
 from .services import (
-    calc_graduation_progress,
     generate_curriculum_plans,
     recommend_next_semester_courses,
 )
@@ -132,23 +131,6 @@ class CompletionStatusView(APIView):
 
 
 # 졸업까지 진척도 (spec 5.3.5)
-class GraduationProgressView(APIView):
-    """
-    GET /api/v1/courses/graduation-progress/ - 졸업까지 진척도
-
-    NOTE: spec 5.8에 따르면 최종적으로 dashboard 메인 응답에 통합될
-    필드(`graduation_progress_percent`)이다. dashboard 앱이 만들어지면
-    이 View는 제거하고 `services.calc_graduation_progress`를 dashboard
-    응답 빌더에서 호출하면 된다.
-    """
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        return Response({
-            'graduation_progress_percent': calc_graduation_progress(request.user),
-        })
-
-
 # 다음학기 추천
 class NextSemesterRecommendView(APIView):
     """

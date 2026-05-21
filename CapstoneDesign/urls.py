@@ -10,6 +10,7 @@ urlpatterns = [
     path('api/v1/accounts/', include('accounts.urls')),
     path('api/v1/bookmarks/', include('accounts.bookmark_urls')),
     path('api/v1/courses/', include('courses.urls')),
+    path('api/v1/dashboard/', include('dashboard.urls')),
     path('api/v1/notices/', include('notices.urls')),
     path('api/v1/information/', include('information.urls')),
     path('api/v1/notifications/', include('notifications.urls')),

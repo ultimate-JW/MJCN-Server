@@ -1707,6 +1707,46 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 |--------|-----|------|------|
 | GET | `/api/v1/dashboard/` | O | 메인화면 집계 데이터 |
 
+메인화면에 필요한 데이터를 단일 호출로 집계해 반환한다 (5.8). 새 모델 없이 기존 앱(courses / notices / information / notifications / accounts) 데이터를 읽어 조합하는 읽기 전용 엔드포인트.
+
+#### 응답 스키마
+
+```json
+{
+  "greeting": {
+    "user_name": "홍길동",
+    "weekday": "목",
+    "today_class_count": 3
+  },
+  "graduation_progress_percent": 47,
+  "today_schedule": [
+    {
+      "id": 12,
+      "course_name": "자료구조",
+      "course_code": "CSE2010",
+      "day_of_week": "목",
+      "start_time": "09:00:00",
+      "end_time": "10:30:00",
+      "professor": "김교수",
+      "room": "5301",
+      "building": "공학관"
+    }
+  ],
+  "notices": [ /* 공지 목록 항목 (6.7 NoticeListSerializer) — 최대 3개 */ ],
+  "information": [ /* 정보 목록 항목 (6.8) + d_day — 최대 3개 */ ],
+  "unread_notification_count": 5
+}
+```
+
+#### 응답 정책
+
+- **greeting**: `user_name`은 `User.name`(미입력 시 빈 문자열), `weekday`는 오늘 요일(월~일 한글), `today_class_count`는 `today_schedule` 길이.
+- **graduation_progress_percent**: 5.3.5 계산 결과(0~100 정수). 별도 단독 엔드포인트는 두지 않고 본 응답으로만 노출한다.
+- **today_schedule**: `CurrentCourse` 중 오늘 요일 항목을 `start_time` 오름차순 정렬. 주말 등 수업 없으면 빈 배열.
+- **notices**: 관심사 매칭(5.10) 점수 내림차순 → 동점 시 최신순으로 정렬한 상위 3개. **맞춤형(매칭) 공지를 우선 노출하되, 매칭 결과가 3개 미만이면 부족분을 최신 공지로 채운다** (매칭 0개여도 3개 반환). 출처 제한 없음(오픈톡 포함).
+- **information**: `is_active=True`이고 미마감(`end_date`가 없거나 오늘 이후)인 항목만 대상. 관심사 매칭 점수 내림차순 → 동점 시 마감 임박(`end_date` 오름차순) 순 상위 3개. notices와 동일하게 부족분은 마감 임박 순으로 채운다. 각 항목에 `d_day`(마감까지 남은 일수, `end_date` 없으면 `null`) 필드를 추가한다.
+- **unread_notification_count**: 해당 사용자의 `is_read=False` 알림 수.
+
 ### 6.11 북마크 (accounts)
 
 | Method | URL | 인증 | 설명 |
