@@ -647,7 +647,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | notification_type | CharField | 알림 종류 (notice/information/course/system) |
 | related_id | IntegerField(null) | 관련 객체 ID (notification_type에 따라 다른 테이블 ID, 프론트 화면 이동용) |
 | is_read | BooleanField(default=False) | 읽음 여부 |
-| is_pushed | BooleanField(default=False) | FCM 전송 여부 |
+| is_pushed | BooleanField(default=False) | FCM 푸시 송신 완료 여부 (`send_pending_pushes` cron이 마킹, spec 9.3) |
 | created_at | DateTimeField | 알림 생성 시각 |
 
 #### FCMDevice (디바이스 토큰)
@@ -1648,7 +1648,12 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 **성능**:
 - 사용자 N × 신규 콘텐츠 M = N×M INSERT. 현 단계는 단순 루프 (`create_notification` 호출). bulk 최적화는 별 PR.
 
-**FCM 푸시 송신**: 위 fanout은 인앱 알림(Notification row)만 생성. 실제 디바이스 푸시는 Out of Scope (Firebase Admin SDK 통합 PR).
+**FCM 푸시 송신**: 위 fanout은 인앱 알림(`Notification` row)만 생성한다. 실제 디바이스 푸시는 별도 cron 명령 `send_pending_pushes`가 담당한다 (spec 9.3).
+
+- **방식**: 매일 06:35 KST cron — `is_pushed=False`이고 `created_at`이 최근 24시간 이내인 `Notification`을 사용자의 활성 `FCMDevice`로 멀티캐스트 송신. crawl(06:00)+fanout과 분리돼 크롤링이 FCM 장애에 묶이지 않는다.
+- **`is_pushed` 상태머신**: 송신 성공 또는 활성 디바이스 없음 → `True` (재시도 안 함). transient 실패(FCM 5xx·네트워크) → `False` 유지(다음 cron 재시도). `created_at` 24시간 초과 → 푸시 없이 `True` (누락된 cron 복구 후 노후 알림 폭주 방지 — 인앱 row는 유지돼 앱에서 조회 가능).
+- **죽은 토큰**: FCM이 토큰을 `Unregistered`/`InvalidArgument`로 보고하면 해당 `FCMDevice.is_active=False`로 비활성화.
+- **자격증명 미설정 시**: `FIREBASE_CREDENTIALS_PATH`가 비어 있으면 graceful no-op (로컬 개발·테스트는 자격증명 없이 동작 — 이메일 콘솔 폴백과 동일 철학).
 
 #### 응답 스키마 — 목록
 
@@ -1698,7 +1703,6 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 
 #### Out of Scope (다음 PR)
 
-- 실제 FCM 푸시 송신 (Firebase Admin SDK 통합, 이벤트 → push 발송 트리거)
 - 알림 스케줄링 (spec 7 — 마감일 D-1 자동 발송 등)
 
 ### 6.10 대시보드 (dashboard)
@@ -1907,6 +1911,9 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 - 공지사항 AI 처리: 매일 06:30 KST (크롤링 완료 직후 정기 실행)
   - 1차 구현: 운영 서버 cron + `manage.py process_notices_ai` 명령
   - 미처리(`pending`) + 본문 변경 감지(`content_hash` 불일치)된 공지만 처리 (멱등)
+- FCM 푸시 송신: 매일 06:35 KST (crawl+fanout 완료 직후)
+  - 1차 구현: 운영 서버 cron + `manage.py send_pending_pushes` 명령
+  - `is_pushed=False`이고 최근 24시간 이내인 알림만 송신 (멱등 — 재실행 안전)
 - AI 응답: 스트리밍 응답 고려 (SSE 또는 polling)
 - DB 인덱싱: 자주 조회되는 필드 (user, created_at, deadline 등)
 - API 페이지네이션: 기본 20개, 최대 100개
@@ -2264,8 +2271,10 @@ Notice.extracted_content에 추출 텍스트 저장
 
 - 안드로이드 앱으로 PUSH 알림 전송
 - 백엔드에서 `firebase-admin` SDK 사용
-- 앱 로그인 시 FCM 토큰을 서버에 등록, 로그아웃 시 삭제
-- 알림 발생 시 해당 사용자의 활성 디바이스로 PUSH 전송
+- 앱 로그인 시 FCM 토큰을 서버에 등록(`POST /devices/`), 로그아웃 시 삭제
+- **송신 방식**: `manage.py send_pending_pushes` 명령을 매일 06:35 KST cron으로 실행. `is_pushed=False`이고 최근 24시간 이내인 `Notification`을 사용자의 활성 `FCMDevice`로 멀티캐스트 송신 후 `is_pushed=True` 마킹 (spec 6.9 상태머신 참고)
+- **죽은 토큰 정리**: FCM이 `Unregistered`/`InvalidArgument`로 보고한 토큰은 `FCMDevice.is_active=False`로 비활성화
+- **자격증명**: 서비스 계정 JSON 키 경로를 `FIREBASE_CREDENTIALS_PATH` 환경변수로 주입. 미설정 시 송신 명령은 graceful no-op (로컬·테스트는 자격증명 없이 동작)
 
 ### 9.4 이메일 발송
 
@@ -2354,6 +2363,7 @@ Notice.extracted_content에 추출 텍스트 저장
 ### Phase 5 - 알림 + 마무리 (2주)
 
 - [ ] notifications 앱: 알림 모델 + 조회/읽음처리 API
+- [ ] FCM 푸시 송신: `send_pending_pushes` 명령 + 매일 06:35 KST cron 등록
 - [ ] 맞춤 추천 알림 스케줄링 (마감일 전날 등)
 - [ ] API 통합 테스트 + Swagger 문서 검증
 - [ ] 운영 환경 설정 (PostgreSQL, 환경변수 등)
@@ -2373,6 +2383,7 @@ Notice.extracted_content에 추출 텍스트 저장
 3. **환경변수 관리** - `python-dotenv` 또는 `django-environ` 도입
    - 필수 키: `SECRET_KEY`, `DEBUG`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`
    - AI 파이프라인: `OPENAI_API_KEY` (필수), `OPENAI_MODEL` (선택, 기본 `gpt-4o-mini`)
+   - FCM 푸시 (spec 9.3): `FIREBASE_CREDENTIALS_PATH` (서비스 계정 JSON 경로, 미설정 시 송신 no-op)
    - 카카오 로그인 (spec 5.1.3):
      - `KAKAO_REST_API_KEY` (필수, 카카오 콘솔 "앱 키" 화면의 REST API 키)
      - `KAKAO_CLIENT_SECRET` (권장, 콘솔 "보안" 또는 "고급" 메뉴에서 발급)
