@@ -380,6 +380,7 @@ User ||--o{ Bookmark : "has"
 | semester | IntegerField | 수강 학기 |
 | grade_received | CharField(blank) | 취득 성적 |
 | category | CharField | 전공필수/전공선택/교양필수/교양선택/일반선택 |
+| liberal_subtype | CharField(null, blank) | 교양 4종 — 공통교양/핵심교양/학문기초교양/일반교양. 저장 시 course_code로 Course 찾아 자동 채움 (#47). 명시값은 안 덮음. bulk_create는 save() 우회하므로 별도 보강 필요. |
 | credits | IntegerField | 학점 수 |
 
 - unique_together: (user, course_code, year, semester) — 동일 학기 같은 과목 중복 등록 방지
@@ -565,9 +566,12 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 |------|------|---------------------|
 | department | CharField | 학과                  |
 | admission_year | IntegerField | 입학 연도               |
-| category | CharField | 전공필수/전공선택/교양필수/교양선택/일반선택 |
+| category | CharField | 전공필수/전공선택/교양필수/교양선택/자유선택 |
+| liberal_subtype | CharField(null, blank) | 교양 4종 — 공통교양/핵심교양/학문기초교양/일반교양. 학칙 §1·§3 4종 분해 진척도용 (#47). 전공/자유선택 row는 null. |
 | required_credits | IntegerField | 필요 학점               |
 | total_required | IntegerField | 총 졸업 학점             |
+
+- **유니크 제약**: `(department, admission_year, category, liberal_subtype)`. SQLite/PG는 표준 SQL NULL != NULL 정책상 `liberal_subtype=NULL` row 끼리는 (전공/자유선택) 키 충돌이 별도로 발생하지 않으므로, 같은 학번 row 묶어 시드 하나에서 박는 식으로 운용.
 
 #### AcademicCalendar (학사일정)
 
@@ -1005,7 +1009,7 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 2. **Hard Filter (무조건 제외)**
    - 이미 이수 완료한 과목
    - 현재 수강 중인 과목
-3. **졸업요건 잔여학점 분석** — 이수구분별 카테고리 각각의 부족 학점 계산
+3. **졸업요건 잔여학점 분석** — `(category, liberal_subtype)` 튜플 키 각각의 부족 학점 계산. 교양은 같은 category('교양선택') 안에서도 공통/핵심/학문기초/일반 4종이 별개 진척도 (#47).
 4. **추천 점수 계산** (Soft Constraint)
    - 관심사 매칭 가산점
    - 졸업요건 부족 카테고리 가산점

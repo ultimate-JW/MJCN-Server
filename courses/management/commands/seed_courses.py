@@ -18,24 +18,35 @@ from django.db import transaction
 from courses.models import AcademicCalendar, GraduationRequirement
 
 
-# 졸업요건 (컴퓨터공학전공 / 2024년 입학)
+# 졸업요건 (컴퓨터공학전공 / 2024학번 / 비인증 트랙)
+# 출처: graduation_requirements.md §1.1·§1.2 (일반과정 비인증, 2018~2024학번) + §4.1 전공필수 8과목=24
+# 총 134학점 = 전공 70 + 교양 54 + 자유선택 10
+# 교양 54 = 공통17 + 핵심12 + 학문기초15 + 일반10
 SAMPLE_GRADUATION_REQUIREMENTS = [
-    {
-        'department': '컴퓨터공학전공', 'admission_year': 2024,
-        'category': '전공필수', 'required_credits': 30, 'total_required': 130,
-    },
-    {
-        'department': '컴퓨터공학전공', 'admission_year': 2024,
-        'category': '전공선택', 'required_credits': 30, 'total_required': 130,
-    },
-    {
-        'department': '컴퓨터공학전공', 'admission_year': 2024,
-        'category': '교양필수', 'required_credits': 18, 'total_required': 130,
-    },
-    {
-        'department': '컴퓨터공학전공', 'admission_year': 2024,
-        'category': '교양선택', 'required_credits': 12, 'total_required': 130,
-    },
+    # 전공 (70 = 전필 24 + 전선 46)
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '전공필수', 'liberal_subtype': None,
+     'required_credits': 24, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '전공선택', 'liberal_subtype': None,
+     'required_credits': 46, 'total_required': 134},
+    # 교양 4종 (54) — category는 호환용 라벨, 실제 4종 분해는 liberal_subtype
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '교양필수', 'liberal_subtype': '공통교양',
+     'required_credits': 17, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '교양선택', 'liberal_subtype': '핵심교양',
+     'required_credits': 12, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '교양선택', 'liberal_subtype': '학문기초교양',
+     'required_credits': 15, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '교양선택', 'liberal_subtype': '일반교양',
+     'required_credits': 10, 'total_required': 134},
+    # 자유선택 (10)
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '자유선택', 'liberal_subtype': None,
+     'required_credits': 10, 'total_required': 134},
 ]
 
 
@@ -68,16 +79,13 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS('시딩 완료'))
 
     def _seed_graduation_requirements(self):
+        # 4종 분해 전(0006 이전) row 잔재 정리 — (department, admission_year)+category만 같고
+        # liberal_subtype=null인 옛 row가 unique 제약 새 조합과 충돌하지 않도록 같은 학번 row 다 지우고 다시 박는다.
+        GraduationRequirement.objects.filter(
+            department='컴퓨터공학전공', admission_year=2024,
+        ).delete()
         for data in SAMPLE_GRADUATION_REQUIREMENTS:
-            GraduationRequirement.objects.update_or_create(
-                department=data['department'],
-                admission_year=data['admission_year'],
-                category=data['category'],
-                defaults={
-                    'required_credits': data['required_credits'],
-                    'total_required': data['total_required'],
-                },
-            )
+            GraduationRequirement.objects.create(**data)
         self.stdout.write(f'  GraduationRequirement: {len(SAMPLE_GRADUATION_REQUIREMENTS)}개')
 
     def _seed_academic_calendar(self):

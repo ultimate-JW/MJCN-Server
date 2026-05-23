@@ -135,20 +135,27 @@ class GraduationRequirement(models.Model):
         ('전공선택', '전공선택'),
         ('교양필수', '교양필수'),
         ('교양선택', '교양선택'),
+        ('자유선택', '자유선택'),
     ]
 
     department = models.CharField(max_length=50)
     admission_year = models.IntegerField()
     category = models.CharField(max_length=10, choices=CATEGORY_CHOICES)
+    # 교양 4종 분해용 (graduation_requirements.md §1·§3). 전공·자유선택 row는 null.
+    # (department, admission_year, category, liberal_subtype) 조합이 유일해야 함 — 4종을 row로 나눠 박는다.
+    liberal_subtype = models.CharField(
+        max_length=10, choices=Course.LIBERAL_SUBTYPE_CHOICES, null=True, blank=True
+    )
     required_credits = models.IntegerField()
     total_required = models.IntegerField()
 
     class Meta:
         db_table = 'courses_graduationrequirement'
-        unique_together = ('department', 'admission_year', 'category')
+        unique_together = ('department', 'admission_year', 'category', 'liberal_subtype')
 
     def __str__(self):
-        return f"{self.department} {self.admission_year} {self.category}: {self.required_credits}학점"
+        sub = f"/{self.liberal_subtype}" if self.liberal_subtype else ''
+        return f"{self.department} {self.admission_year} {self.category}{sub}: {self.required_credits}학점"
 
 
 # 학사 일정 : 수강신청 기간, 학기 시작/종료일

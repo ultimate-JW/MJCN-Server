@@ -87,6 +87,11 @@ class CourseHistory(models.Model):
     semester = models.IntegerField(verbose_name='수강 학기')
     grade_received = models.CharField(max_length=10, blank=True, verbose_name='취득 성적')
     category = models.CharField(max_length=20, verbose_name='이수구분')
+    # 교양 4종 (공통/핵심/학문기초/일반). 저장 시 course_code로 Course 찾아 자동 채움 (#47).
+    # 전공·자유선택·매칭 안되는 교양은 null. 점수 계산의 4종별 진척도 키로 사용 (services._build_short_keys).
+    liberal_subtype = models.CharField(
+        max_length=10, null=True, blank=True, verbose_name='교양 4종 분류',
+    )
     credits = models.IntegerField(verbose_name='학점 수')
 
     class Meta:
@@ -101,6 +106,18 @@ class CourseHistory(models.Model):
 
     def __str__(self):
         return f'{self.user.email} - {self.course_name}'
+
+    def save(self, *args, **kwargs):
+        # liberal_subtype 자동 채움 — course_code로 Course 찾아 복사 (#47).
+        # 명시적으로 값을 넘긴 호출자가 있으면 덮지 않음. bulk_create는 save() 우회하니 별도 보강 필요.
+        if not self.liberal_subtype and self.course_code:
+            from courses.models import Course
+            sub = Course.objects.filter(course_code=self.course_code).values_list(
+                'liberal_subtype', flat=True,
+            ).first()
+            if sub:
+                self.liberal_subtype = sub
+        super().save(*args, **kwargs)
 
 
 class CurrentCourse(models.Model):

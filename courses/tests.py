@@ -195,21 +195,26 @@ class GraduationRequirementModelTests(TestCase):
         self.assertEqual(req.required_credits, 42)
 
     def test_unique_together(self):
+        # 4종 도입(#47) 후 unique 키는 (dept, year, category, liberal_subtype).
+        # liberal_subtype=NULL인 row끼리는 SQLite/PG 표준 NULL != NULL 정책상 중복 허용 안 되므로
+        # 여기선 명시적 liberal_subtype 값으로 충돌 검증.
         GraduationRequirement.objects.create(
             department='융합소프트웨어학부',
             admission_year=2024,
-            category='전공필수',
-            required_credits=42,
-            total_required=130,
+            category='교양선택',
+            liberal_subtype='공통교양',
+            required_credits=17,
+            total_required=134,
         )
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 GraduationRequirement.objects.create(
                     department='융합소프트웨어학부',
                     admission_year=2024,
-                    category='전공필수',
-                    required_credits=45,
-                    total_required=130,
+                    category='교양선택',
+                    liberal_subtype='공통교양',
+                    required_credits=18,
+                    total_required=134,
                 )
 
     # 동일 학과여도 입학년도가 다르면 별도 졸업요건이 저장되는지
@@ -739,6 +744,50 @@ class ClassifyLiberalSubtypeTests(SimpleTestCase):
         self.assertIsNone(classify_liberal_subtype(None, None))
 
 
+# ===== CourseHistory.liberal_subtype 자동 동기화 (#47) =====
+
+class CourseHistoryLiberalSubtypeSyncTests(TestCase):
+    """CourseHistory 저장 시 course_code로 Course 찾아 liberal_subtype 복사 (#47)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            email='c@test.com', password='pw',
+            name='이수자', major='컴퓨터공학전공', admission_year=2024,
+        )
+        # 4종 라벨된 Course 시드 — 학문기초교양 미적분학1
+        cls.course = Course.objects.create(
+            course_code='기자101', name='미적분학1',
+            college='교양', category='교양선택', liberal_subtype='학문기초교양',
+            credits=3, year_open=1, semester_open=1,
+        )
+
+    def test_liberal_subtype_자동_채움(self):
+        # 호출자가 liberal_subtype 안 넘겨도 Course에서 자동 복사
+        h = CourseHistory.objects.create(
+            user=self.user, course_name='미적분학1', course_code='기자101',
+            year=2026, semester=1, category='교양선택', credits=3,
+        )
+        self.assertEqual(h.liberal_subtype, '학문기초교양')
+
+    def test_명시값은_안_덮음(self):
+        # 호출자가 명시한 값은 우선 — Course가 '학문기초교양'이어도 명시값 유지
+        h = CourseHistory.objects.create(
+            user=self.user, course_name='미적분학1', course_code='기자101',
+            year=2026, semester=1, category='교양선택', credits=3,
+            liberal_subtype='일반교양',
+        )
+        self.assertEqual(h.liberal_subtype, '일반교양')
+
+    def test_Course_미존재시_None_유지(self):
+        # course_code가 DB에 없으면 null 그대로 (강제 fail 아님)
+        h = CourseHistory.objects.create(
+            user=self.user, course_name='없는과목', course_code='없음999',
+            year=2026, semester=1, category='교양선택', credits=3,
+        )
+        self.assertIsNone(h.liberal_subtype)
+
+
 class CurriculumRecommendAPITests(APITestCase):
     """전체 커리큘럼 추천 API 통합 테스트 (spec 5.3.2, #25).
 
@@ -989,9 +1038,19 @@ class CalculateScoreTests(SimpleTestCase):
         self.assertEqual(score, 100 + BONUS_INTEREST_MATCH)
 
     def test_졸업요건_부족_카테고리면_BONUS_CATEGORY_SHORT_가산(self):
+        # short_categories는 (category, liberal_subtype) 튜플 set — 전공은 liberal_subtype=None (#47)
         course = self._course(category='전공선택')
-        score = self._score(course, short_categories={'전공선택'})
+        score = self._score(course, short_categories={('전공선택', None)})
         self.assertEqual(score, 100 + BONUS_CATEGORY_SHORT)
+
+    def test_교양_4종은_동일_category여도_별개_short_키(self):
+        # 핵심교양만 부족하고 일반교양은 다 채워진 상태 — category='교양선택' 같지만
+        # liberal_subtype 으로 key가 달라 일반교양 과목은 가산점 0 (#47)
+        nuclear = self._course(category='교양선택', liberal_subtype='핵심교양')
+        general = self._course(category='교양선택', liberal_subtype='일반교양')
+        short_keys = {('교양선택', '핵심교양')}
+        self.assertEqual(self._score(nuclear, short_categories=short_keys), 100 + BONUS_CATEGORY_SHORT)
+        self.assertEqual(self._score(general, short_categories=short_keys), 100)
 
     def test_전공필수면_BONUS_MAJOR_REQUIRED_가산(self):
         # 다른 분기 회피 위해 year_open=2, semester_open=2 (학년 같음, 학기 다름)
