@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import CourseHistory, CurrentCourse
+from courses.category_map import classify_liberal_subtype
 from courses.management.commands.import_courses_from_xlsx import parse_year_open
 from courses.models import (
     AcademicCalendar,
@@ -670,6 +671,72 @@ class ParseYearOpenTests(SimpleTestCase):
 
     def test_알수없는_텍스트는_0_fallback(self):
         self.assertEqual(parse_year_open('abc'), 0)
+
+
+# ===== 교양 4종 매핑 단위 테스트 (#? — graduation_requirements.md §3, 학칙 §6 표시기호) =====
+
+class ClassifyLiberalSubtypeTests(SimpleTestCase):
+    """classify_liberal_subtype — 학과코드 prefix + 교과목명 → 교양 4종 분류."""
+
+    def test_prefix_교필_은_공통교양(self):
+        # 학칙 §6 표시기호: 교필 = 공통교양 (이름은 "교양필수"지만 학교 의미는 공통)
+        self.assertEqual(classify_liberal_subtype('교필', '채플'), '공통교양')
+
+    def test_prefix_교선_은_핵심교양(self):
+        # 학칙 §6 표시기호: 교선 = 핵심교양
+        self.assertEqual(classify_liberal_subtype('교선', '동양철학사'), '핵심교양')
+
+    def test_prefix_기자_는_학문기초교양(self):
+        # 자연계 학문기초 — 미적분/물리/통계 등
+        self.assertEqual(classify_liberal_subtype('기자', '일반화학'), '학문기초교양')
+
+    def test_prefix_기컴_은_학문기초교양(self):
+        # 컴퓨터 학문기초 — C언어/파이썬/엑셀 등
+        self.assertEqual(classify_liberal_subtype('기컴', '파이썬프로그래밍입문'), '학문기초교양')
+
+    def test_prefix_균_시작은_일반교양(self):
+        # 균형교양은 '균자'/'균인' 등 1글자 더 붙는 코드도 있어 startswith로 매칭
+        self.assertEqual(classify_liberal_subtype('균자', '환경과생활'), '일반교양')
+        self.assertEqual(classify_liberal_subtype('균인', '문학산책'), '일반교양')
+
+    def test_전공_prefix_는_None(self):
+        # 컴정/컴공/반아는 전공이라 4종 분류 대상 외 (Course.category로 별도 관리)
+        self.assertIsNone(classify_liberal_subtype('컴공', '자료구조'))
+        self.assertIsNone(classify_liberal_subtype('컴정', 'C언어'))
+        self.assertIsNone(classify_liberal_subtype('반아', '반도체개론'))
+
+    def test_군사학_prefix_는_None(self):
+        # 군*는 컴공 졸업요건 외 → 명시적 제외
+        self.assertIsNone(classify_liberal_subtype('군과', '기초미적분학'))
+        self.assertIsNone(classify_liberal_subtype('군인', '기초영어'))
+
+    def test_예술_prefix_는_None(self):
+        # 학칙 §6에 명시 없음 → 수동 보강 전까지 분류 보류
+        self.assertIsNone(classify_liberal_subtype('예술', '미술감상'))
+
+    def test_미지_prefix_는_None(self):
+        # 매핑 룰에 없는 prefix는 None — import 시점에 경고로 표면화
+        self.assertIsNone(classify_liberal_subtype('GEN', '대학영어'))
+        self.assertIsNone(classify_liberal_subtype('', ''))
+
+    def test_by_name_은_학문기초_필수7과목_확정(self):
+        # graduation_requirements.md §3.3 명시 필수 7과목 — prefix가 어떻든 학문기초교양
+        for n in ['미적분학1', '이산수학개론', '선형대수학개론', '공학수학1',
+                  '통계학개론', '물리학1', '물리학실험1']:
+            self.assertEqual(
+                classify_liberal_subtype('기자', n), '학문기초교양',
+                msg=f'{n} 이 학문기초교양으로 잡혀야 함',
+            )
+
+    def test_by_name_은_prefix_excluded_도_이김(self):
+        # 만약 학교가 prefix를 군과로 분류해도 이름이 필수 7과목이면 학문기초교양으로 인정
+        # (현재 PREFIX_EXCLUDED 체크보다 by_name 우선순위가 높음 — 학칙 명시 과목 보호)
+        self.assertEqual(
+            classify_liberal_subtype('군과', '미적분학1'), '학문기초교양',
+        )
+
+    def test_None_입력_안전(self):
+        self.assertIsNone(classify_liberal_subtype(None, None))
 
 
 class CurriculumRecommendAPITests(APITestCase):

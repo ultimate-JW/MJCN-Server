@@ -22,6 +22,7 @@ import openpyxl
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from courses.category_map import classify_liberal_subtype
 from courses.models import Course, CourseOffering, CourseSchedule
 
 # CourseSchedule.day_of_week 가능 값. 토/일 강의는 현재 모델 미지원이라 skip.
@@ -149,13 +150,20 @@ class Command(BaseCommand):
         n_course_new = n_offering_new = n_schedule_new = 0
         n_rows = 0
         n_schedule_skipped = 0  # 시간/요일 누락된 행 (사이버·계약 강의 등)
+        unmapped_liberal = []  # 교양 카테고리인데 4종 분류가 안 잡힌 (학과코드, 교과목명) 모음 — stdout 경고용
 
         for row in ws.iter_rows(min_row=2, values_only=True):
             if not row[0]:  # 학년 비어있는 행 skip (엑셀 trailing 빈줄 등)
                 continue
-            (year_open, name, course_code, _dept_code, _course_no, credits, _hours,
+            (year_open, name, course_code, dept_code, _course_no, credits, _hours,
              professor, section_no, capacity, day, start, end, room, note) = row
             n_rows += 1
+
+            # 교양 4종(공통/핵심/학문기초/일반) 분류 — 학과코드 prefix + 교과목명으로 결정 (category_map).
+            # 교양 파일에서만 의미 있고 전공/군사는 null 반환. 카테고리가 교양인데 None이면 매핑 룰 보강 필요 시그널.
+            liberal_subtype = classify_liberal_subtype(dept_code, name)
+            if category in ('교양필수', '교양선택') and liberal_subtype is None:
+                unmapped_liberal.append((str(dept_code or ''), str(name or '')))
 
             # Course — 과목코드 unique. 같은 과목코드가 분반/요일별로 여러 행에 등장하므로 update_or_create.
             # semester_open은 권장 학기 의미라 import 학기로 일단 채움 (Course 단위로 더 정확한 값이 없음, 추후 보정)
@@ -167,6 +175,7 @@ class Command(BaseCommand):
                     'department': department,
                     'major': major,
                     'category': category,
+                    'liberal_subtype': liberal_subtype,
                     'credits': int(credits) if credits else 0,
                     'year_open': parse_year_open(year_open),
                     'semester_open': int(semester),
@@ -226,3 +235,12 @@ class Command(BaseCommand):
         if csv_dump_path:
             msg += f"\n  CSV dump: {csv_dump_path}"
         self.stdout.write(self.style.SUCCESS(msg))
+
+        # 4종 매핑 안 잡힌 교양 과목 경고 — 학과코드/과목명 (중복 제거)
+        if unmapped_liberal:
+            unique = sorted(set(unmapped_liberal))
+            self.stdout.write(self.style.WARNING(
+                f"  [WARN] 교양 4종 분류 미매핑 {len(unique)}건 (category_map.py 보강 필요):"
+            ))
+            for dept_code, cname in unique:
+                self.stdout.write(f"    - [{dept_code}] {cname}")

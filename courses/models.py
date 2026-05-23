@@ -9,6 +9,15 @@ class Course(models.Model):
         ('교양선택', '교양선택'),
     ]
 
+    # 교양 4종 (학칙 별표2·2-1 + graduation_requirements.md §3). 전공 과목은 null.
+    # 학교 강의시간표 엑셀에는 이 분류가 없어서 import 시점에 매핑 룰로 채운다 (courses/category_map.py).
+    LIBERAL_SUBTYPE_CHOICES = [
+        ('공통교양', '공통교양'),
+        ('핵심교양', '핵심교양'),
+        ('학문기초교양', '학문기초교양'),
+        ('일반교양', '일반교양'),
+    ]
+
     # 학기 개설 값 매핑 (spec 5.3.2, #25)
     #   1 = 1학기 / 2 = 2학기 / 3 = 하계 계절학기 / 4 = 동계 계절학기
     SEMESTER_OPEN_CHOICES = [
@@ -24,6 +33,10 @@ class Course(models.Model):
     department = models.CharField(max_length=50, null=True, blank=True)
     major = models.CharField(max_length=50, null=True, blank=True)
     category = models.CharField(max_length=10, choices=CATEGORY_CHOICES)
+    # 교양 세부 분류 — category='교양선택'/'교양필수' 행에 한해 채움. 전공/군사 등은 null.
+    liberal_subtype = models.CharField(
+        max_length=10, choices=LIBERAL_SUBTYPE_CHOICES, null=True, blank=True
+    )
     credits = models.IntegerField()
     year_open = models.IntegerField()
     semester_open = models.IntegerField(choices=SEMESTER_OPEN_CHOICES)
