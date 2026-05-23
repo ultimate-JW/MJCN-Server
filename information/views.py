@@ -1,5 +1,6 @@
 import json
 
+from django.db import connection
 from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework.generics import ListAPIView, RetrieveAPIView
@@ -63,14 +64,19 @@ class InformationListView(ListAPIView):
         if category_param:
             categories = [c.strip() for c in category_param.split(',') if c.strip()]
             if categories:
-                # SQLite는 JSONField __contains 미지원 → 직렬화된 JSON 문자열에서
-                # 따옴표로 감싼 값을 찾는 방식으로 우회.
-                # Django는 한글을 ASCII escape("공모전")로 저장하므로
-                # needle도 동일하게 ensure_ascii=True 로 직렬화.
                 cat_q = Q()
-                for c in categories:
-                    needle = json.dumps(c, ensure_ascii=True)
-                    cat_q |= Q(categories__icontains=needle)
+                if connection.vendor == 'postgresql':
+                    # PG는 JSONB native __contains 지원 — 인덱스 활용 가능
+                    for c in categories:
+                        cat_q |= Q(categories__contains=[c])
+                else:
+                    # SQLite 폴백 (로컬·CI 전용, spec 8.5):
+                    # JSONField __contains 미지원 → 직렬화 문자열 icontains.
+                    # Django는 한글을 ASCII escape("공모전")로 저장하므로
+                    # needle도 ensure_ascii=True 로 직렬화 (같은 표현 매칭).
+                    for c in categories:
+                        needle = json.dumps(c, ensure_ascii=True)
+                        cat_q |= Q(categories__icontains=needle)
                 qs = qs.filter(cat_q)
 
         # end_date 빠른 순, NULL은 마지막 (view=all 정렬)
