@@ -481,8 +481,8 @@ CHAT_CATEGORIES = [
 | major         | CharField | 전공(예: 컴퓨터공학전공) |
 | category      | CharField | 전공필수/전공선택/교양필수/교양선택 |
 | credits       | IntegerField | 학점 |
-| year_open     | IntegerField | 개설 연도 |
-| semester_open | IntegerField | 개설 학기 |
+| year_open     | IntegerField | 권장 수강 학년 (1~4). **`0` = 전학년 / 학년 무관 sentinel** — 추천 점수 함수에서 학년 비교 분기(==/</>) 모두 skip (#36) |
+| semester_open | IntegerField | 권장 수강 학기 (1/2/3/4 — 5.3.2 매핑) |
 | professor     | CharField(blank) | 교수명 |
 | tags          | JSONField(default=list) | 관심사 매칭용 태그 (예: ["IT/개발", "연구/R&D"]). 빈 배열이면 관심사 가산점 0점 |
 
@@ -517,14 +517,43 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | course | FK(Course) | 대상 과목 |
 | prerequisite | FK(Course) | 선수 과목 |
 
+#### CourseOffering (학기·분반별 개설 정보, #36)
+
+`Course`는 **과목 그 자체** (예: 과목코드 `컴공201` AI프로그래밍 = Course 1개).
+`CourseOffering`은 그 과목이 **특정 학기에 열린 분반 한 개**.
+**분반 구분 기준은 강좌번호(`section_no`) 단독** — 교수/시간/정원이 같아도
+강좌번호가 다르면 별개 Offering.
+
+같은 강좌번호의 여러 엑셀 행은 같은 Offering이며 **요일(스케줄)만** 다른 것.
+즉 엑셀 한 행 = `(Course, Offering, Schedule(요일 1개))` 한 조합.
+
+예: `컴공201`이 2026-1학기에 0753반 / 0754반으로 열렸고 각 분반이 월/수에
+걸쳐있다면 → 엑셀 4행 / **Course 1 / Offering 2 / Schedule 4**.
+
+`section_no`는 같은 학기 안에서 분반 유일 식별자.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| course | FK(Course) | 과목 본체 |
+| year | IntegerField | 개설 연도 (예: 2026) |
+| semester | IntegerField | 1/2/3/4 (정규 1·2학기 / 하계 3 / 동계 4) |
+| section_no | CharField | 강좌번호 (학기 안 유일) |
+| professor | CharField(blank) | 담당 교수 |
+| capacity | IntegerField(null=True, blank=True) | 제한 인원 |
+| note | CharField(blank) | 비고 (예: 'IPP 우선수강') |
+
+`unique_together = (year, semester, section_no)`.
+시드 출처는 강의시간표 엑셀 (`import_courses_from_xlsx`, spec 5.1).
+
 #### CourseSchedule (과목 스케쥴 정보)
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| course | FK(Course) | 대상 과목 |
+| course | FK(Course) | 대상 과목 (기존 시드 호환을 위해 NOT NULL 유지) |
+| offering | FK(CourseOffering, null=True, blank=True) | 분반 단위 시간 (강의시간표 import 데이터, #36). 기존 더미 시드는 null. |
 | day_of_week | CharField | 요일(월/화/수/목/금 중 하나) |
 | start_time | TimeField | 시작 시간 |
-| end_time | TimeField |ㄹ 종료 시간 |
+| end_time | TimeField | 종료 시간 |
 | building | CharField(blank=True) | 강의실 위치(명진당/창조관/5공학관 등) |
 | room | CharField(blank=True) | 강의실 번호 |
 
@@ -827,8 +856,11 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 >
 > - **MVP 범위**: 컴퓨터공학전공 과목 데이터만 우선 구축(시간 남으면 전공 1개 더 추가)
 > - **시딩 대상 테이블**: Course, CourseSchedule, CoursePrerequisite, GraduationRequirement
-> - **데이터 출처**: 명지대학교 학사 시스템 (수강편람, 교육과정표 등)
-> - **시딩 방법**: Django fixture 또는 management command
+> - **데이터 출처**: 명지대학교 학사 시스템 MSI의 "강의시간표"
+> - **입력 포맷**: 엑셀(.xlsx)
+> - **강의시간표 엑셀 컬럼 (입력 스펙, 15개)**:
+>   `학년 / 교과목명 / 과목코드 / 학과코드 / 과목번호 / 학점 / 시간 / 담당교수 / 강좌번호 / 제한인원 / 요일 / 시작시간 / 종료시간 / 강의실 / 비고`
+> - **시딩 방법**: Django fixture 또는 management command (`import_courses_from_xlsx`)
 > - **타 학과 확장**: MVP 이후 순차 확대 예정
 
 #### 5.1.3 로그인 / 로그아웃
@@ -946,8 +978,13 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 #### 5.3.1 다음학기 수강과목 추천
 
 - **입력**: 사용자의 기존 수강이력 + 현재 수강중인 과목(해당 시) + 전공 + 학년/학기 + 관심사
+  + **추천 대상 학기 (`target_year` / `target_semester`)** — 미지정 시 사용자 학기 기반 자동 결정 (#36)
 - **고려사항**: 졸업요건 충족, 선후수 과목, 남은 학기 수를 고려하여
   **이수구분별 카테고리(전공필수 / 전공선택 / 교양필수 / 교양선택 / 일반선택)**를 균형있게 배분
+- **개설 학기 필터 (#36)**: `CourseOffering(year, semester)`가 target과 일치하는 분반이
+  존재하는 `Course`만 후보. Offering 자체가 없는 Course는 통과 (기존 시드 호환).
+- **학년 무관 처리 (#36)**: `Course.year_open == 0` 인 과목은 추천 점수에서 학년 비교 분기
+  (==, <, >) 모두 skip — 어떤 학년 학생에게도 중립 노출. 카테고리/관심사/선수 가감산은 정상.
 - **출력**
   - 과목명, 과목번호, 이수구분별 카테고리, 시간, 강의실, 교수명 포함
 
@@ -1531,7 +1568,7 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
-| GET | `/api/v1/courses/recommend/next/` | O | 다음학기 수강과목 추천 |
+| GET | `/api/v1/courses/recommend/next/?year=&semester=` | O | 다음학기 수강과목 추천 (쿼리 미지정 시 사용자 학기 기반 자동, spec 5.3.1, #36). semester ∉ {1,2,3,4} 또는 비숫자 → 400 |
 | POST | `/api/v1/courses/recommend/curriculum/` | O | 전체 커리큘럼 추천 (body 노브, spec 5.3.2) |
 | GET | `/api/v1/courses/status/` | O | 이수현황 분석 |
 | GET | `/api/v1/courses/` | O | 과목 검색 (쿼리 파라미터) |

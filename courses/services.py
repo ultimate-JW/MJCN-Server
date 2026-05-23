@@ -19,6 +19,7 @@ from django.db.models import Q
 from .models import (
     AcademicCalendar,
     Course,
+    CourseOffering,
     CoursePrerequisite,
     GraduationRequirement,
 )
@@ -241,6 +242,11 @@ def calculate_recommendation_score(
             (밀린 필수 과목 — 졸업 지연 방지용 우선 노출)
       -10  course.year_open > user_grade
       -15  user_major == course.major AND 선수과목 미이수
+
+    학년 무관 sentinel:
+      course.year_open == 0 은 "전학년 대상" (강의시간표 import에서 매핑, #36).
+      위 학년 비교 분기(==/</> 셋 다)는 전부 skip — 어떤 학년 학생에게도
+      중립 노출. 카테고리/관심사/선수 가감산은 정상 적용.
     """
     score = 100  # 기준점. 여기에 항목별 가감산
 
@@ -261,19 +267,17 @@ def calculate_recommendation_score(
     if course.category == '교양필수':
         score += BONUS_LIBERAL_REQUIRED
 
-    # 학년/학기 적합성
-    if user_grade is not None and user_semester is not None:
+    # 학년/학기 적합성 — year_open=0 은 "전학년 대상" sentinel (#36 import에서 매핑)
+    # 어떤 학년 학생에게도 동일하게 적합해야 하므로 학년 관련 가감산 전부 skip
+    if user_grade is not None and course.year_open != 0:
         # 권장 학년/학기와 일치 가산
-        if course.year_open == user_grade and course.semester_open == user_semester:
+        if user_semester is not None and course.year_open == user_grade and course.semester_open == user_semester:
             score += BONUS_GRADE_SEMESTER_MATCH
         # 권장 학년이 사용자보다 위 감점
         if course.year_open > user_grade:
             score -= PENALTY_GRADE_EXCEEDED
-
-    # 권장 학년이 지난 "전공필수/교양필수" 가산
-    #    (졸업 지연 방지 목적. 일반선택/전공선택은 해당 없음)
-    if user_grade is not None and course.year_open < user_grade:
-        if course.category in BACKLOG_REQUIRED_CATEGORIES:
+        # 권장 학년이 지난 "전공필수/교양필수" 가산 — 졸업 지연 방지 (일반선택/전공선택 제외)
+        if course.year_open < user_grade and course.category in BACKLOG_REQUIRED_CATEGORIES:
             score += BONUS_BACKLOG_REQUIRED
 
     # 선수과목 미이수 감점
@@ -317,23 +321,39 @@ def _build_short_categories(user):
     }
 
 
-def recommend_next_semester_courses(user):
+def recommend_next_semester_courses(user, *, target_year=None, target_semester=None):
     """
-    한 사용자에 대해 다음학기 추천 과목 리스트를 반환한다. (spec 5.3.1)
+    한 사용자에 대해 다음학기 추천 과목 리스트를 반환한다. (spec 5.3.1, #36)
 
     DRF Request/Response에 의존하지 않는 순수 도메인 함수. view 등 호출자가
     User 인스턴스를 넘기면 (점수, Course) 튜플 리스트를 정렬해 반환한다.
 
+    학기 인자:
+      target_year / target_semester 둘 다 None 이면 _curriculum_first_slot(user)
+      로 자동 결정 (5.3.2와 동일 로직 — 1학기 듣는 중 → 같은 해 2학기, 2학기 듣는
+      중 → 다음 해 1학기).
+      값이 지정되면 그 학기에 개설된 CourseOffering 이 있는 Course 만 후보.
+      Offering 자체가 없는 Course (기존 더미 시드 등)는 학기 정보 없음 → 통과.
+
     처리 흐름:
       1. 사용자 데이터 조회 — 수강이력 / 현재수강 / 관심사
-      2. Hard Filter — 이미 이수했거나 현재 수강 중인 course_code 제외
-      3. 졸업요건 잔여학점 분석 → 부족 카테고리 set 빌드
-      4. 후보 과목 각각에 calculate_recommendation_score 호출
-      5. 정렬 — score DESC → CATEGORY_PRIORITY ASC → course_code ASC
-      6. (score, Course) 튜플 리스트 반환
+      2. target 학기 결정 (인자 우선, 미지정 시 자동)
+      3. Hard Filter — 이수/수강 중 제외 + 학기 Offering 매칭
+      4. 졸업요건 잔여학점 분석 → 부족 카테고리 set 빌드
+      5. 후보 과목 각각에 calculate_recommendation_score 호출
+      6. 정렬 — score DESC → CATEGORY_PRIORITY ASC → course_code ASC
+      7. (score, Course) 튜플 리스트 반환
 
     반환: list[tuple[int, Course]] — 정렬된 추천 결과 (상위가 가장 추천 강함)
     """
+    # target 학기 결정 — 인자 우선, 둘 중 하나라도 빠지면 자동 결정값으로 보충
+    if target_year is None or target_semester is None:
+        auto_year, auto_sem = _curriculum_first_slot(user)
+        if target_year is None:
+            target_year = auto_year
+        if target_semester is None:
+            target_semester = auto_sem
+
     # 사용자 관심사 카테고리 집합 — InterestArea.category 값 모음
     user_interest_categories = set(
         user.interests.values_list('category', flat=True)
@@ -348,10 +368,20 @@ def recommend_next_semester_courses(user):
     )
     excluded_codes = taken_codes | current_codes
 
-    # Hard Filter — 이미 이수했거나 수강 중인 과목은 후보에서 제외
+    # Hard Filter — 이수/수강 중 제외 + 학기 Offering 매칭
+    # Offering 있는 Course 는 target 학기 매칭만 통과, Offering 자체 없으면 통과 (#36)
+    # 후자는 기존 #24/#25 더미 시드 호환용 — 운영 데이터는 전부 Offering 동반
+    has_offering_qs = CourseOffering.objects.values_list('course_id', flat=True)
+    matching_qs = CourseOffering.objects.filter(
+        year=target_year, semester=target_semester,
+    ).values_list('course_id', flat=True)
+
     # prefetch_related로 선수과목 + 시간표 N+1 쿼리 방지 (view에서 schedules 직렬화)
     candidates = list(
-        Course.objects.exclude(course_code__in=excluded_codes)
+        Course.objects
+        .exclude(course_code__in=excluded_codes)
+        .filter(Q(pk__in=matching_qs) | ~Q(pk__in=has_offering_qs))
+        .distinct()
         .prefetch_related('prerequisites', 'schedules')
     )
 
