@@ -1968,6 +1968,15 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 - 과목/졸업요건 데이터: 초기 시딩 (fixture 또는 management command)
 - 사용자 업로드 파일: `MEDIA_ROOT` 관리
 
+### 8.5 데이터베이스
+
+- **운영**: **PostgreSQL** (`django.db.backends.postgresql`, 어댑터 `psycopg[binary]` 3.x)
+  - 사유: 운영은 멀티워커 gunicorn + 새벽 크롤링/AI/푸시 cron이 같은 DB를 동시 갱신 → SQLite는 단일 writer로 `database is locked` 빈발. PG는 MVCC로 동시 쓰기 안정적
+  - JSONField (`Notice.tags`, `Information.categories` 등) `__contains` lookup은 PG JSONB 네이티브 지원
+- **로컬 개발 / CI**: 환경변수(`DB_ENGINE`) 미설정 시 SQLite 폴백 — 설정·도커 없이 즉시 실행 가능
+- **환경변수**: `DB_ENGINE=postgresql` 일 때 `DB_NAME`/`DB_USER`/`DB_PASSWORD`/`DB_HOST`/`DB_PORT` (+ 선택 `DB_CONN_MAX_AGE`)
+- JSONField 쿼리는 코드에서 `connection.vendor` 분기 — PG는 native `__contains`, SQLite는 직렬화 문자열 `icontains` 폴백 (`information/views.py`의 카테고리 필터 참조)
+
 #### 8.4.1 크롤링 데이터 흐름 (JSON 단일 포맷)
 
 크롤러 → DB → API → 프론트까지 **JSON 단일 포맷**으로 처리한다.
@@ -2419,6 +2428,7 @@ Notice.extracted_content에 추출 텍스트 저장
 2. **settings.py 분리** - `base.py`, `dev.py`, `prod.py`
 3. **환경변수 관리** - `python-dotenv` 또는 `django-environ` 도입
    - 필수 키: `SECRET_KEY`, `DEBUG`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`
+   - 데이터베이스 (spec 8.5): `DB_ENGINE` 미설정 시 SQLite 폴백. `postgresql` 설정 시 `DB_NAME`/`DB_USER`/`DB_PASSWORD`/`DB_HOST`/`DB_PORT` (선택 `DB_CONN_MAX_AGE`)
    - AI 파이프라인: `OPENAI_API_KEY` (필수), `OPENAI_MODEL` (선택, 기본 `gpt-4o-mini`)
    - FCM 푸시 (spec 9.3): `FIREBASE_CREDENTIALS_PATH` (서비스 계정 JSON 경로, 미설정 시 송신 no-op)
    - 카카오 로그인 (spec 5.1.3):
@@ -2432,6 +2442,7 @@ Notice.extracted_content에 추출 텍스트 저장
    - `drf-spectacular`, `django-cors-headers`
    - `python-dotenv`, `requests` + `beautifulsoup4` + `lxml` (크롤링), `openai` (AI 파이프라인)
    - `firebase-admin` (FCM PUSH 알림)
+   - `psycopg[binary]` (운영 PostgreSQL 어댑터 — spec 8.5)
 7. **DRF 기본 설정** - `DEFAULT_AUTHENTICATION_CLASSES`, `DEFAULT_PAGINATION_CLASS`, `DEFAULT_THROTTLE_RATES`
 8. **CORS 설정** - `CORS_ALLOWED_ORIGINS`에 프론트엔드 도메인 등록
 9. **Swagger 설정** - drf-spectacular `SPECTACULAR_SETTINGS` 구성
