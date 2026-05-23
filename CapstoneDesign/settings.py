@@ -68,14 +68,32 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'CapstoneDesign.wsgi.application'
 
-# Database
+# Database (spec 8.5)
+#
+# DB_ENGINE 환경변수가 'postgresql' 일 때만 PG로 전환. 미설정 시 SQLite 폴백 —
+# 로컬·CI는 설정·도커 없이 즉시 실행 가능. 운영은 .env에 DB_ENGINE=postgresql +
+# DB_NAME / DB_USER / DB_PASSWORD / DB_HOST / DB_PORT (선택: DB_CONN_MAX_AGE) 설정.
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+if os.getenv('DB_ENGINE', '').lower() == 'postgresql':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME', 'mjcn'),
+            'USER': os.getenv('DB_USER', 'mjcn'),
+            'PASSWORD': os.getenv('DB_PASSWORD', ''),
+            'HOST': os.getenv('DB_HOST', 'localhost'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+            # 연결 재사용 (cron + 멀티워커 환경에서 connect 오버헤드 감소).
+            'CONN_MAX_AGE': int(os.getenv('DB_CONN_MAX_AGE', '60')),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 # Password validation
 
