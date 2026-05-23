@@ -38,6 +38,30 @@ class Course(models.Model):
         return f"[{self.course_code}] {self.name}"
 
 
+# 학기·분반별 개설 정보 (#36)
+# 한 Course에 학기/분반별 여러 Offering. 분반은 강좌번호(section_no)가 유일 식별자.
+# Schedule은 분반 단위 시간/강의실이라 Offering에 1:N으로 붙음.
+class CourseOffering(models.Model):
+    course = models.ForeignKey(
+        Course, on_delete=models.CASCADE, related_name='offerings'
+    )
+    year = models.IntegerField()  # 개설 연도 (예: 2026)
+    semester = models.IntegerField(choices=Course.SEMESTER_OPEN_CHOICES)  # 1/2/3/4 (Course와 동일 매핑)
+    section_no = models.CharField(max_length=10)  # 강좌번호 — 학기 안 유일 식별자 (예: '0729')
+    professor = models.CharField(max_length=50, blank=True, default='')
+    capacity = models.IntegerField(null=True, blank=True)  # 제한인원
+    note = models.CharField(max_length=200, blank=True, default='')  # 비고 (예: 'IPP 우선수강')
+
+    class Meta:
+        db_table = 'courses_courseoffering'
+        # 강좌번호는 학기 안에서 유일 (다른 학기엔 같은 번호 재사용 가능)
+        unique_together = ('year', 'semester', 'section_no')
+        ordering = ['year', 'semester', 'section_no']
+
+    def __str__(self):
+        return f"[{self.section_no}] {self.course.name} ({self.year}-{self.semester})"
+
+
 # 선수 과목 관계 저장
 class CoursePrerequisite(models.Model):
     course = models.ForeignKey(
@@ -68,6 +92,15 @@ class CourseSchedule(models.Model):
 
     course = models.ForeignKey(
         Course, on_delete=models.CASCADE, related_name='schedules'
+    )
+    # 분반별 시간/강의실은 offering에 붙음. 기존 시드/테스트 호환을 위해 course FK도 유지 (#36)
+    # 새 import는 두 FK 동시 채움 (offering.course == course). 기존 시드는 offering=NULL.
+    offering = models.ForeignKey(
+        CourseOffering,
+        on_delete=models.CASCADE,
+        related_name='schedules',
+        null=True,
+        blank=True,
     )
     day_of_week = models.CharField(max_length=2, choices=DAY_CHOICES)
     start_time = models.TimeField()
