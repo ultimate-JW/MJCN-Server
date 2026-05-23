@@ -223,6 +223,7 @@ erDiagram
         string department
         string major
         string category
+        string liberal_subtype
         int credits
         int year
         int semester
@@ -480,6 +481,7 @@ CHAT_CATEGORIES = [
 | department    | CharField | 학부(예: 컴퓨터정보통신공학부) |
 | major         | CharField | 전공(예: 컴퓨터공학전공) |
 | category      | CharField | 전공필수/전공선택/교양필수/교양선택 |
+| liberal_subtype | CharField(null, blank) | 교양 4종 분류 — 공통교양/핵심교양/학문기초교양/일반교양. 학교 강의시간표 엑셀에는 없는 분류라 import 시점에 학과코드 prefix + 교과목명으로 채움 (#47). 전공 등 분류 대상 외 행은 null. |
 | credits       | IntegerField | 학점 |
 | year_open     | IntegerField | 권장 수강 학년 (1~4). **`0` = 전학년 / 학년 무관 sentinel** — 추천 점수 함수에서 학년 비교 분기(==/</>) 모두 skip (#36) |
 | semester_open | IntegerField | 권장 수강 학기 (1/2/3/4 — 5.3.2 매핑) |
