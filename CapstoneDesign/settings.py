@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'accounts',
     'common',
     'courses',
+    'dashboard',
     'notifications',
     'notices',
     'information',
@@ -223,3 +224,13 @@ EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER or 'noreply@mjcn.local'
+
+
+# Firebase / FCM (spec 9.3)
+#
+# 서비스 계정 JSON 키 파일의 경로. Firebase 콘솔 > 프로젝트 설정 > 서비스 계정에서 발급.
+# 미설정 시 send_pending_pushes 명령은 graceful no-op — 로컬 개발·테스트는
+# 자격증명 없이 동작한다 (이메일 콘솔 백엔드 폴백과 동일 철학).
+# 키 파일명은 .gitignore에 등재된 firebase-credentials.json 사용 권장.
+
+FIREBASE_CREDENTIALS_PATH = os.getenv('FIREBASE_CREDENTIALS_PATH', '')

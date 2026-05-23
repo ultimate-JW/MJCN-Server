@@ -6,12 +6,16 @@ from .models import Information
 class InformationListSerializer(serializers.ModelSerializer):
     """목록 응답용."""
 
+    # spec 5.10 — 관심사 매칭 점수. view에서 instance에 attribute로 부여.
+    match_score = serializers.IntegerField(read_only=True, default=0)
+
     class Meta:
         model = Information
         fields = [
             'id', 'title', 'organizer', 'url',
             'start_date', 'end_date', 'categories', 'is_active',
             'source', 'source_id',
+            'match_score',
         ]
 
 

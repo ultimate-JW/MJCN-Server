@@ -166,12 +166,22 @@ class BaseNoticeCrawler:
     # --- 저장 ---
 
     def save(self, notices: Iterable[CrawledNotice]) -> CrawlResult:
+        # 지연 import — 순환 import 회피 (fanout → notifications → ...)
+        from notices.fanout import fanout_new_notice
+
         result = CrawlResult(source=self.SOURCE)
         for notice in notices:
             try:
-                _, created = self._upsert(notice)
+                obj, created = self._upsert(notice)
                 if created:
                     result.created += 1
+                    # 신규 Notice만 fanout (spec 6.9). 실패해도 크롤링은 계속.
+                    try:
+                        fanout_new_notice(obj)
+                    except Exception:
+                        logger.exception(
+                            '[%s] fanout 실패: %s', self.SOURCE, obj.url,
+                        )
                 else:
                     result.updated += 1
             except IntegrityError:

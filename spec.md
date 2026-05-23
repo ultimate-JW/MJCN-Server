@@ -676,7 +676,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | notification_type | CharField | 알림 종류 (notice/information/course/system) |
 | related_id | IntegerField(null) | 관련 객체 ID (notification_type에 따라 다른 테이블 ID, 프론트 화면 이동용) |
 | is_read | BooleanField(default=False) | 읽음 여부 |
-| is_pushed | BooleanField(default=False) | FCM 전송 여부 |
+| is_pushed | BooleanField(default=False) | FCM 푸시 송신 완료 여부 (`send_pending_pushes` cron이 마킹, spec 9.3) |
 | created_at | DateTimeField | 알림 생성 시각 |
 
 #### FCMDevice (디바이스 토큰)
@@ -1228,8 +1228,19 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 
 #### 5.4.2 맞춤형 보기 (기본값)
 
-- 개인화 데이터 기반 필터링
-- 전체보기 ↔ 맞춤형 보기 토글 전환
+목록 조회 시 사용자 관심사 기반으로 **관련도 점수**를 매겨 정렬한다. 점수 산출 알고리즘은 5.10 매칭 로직 참조.
+
+- **엔드포인트**: `GET /api/v1/notices/?view=personalized` (기본값) / `?view=all` (전체보기 토글)
+- **정렬 기준**:
+  - 1순위: 관련도 점수 내림차순 (높은 것 위)
+  - 2순위: `published_at` 내림차순 (최근 것 위)
+- **점수 0인 항목 포함 여부**: 점수 0 (관심사 매칭 없음)인 공지도 응답에 포함하되 최하위 정렬. 이유: 신규 사용자/관심사 미설정 사용자가 빈 화면을 보지 않도록.
+- **사용자 데이터 출처**:
+  - `User.major` (전공명) → 키워드 추출
+  - `InterestArea.category` (선택형 직업군) → 그대로 사용
+  - `InterestArea.custom_text` (자유 텍스트) → 콤마/공백 분리 후 사용
+- **콘텐츠 매칭 대상**: `Notice.tags` (AI 자동 태깅 키워드)
+- **응답에 점수 노출**: `match_score` 필드 추가 (프론트가 디버깅/표시에 활용)
 
 #### 5.4.3 공지 유형 자동 분류
 
@@ -1288,8 +1299,16 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 
 #### 5.5.2 맞춤형 보기 (기본값)
 
-- 관심분야 기반 필터링
-- 토글 전환
+목록 조회 시 사용자 관심사 ↔ `Information.categories` 매칭 점수 기반 정렬. 5.10 매칭 로직 참조.
+
+- **엔드포인트**: `GET /api/v1/information/?view=personalized` (기본값) / `?view=all`
+- **정렬 기준**:
+  - 1순위: 관련도 점수 내림차순
+  - 2순위: `end_date` 빠른 순 (D-day 임박 우선, 기존 정렬과 동일)
+- **사용자 데이터 출처**: notices와 동일 (User.major + InterestArea.category + custom_text)
+- **콘텐츠 매칭 대상**: `Information.categories`
+- **응답에 점수 노출**: `match_score` 필드 추가
+- **기존 필터와 조합 가능**: `?view=personalized&category=공모전` 같이 카테고리 필터 + 맞춤 정렬 동시 적용
 
 #### 5.5.3 정보 북마크
 
@@ -1375,6 +1394,64 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 - 전체 알림 리스트 API (최신순, 페이지네이션)
 - 각 알림에 is_read 필드 포함
 - related_url 필드로 프론트에서 이동할 경로 제공
+
+### 5.10 매칭 로직 (공통)
+
+공지·정보의 맞춤형 보기 + 대시보드의 관심사 기반 콘텐츠 노출에 공통으로 사용되는 매칭 알고리즘. 별도 공통 모듈 (`common/matching.py`)로 분리해 중복 구현 방지.
+
+> 참고: 본 절은 `태그매칭추천로직.md` 설계 문서 기반. spec 일치를 위해 핵심 알고리즘만 여기 명시.
+
+#### 5.10.1 사용자 키워드 집합
+
+매 요청마다 사용자의 키워드 집합을 추출.
+
+| 출처 | 처리 |
+|------|------|
+| `User.major` | 전공명 그대로 1개 키워드로 (예: "컴퓨터공학전공") |
+| `InterestArea.category` (FK 1:N) | 모든 카테고리 값 그대로 추가 (예: "IT/개발", "AI") |
+| `InterestArea.custom_text` (FK 1:N) | 콤마(`,`) 또는 공백으로 분리해 각각 추가 (예: "머신러닝, 백엔드" → ["머신러닝", "백엔드"]) |
+
+→ 최종 set(str)로 합침. 중복 제거.
+
+#### 5.10.2 콘텐츠 태그 집합
+
+| 콘텐츠 | 출처 |
+|--------|------|
+| Notice | `Notice.tags` (JSONField, AI 자동 태깅 키워드) |
+| Information | `Information.categories` (JSONField, 크롤링 시 수집된 분류) |
+| Course | `Course.tags` (현재 spec 4.x에 존재, 추천 로직에서 이미 사용 중) |
+
+→ set(str)로 변환.
+
+#### 5.10.3 점수 산출
+
+```
+score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
+```
+
+- **완전 일치만 카운트**: 부분 문자열 매칭은 v1에서 적용 안 함 (오탐 방지 + 단순화)
+- **카테고리별 가중치 없음** (v1): 모든 출처 동등 가중. 정밀도 부족하면 v2에서 카테고리별 가중치 추가
+- **점수 0 케이스**: 관심사 미설정 사용자 또는 매칭 없는 경우 → 0점. 응답에 그대로 포함 (정렬 최하위)
+
+#### 5.10.4 응답 노출 필드
+
+목록 응답의 각 항목에 `match_score: int` 추가. 프론트가 디버깅·표시에 활용 가능 (필수는 아님).
+
+#### 5.10.5 성능 고려
+
+- 사용자 키워드 추출은 요청당 1회 (캐시 없음)
+- 콘텐츠 태그 비교는 페이지네이션된 항목(기본 20개) 만 대상 → DB에서 가져온 후 Python에서 점수 계산
+- 점수 기반 정렬도 Python 레벨 (`sorted(...)`) — 페이지네이션과 호환을 위해 전체 queryset을 fetch 후 정렬 → 페이지 적용
+- 데이터 규모 (Notice ~100건, Information ~30건)에서는 충분히 빠름. 만 단위로 늘어나면 DB 레벨 점수 계산 (raw SQL 또는 PostgreSQL `array` 함수)으로 마이그레이션 검토
+
+#### 5.10.6 사용 위치
+
+| 사용처 | 적용 방식 |
+|--------|-----------|
+| `GET /api/v1/notices/?view=personalized` | NoticeListView에서 점수 계산 → 정렬 |
+| `GET /api/v1/information/?view=personalized` | InformationListView 동일 |
+| `GET /api/v1/dashboard/` (5.8) | "관심사 기반 최근 공지·정보 N개" 노출에 사용 |
+| `courses/services.py` 기존 코드 | 이미 자체 구현됨 (`BONUS_INTEREST_MATCH`). 추후 공통 모듈로 통합 검토 가능 |
 
 ---
 
@@ -1500,10 +1577,14 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
-| GET | `/api/v1/notices/` | O | 공지 목록 (맞춤형 기본) |
-| GET | `/api/v1/notices/?view=all` | O | 공지 전체보기 |
+| GET | `/api/v1/notices/` | O | 공지 목록 (맞춤형 기본 — `view=personalized` 동작) |
+| GET | `/api/v1/notices/?view=all` | O | 공지 전체보기 (최신순) |
+| GET | `/api/v1/notices/?view=personalized` | O | 명시적 맞춤형 보기 (5.10 매칭 로직 적용) |
 | GET | `/api/v1/notices/?q=<검색어>` | O | 공지 검색 |
+| GET | `/api/v1/notices/?source=academic` | O | 출처 필터 |
 | GET | `/api/v1/notices/<id>/` | O | 공지 상세 |
+
+응답에 `match_score: int` 필드 포함 (`view=personalized` 시 의미 있음, 그 외는 0).
 
 #### 응답 필드 — 부서명 표시
 
@@ -1542,10 +1623,14 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
-| GET | `/api/v1/information/` | O | 정보 목록 (맞춤형 기본) |
-| GET | `/api/v1/information/?view=all` | O | 정보 전체보기 |
+| GET | `/api/v1/information/` | O | 정보 목록 (맞춤형 기본 — `view=personalized` 동작) |
+| GET | `/api/v1/information/?view=all` | O | 정보 전체보기 (마감일 빠른 순) |
+| GET | `/api/v1/information/?view=personalized` | O | 명시적 맞춤형 보기 (5.10 매칭 로직 적용) |
 | GET | `/api/v1/information/?q=<검색어>` | O | 정보 검색 |
+| GET | `/api/v1/information/?category=공모전` | O | 카테고리 필터 |
 | GET | `/api/v1/information/<id>/` | O | 정보 상세 |
+
+응답에 `match_score: int` 필드 포함 (`view=personalized` 시 의미 있음, 그 외는 0). `?view=personalized&category=공모전` 같이 조합 가능.
 
 ### 6.9 알림 (notifications)
 
@@ -1567,6 +1652,45 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 **FCM 디바이스 멱등 등록**: 같은 사용자가 같은 토큰 두 번 POST해도 1행만 저장. `is_active=True` 갱신 + `updated_at` 갱신. 다른 사용자가 같은 토큰을 보내면(디바이스 양도 케이스) 기존 사용자 매핑 해제 후 새 사용자에 연결.
 
 **알림 카테고리별 토글**: User 모델의 `notification_enabled`, `notification_notice`, `notification_information`, `notification_chat` 4개 플래그 기준 노출 제어. 전체 OFF면 INSERT 자체 안 함.
+
+#### 공지·정보 자동 fanout 정책
+
+크롤링으로 신규 콘텐츠가 등록될 때 관심사 매칭 사용자에게 인앱 알림을 자동 생성한다. spec 5.10 매칭 로직(`common.matching.score_match`)을 그대로 활용.
+
+**적용 대상 (언제)**:
+- `crawl_notices` 실행 중 `Notice`가 **신규 생성된 경우만** (upsert에서 `created=True`). 기존 항목 갱신(`updated=True`)은 알림 미발송 — 사용자 도배 방지.
+- `crawl_information` 도 동일 — `Information` 신규 생성 시에만.
+
+**대상 사용자 (누구에게)**:
+- `is_active=True` 사용자 중에서
+- `extract_user_keywords(user)` 와 콘텐츠의 `tags`(공지) / `categories`(정보) 간 `score_match` ≥ 1
+- 사용자의 알림 토글(`notification_enabled` + 카테고리별)이 모두 ON
+- 매칭 점수 0인 사용자에게는 알림을 만들지 않는다 — "관심 있는 사용자에게만" 원칙.
+
+**백필 가드**:
+- `Notice.published_at` 이 **최근 7일 이내**인 항목만 fanout 대상. 초기 백필이나 `--max-pages` 큰 값으로 과거 공지를 대량 수집할 때 알림 폭주를 방지.
+- `Information` 은 `end_date` 가 없거나 `end_date >= today` 인 항목만 (마감 지난 정보로 알림 보내지 않음).
+
+**알림 본문**:
+- `title`: 콘텐츠 제목 그대로 (`Notice.title` / `Information.title`)
+- `message`: 짧은 안내 문구 ("관심사 기반 새 공지가 등록되었습니다" 등). 본문 요약은 클라이언트가 상세 페이지에서 조회.
+- `notification_type`: `notice` 또는 `information`
+- `related_id`: `Notice.id` 또는 `Information.id`
+
+**호출 위치**:
+- 공지: `BaseNoticeCrawler.save()` 또는 명령 핸들러에서 created 직후 호출. AI 처리(`process_notices_ai`)와는 독립 — AI 실패해도 알림은 발송됨.
+- 정보: `BaseInformationCrawler.save()` 동일.
+- LLM 호출이나 외부 HTTP는 fanout 안에서 하지 않는다 — 단순 DB INSERT 반복.
+
+**성능**:
+- 사용자 N × 신규 콘텐츠 M = N×M INSERT. 현 단계는 단순 루프 (`create_notification` 호출). bulk 최적화는 별 PR.
+
+**FCM 푸시 송신**: 위 fanout은 인앱 알림(`Notification` row)만 생성한다. 실제 디바이스 푸시는 별도 cron 명령 `send_pending_pushes`가 담당한다 (spec 9.3).
+
+- **방식**: 매일 06:35 KST cron — `is_pushed=False`이고 `created_at`이 최근 24시간 이내인 `Notification`을 사용자의 활성 `FCMDevice`로 멀티캐스트 송신. crawl(06:00)+fanout과 분리돼 크롤링이 FCM 장애에 묶이지 않는다.
+- **`is_pushed` 상태머신**: 송신 성공 또는 활성 디바이스 없음 → `True` (재시도 안 함). transient 실패(FCM 5xx·네트워크) → `False` 유지(다음 cron 재시도). `created_at` 24시간 초과 → 푸시 없이 `True` (누락된 cron 복구 후 노후 알림 폭주 방지 — 인앱 row는 유지돼 앱에서 조회 가능).
+- **죽은 토큰**: FCM이 토큰을 `Unregistered`/`InvalidArgument`로 보고하면 해당 `FCMDevice.is_active=False`로 비활성화.
+- **자격증명 미설정 시**: `FIREBASE_CREDENTIALS_PATH`가 비어 있으면 graceful no-op (로컬 개발·테스트는 자격증명 없이 동작 — 이메일 콘솔 폴백과 동일 철학).
 
 #### 응답 스키마 — 목록
 
@@ -1616,7 +1740,6 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 
 #### Out of Scope (다음 PR)
 
-- 실제 FCM 푸시 송신 (Firebase Admin SDK 통합, 이벤트 → push 발송 트리거)
 - 알림 스케줄링 (spec 7 — 마감일 D-1 자동 발송 등)
 
 ### 6.10 대시보드 (dashboard)
@@ -1624,6 +1747,46 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
 | GET | `/api/v1/dashboard/` | O | 메인화면 집계 데이터 |
+
+메인화면에 필요한 데이터를 단일 호출로 집계해 반환한다 (5.8). 새 모델 없이 기존 앱(courses / notices / information / notifications / accounts) 데이터를 읽어 조합하는 읽기 전용 엔드포인트.
+
+#### 응답 스키마
+
+```json
+{
+  "greeting": {
+    "user_name": "홍길동",
+    "weekday": "목",
+    "today_class_count": 3
+  },
+  "graduation_progress_percent": 47,
+  "today_schedule": [
+    {
+      "id": 12,
+      "course_name": "자료구조",
+      "course_code": "CSE2010",
+      "day_of_week": "목",
+      "start_time": "09:00:00",
+      "end_time": "10:30:00",
+      "professor": "김교수",
+      "room": "5301",
+      "building": "공학관"
+    }
+  ],
+  "notices": [ /* 공지 목록 항목 (6.7 NoticeListSerializer) — 최대 3개 */ ],
+  "information": [ /* 정보 목록 항목 (6.8) + d_day — 최대 3개 */ ],
+  "unread_notification_count": 5
+}
+```
+
+#### 응답 정책
+
+- **greeting**: `user_name`은 `User.name`(미입력 시 빈 문자열), `weekday`는 오늘 요일(월~일 한글), `today_class_count`는 `today_schedule` 길이.
+- **graduation_progress_percent**: 5.3.5 계산 결과(0~100 정수). 별도 단독 엔드포인트는 두지 않고 본 응답으로만 노출한다.
+- **today_schedule**: `CurrentCourse` 중 오늘 요일 항목을 `start_time` 오름차순 정렬. 주말 등 수업 없으면 빈 배열.
+- **notices**: 관심사 매칭(5.10) 점수 내림차순 → 동점 시 최신순으로 정렬한 상위 3개. **맞춤형(매칭) 공지를 우선 노출하되, 매칭 결과가 3개 미만이면 부족분을 최신 공지로 채운다** (매칭 0개여도 3개 반환). 출처 제한 없음(오픈톡 포함).
+- **information**: `is_active=True`이고 미마감(`end_date`가 없거나 오늘 이후)인 항목만 대상. 관심사 매칭 점수 내림차순 → 동점 시 마감 임박(`end_date` 오름차순) 순 상위 3개. notices와 동일하게 부족분은 마감 임박 순으로 채운다. 각 항목에 `d_day`(마감까지 남은 일수, `end_date` 없으면 `null`) 필드를 추가한다.
+- **unread_notification_count**: 해당 사용자의 `is_read=False` 알림 수.
 
 ### 6.11 북마크 (accounts)
 
@@ -1785,6 +1948,9 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 - 공지사항 AI 처리: 매일 06:30 KST (크롤링 완료 직후 정기 실행)
   - 1차 구현: 운영 서버 cron + `manage.py process_notices_ai` 명령
   - 미처리(`pending`) + 본문 변경 감지(`content_hash` 불일치)된 공지만 처리 (멱등)
+- FCM 푸시 송신: 매일 06:35 KST (crawl+fanout 완료 직후)
+  - 1차 구현: 운영 서버 cron + `manage.py send_pending_pushes` 명령
+  - `is_pushed=False`이고 최근 24시간 이내인 알림만 송신 (멱등 — 재실행 안전)
 - AI 응답: 스트리밍 응답 고려 (SSE 또는 polling)
 - DB 인덱싱: 자주 조회되는 필드 (user, created_at, deadline 등)
 - API 페이지네이션: 기본 20개, 최대 100개
@@ -2142,8 +2308,10 @@ Notice.extracted_content에 추출 텍스트 저장
 
 - 안드로이드 앱으로 PUSH 알림 전송
 - 백엔드에서 `firebase-admin` SDK 사용
-- 앱 로그인 시 FCM 토큰을 서버에 등록, 로그아웃 시 삭제
-- 알림 발생 시 해당 사용자의 활성 디바이스로 PUSH 전송
+- 앱 로그인 시 FCM 토큰을 서버에 등록(`POST /devices/`), 로그아웃 시 삭제
+- **송신 방식**: `manage.py send_pending_pushes` 명령을 매일 06:35 KST cron으로 실행. `is_pushed=False`이고 최근 24시간 이내인 `Notification`을 사용자의 활성 `FCMDevice`로 멀티캐스트 송신 후 `is_pushed=True` 마킹 (spec 6.9 상태머신 참고)
+- **죽은 토큰 정리**: FCM이 `Unregistered`/`InvalidArgument`로 보고한 토큰은 `FCMDevice.is_active=False`로 비활성화
+- **자격증명**: 서비스 계정 JSON 키 경로를 `FIREBASE_CREDENTIALS_PATH` 환경변수로 주입. 미설정 시 송신 명령은 graceful no-op (로컬·테스트는 자격증명 없이 동작)
 
 ### 9.4 이메일 발송
 
@@ -2232,6 +2400,7 @@ Notice.extracted_content에 추출 텍스트 저장
 ### Phase 5 - 알림 + 마무리 (2주)
 
 - [ ] notifications 앱: 알림 모델 + 조회/읽음처리 API
+- [ ] FCM 푸시 송신: `send_pending_pushes` 명령 + 매일 06:35 KST cron 등록
 - [ ] 맞춤 추천 알림 스케줄링 (마감일 전날 등)
 - [ ] API 통합 테스트 + Swagger 문서 검증
 - [ ] 운영 환경 설정 (PostgreSQL, 환경변수 등)
@@ -2251,6 +2420,7 @@ Notice.extracted_content에 추출 텍스트 저장
 3. **환경변수 관리** - `python-dotenv` 또는 `django-environ` 도입
    - 필수 키: `SECRET_KEY`, `DEBUG`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`
    - AI 파이프라인: `OPENAI_API_KEY` (필수), `OPENAI_MODEL` (선택, 기본 `gpt-4o-mini`)
+   - FCM 푸시 (spec 9.3): `FIREBASE_CREDENTIALS_PATH` (서비스 계정 JSON 경로, 미설정 시 송신 no-op)
    - 카카오 로그인 (spec 5.1.3):
      - `KAKAO_REST_API_KEY` (필수, 카카오 콘솔 "앱 키" 화면의 REST API 키)
      - `KAKAO_CLIENT_SECRET` (권장, 콘솔 "보안" 또는 "고급" 메뉴에서 발급)
