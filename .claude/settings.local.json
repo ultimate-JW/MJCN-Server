@@ -6,7 +6,32 @@
       "Bash(git merge *)",
       "Bash(git checkout *)",
       "Bash(git commit *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(python *)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(git push *)",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe manage.py test courses -v 2)",
+      "Bash(gh issue *)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe manage.py test courses -v 2 2>&1 | Select-Object -Last 80)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe manage.py makemigrations courses)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe manage.py check)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe manage.py test courses.tests.CurriculumRecommendAPITests -v 2 2>&1)",
+      "Bash(gh pr *)",
+      "Bash(git check-ignore *)",
+      "Bash(findstr /i \"claude\")",
+      "PowerShell(python -c \"import pdfplumber; print\\('pdfplumber', pdfplumber.__version__\\)\" 2>&1; python -c \"import pypdf; print\\('pypdf', pypdf.__version__\\)\" 2>&1; python -c \"import PyPDF2; print\\('PyPDF2', PyPDF2.__version__\\)\" 2>&1)",
+      "Bash(pip install *)",
+      "Bash(.venv/Scripts/pip.exe install *)",
+      "Bash(awk -F',' 'NR==1 || $12==\"\" || $13==\"\" || $11==\"\" {print NR\": \"$0}' \"seed_data/course_offerings/2026_1_교양.csv\")",
+      "PowerShell(Test-Path *)",
+      "PowerShell(python --version; python -c \"import pypdf; print\\('pypdf', pypdf.__version__\\)\" 2>&1; python -c \"import pdfplumber; print\\('pdfplumber ok'\\)\" 2>&1; python -c \"import fitz; print\\('pymupdf ok'\\)\" 2>&1)",
+      "PowerShell(python -c \"import pdfplumber; pdf=pdfplumber.open\\(r'c:\\\\Users\\\\leemi\\\\Downloads\\\\2-2-1 학칙 시행규칙\\(학사과정\\).pdf'\\); print\\('PAGES:', len\\(pdf.pages\\)\\)\")",
+      "PowerShell($env:PYTHONUTF8=\"1\"; python \"c:\\\\Users\\\\leemi\\\\OneDrive\\\\Desktop\\\\MJCN-Server\\\\image\\\\_extract.py\")",
+      "Bash(git rev-list *)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(git ls-tree *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(dir *)"
     ]
   }
 }
