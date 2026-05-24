@@ -182,22 +182,28 @@ def calc_graduation_progress(user):
 BONUS_INTEREST_MATCH = 20          # 사용자 관심사 카테고리 일치
 BONUS_CATEGORY_SHORT = 15          # 졸업요건상 잔여학점이 남은 카테고리에 속한 과목이면 가산
 BONUS_MAJOR_REQUIRED = 25          # 전공필수 가산
-BONUS_LIBERAL_REQUIRED = 15        # 교양필수 가산 
+BONUS_DESIGNATED_REQUIRED = 15     # 학칙 의무 영역(공통/핵심/학문기초) 가산 (#47 Phase 3, 기존 BONUS_LIBERAL_REQUIRED 대체)
 BONUS_GRADE_SEMESTER_MATCH = 10    # 과목 권장 "학년/학기"가 사용자 현재 "학년/학기"와 정확히 일치
-BONUS_BACKLOG_REQUIRED = 10        # 권장 학년이 지났는데 안 들은 "전공필수/교양필수" 
+BONUS_BACKLOG_REQUIRED = 10        # 권장 학년이 지났는데 안 들은 필수/지정 과목
 PENALTY_GRADE_EXCEEDED = 10        # 권장 학년이 사용자 학년보다 위 (상위 학년 과목)
 PENALTY_PREREQUISITE_MISSING = 15  # 동일 학과 학생이 선수과목을 안 들음 (타과생은 영향 없음)
 
-# 권장 학년이 지난 필수 과목 가산점 적용 대상 카테고리
-BACKLOG_REQUIRED_CATEGORIES = ('전공필수', '교양필수')
+# 학칙 의무 영역 — 학생이 지정된 과목을 들어야 하는 카테고리 (graduation_requirements.md §4.2~4.4)
+# 일반교양/자유선택/전공선택은 "학점만 채우면 됨"이라 제외, 전공필수는 별도 +25 가산
+DESIGNATED_CATEGORIES = {'공통교양', '핵심교양', '학문기초교양'}
+
+# 권장 학년이 지난 필수/지정 과목 가산점 적용 대상 카테고리
+BACKLOG_REQUIRED_CATEGORIES = ('전공필수',) + tuple(DESIGNATED_CATEGORIES)
 
 # 정렬 2차 키 — 동점 시 카테고리 우선순위 (숫자낮을수록 상위)
 CATEGORY_PRIORITY = {
     '전공필수': 1,
-    '교양필수': 2,
-    '전공선택': 3,
-    '교양선택': 4,
-    '일반선택': 5,
+    '공통교양': 2,
+    '핵심교양': 3,
+    '학문기초교양': 4,
+    '전공선택': 5,
+    '일반교양': 6,
+    '자유선택': 7,
 }
 
 
@@ -268,9 +274,9 @@ def calculate_recommendation_score(
     if course.category == '전공필수':
         score += BONUS_MAJOR_REQUIRED
 
-    # 교양필수 가산
-    if course.category == '교양필수':
-        score += BONUS_LIBERAL_REQUIRED
+    # 학칙 의무 영역(공통/핵심/학문기초) 가산 — graduation_requirements.md §4.2~4.4 지정 과목 우선 (#47 Phase 3)
+    if course.category in DESIGNATED_CATEGORIES:
+        score += BONUS_DESIGNATED_REQUIRED
 
     # 학년/학기 적합성 — year_open=0 은 "전학년 대상" sentinel (#36 import에서 매핑)
     # 어떤 학년 학생에게도 동일하게 적합해야 하므로 학년 관련 가감산 전부 skip
@@ -575,10 +581,11 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
     if include_winter:
         allowed_sems.append(4)                          # 동계
 
-    # 후보 — 사용자 전공 또는 교양 중에서 위 학기 슬롯에 열리는 것만
+    # 후보 — 사용자 전공 또는 교양 4종 중에서 위 학기 슬롯에 열리는 것만 (#47 Phase 3)
+    liberal_categories = ['공통교양', '핵심교양', '학문기초교양', '일반교양']
     candidates = list(
         Course.objects.filter(
-            Q(major=user.major) | Q(category__in=['교양필수', '교양선택']),
+            Q(major=user.major) | Q(category__in=liberal_categories),
             semester_open__in=allowed_sems,
         )
         .exclude(course_code__in=excluded_codes)

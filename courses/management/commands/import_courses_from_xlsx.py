@@ -41,7 +41,16 @@ FILE_NAME_MAPPING = {
     '컴퓨터공학전공': ('반도체·ICT대학', '컴퓨터정보통신공학부', '컴퓨터공학전공', '전공선택'),
     '컴퓨터정보통신공학부': ('반도체·ICT대학', '컴퓨터정보통신공학부', None, '전공선택'),
     '반도체ICT대학': ('반도체·ICT대학', None, None, '전공선택'),
-    '교양': ('교양', None, None, '교양선택'),
+    # 교양 파일은 row별로 liberal_subtype 따라 category가 다름. 기본값은 '일반교양' fallback (#47 Phase 3)
+    '교양': ('교양', None, None, '일반교양'),
+}
+
+# 교양 파일에서 liberal_subtype 분류 결과를 category로 사용할 영역 (#47 Phase 3)
+LIBERAL_SUBTYPE_TO_CATEGORY = {
+    '공통교양': '공통교양',
+    '핵심교양': '핵심교양',
+    '학문기초교양': '학문기초교양',
+    '일반교양': '일반교양',
 }
 
 FILE_NAME_PATTERN = re.compile(r'(\d{4})_(\d)_(.+)\.xlsx$')
@@ -94,7 +103,7 @@ class Command(BaseCommand):
         parser.add_argument('--college', help='대학 (파일명 매핑 없으면 필요)')
         parser.add_argument('--department', help='학부')
         parser.add_argument('--major', help='전공')
-        parser.add_argument('--category', help='이수구분 (전공필수/전공선택/교양필수/교양선택)')
+        parser.add_argument('--category', help='이수구분 (전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택)')
         parser.add_argument(
             '--dump-csv', action='store_true',
             help='엑셀과 같은 폴더에 .csv도 함께 dump (VSCode에서 미리보기/diff용)',
@@ -161,10 +170,17 @@ class Command(BaseCommand):
             n_rows += 1
 
             # 교양 4종(공통/핵심/학문기초/일반) 분류 — 학과코드 prefix + 교과목명으로 결정 (category_map).
-            # 교양 파일에서만 의미 있고 전공/군사는 null 반환. 카테고리가 교양인데 None이면 매핑 룰 보강 필요 시그널.
+            # 교양 파일에서만 의미 있고 전공/군사는 null 반환.
             liberal_subtype = classify_liberal_subtype(dept_code, name)
-            if category in ('교양필수', '교양선택') and liberal_subtype is None:
-                unmapped_liberal.append((str(dept_code or ''), str(name or '')))
+
+            # 교양 파일이면 liberal_subtype을 category로 박음 (#47 Phase 3 — 학칙 7분류)
+            # liberal_subtype 매핑 실패 시 fallback default_category(='일반교양')로 둠 — WARN으로 표면화
+            row_category = category
+            if origin == '교양':
+                if liberal_subtype in LIBERAL_SUBTYPE_TO_CATEGORY:
+                    row_category = LIBERAL_SUBTYPE_TO_CATEGORY[liberal_subtype]
+                else:
+                    unmapped_liberal.append((str(dept_code or ''), str(name or '')))
 
             # 핵심교양 4영역 — 핵심교양 행만 추가 분류 (#47 Phase 2). 그 외는 None.
             core_area = classify_core_area(name) if liberal_subtype == '핵심교양' else None
@@ -180,7 +196,7 @@ class Command(BaseCommand):
                     'college': college,
                     'department': department,
                     'major': major,
-                    'category': category,
+                    'category': row_category,
                     'liberal_subtype': liberal_subtype,
                     'core_area': core_area,
                     'credits': int(credits) if credits else 0,

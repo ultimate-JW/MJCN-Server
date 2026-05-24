@@ -93,9 +93,10 @@ class CompletionStatusView(APIView):
         total_completed = 0
         categories = []
 
-        for cat in ['전공필수', '전공선택', '교양필수', '교양선택']:
-            req = requirements.filter(category=cat).first()
-            required = req.required_credits if req else 0
+        # 학칙 7분류 순회 (#47 Phase 3). 핵심교양은 GR이 4영역으로 분해돼 있어 sum 필요.
+        for cat in ['전공필수', '공통교양', '핵심교양', '학문기초교양', '전공선택', '일반교양', '자유선택']:
+            cat_reqs = requirements.filter(category=cat)
+            required = sum(r.required_credits for r in cat_reqs)
             completed = completed_by_category.get(cat, 0)
             remaining = max(0, required - completed)
             total_required += required
@@ -107,20 +108,11 @@ class CompletionStatusView(APIView):
                 'remaining': remaining,
             })
 
-        # 일반선택: 총 졸업학점 - 위 카테고리 필요학점 합
+        # 졸업 총학점 — GR 어디서든 total_required 가져옴 (모든 row 동일값)
         first_req = requirements.first()
         graduation_total = first_req.total_required if first_req else 0
-        general_required = max(0, graduation_total - total_required)
-        general_completed = completed_by_category.get('일반선택', 0)
 
-        categories.append({
-            'category': '일반선택',
-            'completed': general_completed,
-            'required': general_required,
-            'remaining': max(0, general_required - general_completed),
-        })
-
-        grand_total_completed = total_completed + general_completed
+        grand_total_completed = total_completed
         data = {
             'categories': categories,
             'total_completed': grand_total_completed,

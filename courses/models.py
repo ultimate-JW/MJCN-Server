@@ -2,11 +2,17 @@ from django.db import models
 
 # 강의 기본 정보(코드, 이름, 학점 등등)
 class Course(models.Model):
+    # graduation_requirements.md §1·§3·§4 학칙 7분류로 펼침 (#47 Phase 3).
+    # 교양 4종을 category 1단으로 직접 표현 — 기존 '교양필수'/'교양선택'은 학칙 행정 분류와 불일치라 폐기.
+    # liberal_subtype 필드는 호환용으로 유지(category와 동기화).
     CATEGORY_CHOICES = [
         ('전공필수', '전공필수'),
         ('전공선택', '전공선택'),
-        ('교양필수', '교양필수'),
-        ('교양선택', '교양선택'),
+        ('공통교양', '공통교양'),
+        ('핵심교양', '핵심교양'),
+        ('학문기초교양', '학문기초교양'),
+        ('일반교양', '일반교양'),
+        ('자유선택', '자유선택'),
     ]
 
     # 교양 4종 (학칙 별표2·2-1 + graduation_requirements.md §3). 전공 과목은 null.
@@ -144,13 +150,8 @@ class CourseSchedule(models.Model):
 
 # 졸업 필요 학점
 class GraduationRequirement(models.Model):
-    CATEGORY_CHOICES = [
-        ('전공필수', '전공필수'),
-        ('전공선택', '전공선택'),
-        ('교양필수', '교양필수'),
-        ('교양선택', '교양선택'),
-        ('자유선택', '자유선택'),
-    ]
+    # Course와 동일한 7분류 사용 (#47 Phase 3)
+    CATEGORY_CHOICES = Course.CATEGORY_CHOICES
 
     department = models.CharField(max_length=50)
     admission_year = models.IntegerField()
