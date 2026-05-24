@@ -1,4 +1,6 @@
 from django.db.models import Q
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 
@@ -8,6 +10,30 @@ from .models import Notice
 from .serializers import NoticeDetailSerializer, NoticeListSerializer
 
 
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            'q', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description='제목/본문 부분 일치 검색 (spec 6.7)',
+        ),
+        OpenApiParameter(
+            'source', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description=(
+                "출처 필터 (콤마 구분, 복수 가능). 예: 'academic,scholarship'. "
+                "값: academic / general / event / scholarship / overseas / "
+                "student_activity / career / contest / opentalk"
+            ),
+        ),
+        OpenApiParameter(
+            'view', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description=(
+                "'personalized' (기본, 관심사 매칭 정렬) 또는 'all' (최신순). "
+                "spec 5.4.2 / 5.10."
+            ),
+            enum=['personalized', 'all'],
+        ),
+    ]
+)
 class NoticeListView(ListAPIView):
     """GET /api/v1/notices/ — 공지 목록.
 

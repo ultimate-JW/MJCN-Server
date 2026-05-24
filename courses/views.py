@@ -1,6 +1,8 @@
 from collections import defaultdict
 
 from django.db.models import Q
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
@@ -21,6 +23,42 @@ from .services import (
 
 
 # 과목 검색
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            'q', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description='과목명 또는 학수번호 부분 일치 검색',
+        ),
+        OpenApiParameter(
+            'college', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description='대학명 정확 일치 (예: 반도체·ICT대학)',
+        ),
+        OpenApiParameter(
+            'department', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description='학부명 정확 일치 (예: 컴퓨터정보통신공학부)',
+        ),
+        OpenApiParameter(
+            'major', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description='전공명 정확 일치',
+        ),
+        OpenApiParameter(
+            'category', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description='이수 구분 정확 일치 (전공필수/전공선택/교양필수/교양선택/일반선택)',
+        ),
+        OpenApiParameter(
+            'credits', OpenApiTypes.INT, OpenApiParameter.QUERY,
+            description='학점 수 정확 일치',
+        ),
+        OpenApiParameter(
+            'year_open', OpenApiTypes.INT, OpenApiParameter.QUERY,
+            description='권장 수강 학년 (1~4, 0=전학년)',
+        ),
+        OpenApiParameter(
+            'semester_open', OpenApiTypes.INT, OpenApiParameter.QUERY,
+            description='권장 수강 학기 (1/2/3/4 — spec 5.3.2 매핑)',
+        ),
+    ]
+)
 class CourseSearchView(ListAPIView):
     """GET /api/v1/courses/ - 과목 검색 (페이지네이션 적용)"""
     permission_classes = [IsAuthenticated]
@@ -148,6 +186,19 @@ class NextSemesterRecommendView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                'year', OpenApiTypes.INT, OpenApiParameter.QUERY,
+                description='추천 대상 연도 (예: 2026). 미지정 시 사용자 현재 학기 기반 자동.',
+            ),
+            OpenApiParameter(
+                'semester', OpenApiTypes.INT, OpenApiParameter.QUERY,
+                description='추천 대상 학기 (1/2/3/4). 미지정 시 자동. spec 5.3.2 매핑.',
+                enum=[1, 2, 3, 4],
+            ),
+        ]
+    )
     def get(self, request):
         target_year, target_semester = self._parse_term(request)
         if isinstance(target_year, Response):

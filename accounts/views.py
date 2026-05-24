@@ -429,10 +429,42 @@ class CurrentCourseViewSet(viewsets.ModelViewSet):
 from rest_framework.generics import ListCreateAPIView, DestroyAPIView
 from rest_framework.exceptions import NotFound
 
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
+
 from notices.models import Notice
 from information.models import Information
 
 
+@extend_schema_view(
+    get=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                'type', OpenApiTypes.STR, OpenApiParameter.QUERY,
+                description=(
+                    "북마크 종류 (필수). 'notice' 또는 'information'. "
+                    "누락·잘못된 값 → 400 (spec 6.11)."
+                ),
+                required=True,
+                enum=['notice', 'information'],
+            ),
+            OpenApiParameter(
+                'source', OpenApiTypes.STR, OpenApiParameter.QUERY,
+                description=(
+                    "type='notice'일 때만 적용. 공지 출처 필터 "
+                    "(academic/general/event/scholarship/...). spec 6.11."
+                ),
+            ),
+            OpenApiParameter(
+                'category', OpenApiTypes.STR, OpenApiParameter.QUERY,
+                description=(
+                    "type='information'일 때만 적용. 정보 카테고리 필터 "
+                    "(예: 공모전). spec 6.11."
+                ),
+            ),
+        ],
+    ),
+)
 class BookmarkListCreateView(ListCreateAPIView):
     """GET /api/v1/bookmarks/ - 본인 북마크 목록 (type/source/category 필터)
     POST /api/v1/bookmarks/ - 북마크 추가 (멱등)

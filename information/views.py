@@ -3,6 +3,8 @@ import json
 from django.db import connection
 from django.db.models import F, Q
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 
@@ -23,6 +25,33 @@ def _end_date_key(item):
     return item.end_date.toordinal()
 
 
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            'q', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description='제목/설명/주최자 부분 일치 검색 (spec 6.8)',
+        ),
+        OpenApiParameter(
+            'category', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description=(
+                '카테고리 필터 (콤마 구분, OR 매칭). '
+                "예: '공모전,대외활동'."
+            ),
+        ),
+        OpenApiParameter(
+            'include_expired', OpenApiTypes.BOOL, OpenApiParameter.QUERY,
+            description="'true'면 마감 지난 항목도 포함 (기본: 미포함)",
+        ),
+        OpenApiParameter(
+            'view', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description=(
+                "'personalized' (기본, 관심사 매칭 정렬) 또는 'all' (마감일 순). "
+                "spec 5.5.2 / 5.10."
+            ),
+            enum=['personalized', 'all'],
+        ),
+    ]
+)
 class InformationListView(ListAPIView):
     """GET /api/v1/information/ — 정보 목록.
 
