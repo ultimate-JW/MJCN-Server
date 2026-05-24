@@ -53,18 +53,8 @@ LIBERAL_SUBTYPE_TO_CATEGORY = {
     '일반교양': '일반교양',
 }
 
-# 학과별 전공필수 과목명 set (graduation_requirements.md §5.1).
-# 컴공 학생이 듣는 전공 분반(학과코드 컴공/컴정/반아)에서 이 이름이 매칭되면 category='전공필수'로 정정.
-# 학교 xlsx는 컴공 전공필수도 default '전공선택'으로 들어오기 때문에 import 시점에 보강.
-# 학과별로 다르므로 dept_code prefix 기준으로 적용 범위 제한.
-MAJOR_REQUIRED_BY_MAJOR = {
-    '컴퓨터공학전공': {
-        'C언어', '객체지향프로그래밍1', '자료구조', '컴퓨터하드웨어',
-        '운영체제', '소프트웨어공학', '알고리즘', '캡스톤디자인',
-    },
-}
-# 컴공 학생의 전공으로 인정되는 학과코드 prefix (CLAUDE.md §10)
-MAJOR_DEPT_PREFIXES = {'컴퓨터공학전공': ('컴공', '컴정', '반아')}
+# 학과별 전공필수 과목/prefix 상수는 services와 공유하기 위해 별도 모듈로 분리.
+from courses.major_required import MAJOR_REQUIRED_BY_MAJOR, MAJOR_DEPT_PREFIXES
 
 FILE_NAME_PATTERN = re.compile(r'(\d{4})_(\d)_(.+)\.xlsx$')
 

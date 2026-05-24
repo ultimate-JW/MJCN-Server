@@ -16,6 +16,7 @@ from datetime import date
 
 from django.db.models import Q
 
+from .major_required import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
 from .models import (
     AcademicCalendar,
     Course,
@@ -23,6 +24,27 @@ from .models import (
     CoursePrerequisite,
     GraduationRequirement,
 )
+
+
+def _foreign_major_versions_to_exclude(user_major):
+    """학생 전공의 전공필수 8과목 이름과 같은 이름인데 다른 학과코드(타과·교양 버전)인 Course.course_code set.
+
+    예) 컴공 학생 → 'C언어' 이름의 기컴101(교양)을 추천 후보에서 차단.
+    전공 버전(컴정101)은 그대로 후보에 남음.
+    학칙 §9 동일과목 정신 + UX (학생이 같은 이름 두 개 동시 노출 시 혼란 방지).
+    """
+    if not user_major or user_major not in MAJOR_REQUIRED_BY_MAJOR:
+        return set()
+    names = MAJOR_REQUIRED_BY_MAJOR[user_major]
+    prefixes = MAJOR_DEPT_PREFIXES.get(user_major, ())
+    if not prefixes:
+        return set()
+    prefix_q = Q()
+    for p in prefixes:
+        prefix_q |= Q(course_code__startswith=p)
+    return set(
+        Course.objects.filter(name__in=names).exclude(prefix_q).values_list('course_code', flat=True)
+    )
 
 
 # ────────────────────────────────────────
@@ -408,9 +430,12 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
 
     # 같은 이름 다른 코드 추천 제외 — 학칙 §9 동일과목 정신 (#47).
     # 예: 컴공 학생이 컴정101 C언어 들었으면 기컴101 C언어도 후보에서 제외.
+    # 주의: foreign_major_versions는 코드 기준만 제외 (이름 제외에 포함하면 전공 버전도 같이 제외돼버림)
     excluded_names = set(
         Course.objects.filter(course_code__in=excluded_codes).values_list('name', flat=True)
     )
+    # 학생 전공의 전공필수와 같은 이름의 타과·교양 버전은 코드 기준만 추가 제외 (#47)
+    excluded_codes = excluded_codes | _foreign_major_versions_to_exclude(user.major)
 
     # Hard Filter — 이수/수강 중(같은 코드 + 같은 이름) 제외 + 학기 Offering 매칭
     # Offering 있는 Course 는 target 학기 매칭만 통과, Offering 자체 없으면 통과 (#36)
@@ -615,6 +640,8 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
     excluded_names = set(
         Course.objects.filter(course_code__in=excluded_codes).values_list('name', flat=True)
     )
+    # 학생 전공의 전공필수와 같은 이름의 타과·교양 버전은 코드 기준만 추가 제외 (학과별 교양 블랙리스트, #47)
+    excluded_codes = excluded_codes | _foreign_major_versions_to_exclude(user.major)
 
     # 학기 슬롯 필터 — include_summer/winter에 따라 3/4 토글
     allowed_sems = [1, 2]

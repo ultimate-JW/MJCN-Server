@@ -1338,3 +1338,26 @@ class DuplicateNameExclusionTests(APITestCase):
         # 컴정101 이미 이수라 제외 + 기컴101은 동일 이름이라 제외
         self.assertNotIn('컴정101', codes)
         self.assertNotIn('기컴101', codes)
+
+
+class ForeignMajorVersionExclusionTests(APITestCase):
+    """학과별 교양 블랙리스트 — 컴공 전공필수 이름의 교양 버전 차단 (#47 A2)"""
+    url = '/api/v1/courses/recommend/next/'
+
+    def test_컴공_학생은_안_들었어도_기컴_C언어_제외(self):
+        user = _make_user(major='컴퓨터공학전공')
+        # 전공 버전(컴정101) + 교양 버전(기컴101) 둘 다 DB, 학생은 아직 안 들음
+        _make_course(
+            course_code='컴정101', name='C언어', major='컴퓨터공학전공',
+            category='전공필수', year_open=1, semester_open=1,
+        )
+        _make_course(
+            course_code='기컴101', name='C언어', major=None,
+            category='학문기초교양', year_open=1, semester_open=1,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        codes = {item['course_code'] for item in res.data}
+        # 전공 버전은 노출, 교양 버전은 차단
+        self.assertIn('컴정101', codes)
+        self.assertNotIn('기컴101', codes)
