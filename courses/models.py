@@ -18,6 +18,15 @@ class Course(models.Model):
         ('일반교양', '일반교양'),
     ]
 
+    # 핵심교양 4영역 (graduation_requirements.md §4.3). liberal_subtype=='핵심교양' 행에만 채움.
+    # 영역당 1과목(3학점) 택1, 4영역 모두 이수 = 12학점 (학칙 별표2-1).
+    CORE_AREA_CHOICES = [
+        ('역사와 철학', '역사와 철학'),
+        ('사회와 공동체', '사회와 공동체'),
+        ('문화와 예술', '문화와 예술'),
+        ('과학기술과 정보', '과학기술과 정보'),
+    ]
+
     # 학기 개설 값 매핑 (spec 5.3.2, #25)
     #   1 = 1학기 / 2 = 2학기 / 3 = 하계 계절학기 / 4 = 동계 계절학기
     SEMESTER_OPEN_CHOICES = [
@@ -36,6 +45,11 @@ class Course(models.Model):
     # 교양 세부 분류 — category='교양선택'/'교양필수' 행에 한해 채움. 전공/군사 등은 null.
     liberal_subtype = models.CharField(
         max_length=10, choices=LIBERAL_SUBTYPE_CHOICES, null=True, blank=True
+    )
+    # 핵심교양 4영역 — liberal_subtype=='핵심교양' 행만 채움. 그 외 null.
+    # (영역별 필수 1과목 충족 판정용. import 시점에 category_map.classify_core_area로 채운다.)
+    core_area = models.CharField(
+        max_length=20, choices=CORE_AREA_CHOICES, null=True, blank=True
     )
     credits = models.IntegerField()
     year_open = models.IntegerField()
@@ -142,20 +156,26 @@ class GraduationRequirement(models.Model):
     admission_year = models.IntegerField()
     category = models.CharField(max_length=10, choices=CATEGORY_CHOICES)
     # 교양 4종 분해용 (graduation_requirements.md §1·§3). 전공·자유선택 row는 null.
-    # (department, admission_year, category, liberal_subtype) 조합이 유일해야 함 — 4종을 row로 나눠 박는다.
+    # (department, admission_year, category, liberal_subtype, core_area) 조합이 유일해야 함.
     liberal_subtype = models.CharField(
         max_length=10, choices=Course.LIBERAL_SUBTYPE_CHOICES, null=True, blank=True
+    )
+    # 핵심교양 4영역 row 분해용 — liberal_subtype=='핵심교양'일 때만 채움 (graduation_requirements.md §4.3).
+    # 영역당 3학점 4 row(역사·철학/사회·공동체/문화·예술/과학기술·정보)로 핵심교양 12학점을 쪼개 박는다.
+    core_area = models.CharField(
+        max_length=20, choices=Course.CORE_AREA_CHOICES, null=True, blank=True
     )
     required_credits = models.IntegerField()
     total_required = models.IntegerField()
 
     class Meta:
         db_table = 'courses_graduationrequirement'
-        unique_together = ('department', 'admission_year', 'category', 'liberal_subtype')
+        unique_together = ('department', 'admission_year', 'category', 'liberal_subtype', 'core_area')
 
     def __str__(self):
         sub = f"/{self.liberal_subtype}" if self.liberal_subtype else ''
-        return f"{self.department} {self.admission_year} {self.category}{sub}: {self.required_credits}학점"
+        area = f"/{self.core_area}" if self.core_area else ''
+        return f"{self.department} {self.admission_year} {self.category}{sub}{area}: {self.required_credits}학점"
 
 
 # 학사 일정 : 수강신청 기간, 학기 시작/종료일

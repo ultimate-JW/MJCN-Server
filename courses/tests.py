@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import CourseHistory, CurrentCourse
-from courses.category_map import classify_liberal_subtype
+from courses.category_map import classify_liberal_subtype, classify_core_area
 from courses.management.commands.import_courses_from_xlsx import parse_year_open
 from courses.models import (
     AcademicCalendar,
@@ -195,15 +195,17 @@ class GraduationRequirementModelTests(TestCase):
         self.assertEqual(req.required_credits, 42)
 
     def test_unique_together(self):
-        # 4종 도입(#47) 후 unique 키는 (dept, year, category, liberal_subtype).
-        # liberal_subtype=NULL인 row끼리는 SQLite/PG 표준 NULL != NULL 정책상 중복 허용 안 되므로
-        # 여기선 명시적 liberal_subtype 값으로 충돌 검증.
+        # 4종 + 핵심교양 4영역 도입(#47 Phase 2) 후 unique 키는
+        # (dept, year, category, liberal_subtype, core_area).
+        # SQLite NULL != NULL 정책상 core_area=NULL row끼리는 충돌 안 잡히므로,
+        # 핵심교양 + 영역 명시 값으로 모든 컬럼 같을 때만 검증한다.
         GraduationRequirement.objects.create(
             department='융합소프트웨어학부',
             admission_year=2024,
             category='교양선택',
-            liberal_subtype='공통교양',
-            required_credits=17,
+            liberal_subtype='핵심교양',
+            core_area='역사와 철학',
+            required_credits=3,
             total_required=134,
         )
         with self.assertRaises(IntegrityError):
@@ -212,10 +214,27 @@ class GraduationRequirementModelTests(TestCase):
                     department='융합소프트웨어학부',
                     admission_year=2024,
                     category='교양선택',
-                    liberal_subtype='공통교양',
-                    required_credits=18,
+                    liberal_subtype='핵심교양',
+                    core_area='역사와 철학',
+                    required_credits=4,
                     total_required=134,
                 )
+
+    def test_핵심교양_4영역은_별개_row로_허용(self):
+        # 같은 liberal_subtype='핵심교양'이라도 core_area가 다르면 별개 row (#47 Phase 2)
+        for area in ['역사와 철학', '사회와 공동체', '문화와 예술', '과학기술과 정보']:
+            GraduationRequirement.objects.create(
+                department='컴퓨터공학전공',
+                admission_year=2024,
+                category='교양선택',
+                liberal_subtype='핵심교양',
+                core_area=area,
+                required_credits=3,
+                total_required=134,
+            )
+        self.assertEqual(
+            GraduationRequirement.objects.filter(liberal_subtype='핵심교양').count(), 4
+        )
 
     # 동일 학과여도 입학년도가 다르면 별도 졸업요건이 저장되는지
     def test_같은_학과_다른_입학년도는_허용(self):
@@ -744,6 +763,37 @@ class ClassifyLiberalSubtypeTests(SimpleTestCase):
         self.assertIsNone(classify_liberal_subtype(None, None))
 
 
+# ===== 핵심교양 4영역 매핑 (#47 Phase 2) =====
+
+class ClassifyCoreAreaTests(SimpleTestCase):
+    """classify_core_area — 과목명 → 핵심교양 4영역 분류 (graduation_requirements.md §4.3)."""
+
+    def test_영역별_대표_과목_매핑(self):
+        # 4영역 각각 대표 과목 1개씩 — md §4.3.1~4.3.4
+        self.assertEqual(classify_core_area('철학과 인간'), '역사와 철학')
+        self.assertEqual(classify_core_area('민주주의와 현대사회'), '사회와 공동체')
+        self.assertEqual(classify_core_area('예술과 창조성'), '문화와 예술')
+        self.assertEqual(classify_core_area('인공지능입문'), '과학기술과 정보')
+
+    def test_창업과_공동체는_사회와_공동체_단일(self):
+        # md §4.3 ※ 주석상 (2)·(4) 양쪽 표기였으나 오타 확정 — 사회와 공동체로만 매핑
+        self.assertEqual(classify_core_area('창업과 공동체'), '사회와 공동체')
+
+    def test_외국인전용도_매핑됨(self):
+        # 외국인학생전용도 같은 dict에 포함, 필터링 없이 매핑 반환
+        self.assertEqual(classify_core_area('외국인학생을 위한 한국현대사'), '역사와 철학')
+        self.assertEqual(classify_core_area('외국인학생을위한컴퓨터활용'), '과학기술과 정보')
+
+    def test_미매핑_과목은_None(self):
+        # 4영역 dict에 없는 과목 — 핵심교양인데 None 반환되면 호출자가 WARN 처리
+        self.assertIsNone(classify_core_area('자료구조'))
+        self.assertIsNone(classify_core_area('대학영어'))
+
+    def test_None_빈문자열_안전(self):
+        self.assertIsNone(classify_core_area(None))
+        self.assertIsNone(classify_core_area(''))
+
+
 # ===== CourseHistory.liberal_subtype 자동 동기화 (#47) =====
 
 class CourseHistoryLiberalSubtypeSyncTests(TestCase):
@@ -786,6 +836,22 @@ class CourseHistoryLiberalSubtypeSyncTests(TestCase):
             year=2026, semester=1, category='교양선택', credits=3,
         )
         self.assertIsNone(h.liberal_subtype)
+        self.assertIsNone(h.core_area)
+
+    def test_core_area_자동_채움(self):
+        # 핵심교양 Course가 core_area 가지면 CourseHistory 저장 시 자동 복사 (#47 Phase 2)
+        Course.objects.create(
+            course_code='교선301', name='철학과 인간',
+            college='교양', category='교양선택', liberal_subtype='핵심교양',
+            core_area='역사와 철학',
+            credits=3, year_open=1, semester_open=1,
+        )
+        h = CourseHistory.objects.create(
+            user=self.user, course_name='철학과 인간', course_code='교선301',
+            year=2026, semester=1, category='교양선택', credits=3,
+        )
+        self.assertEqual(h.liberal_subtype, '핵심교양')
+        self.assertEqual(h.core_area, '역사와 철학')
 
 
 class CurriculumRecommendAPITests(APITestCase):
@@ -1038,9 +1104,9 @@ class CalculateScoreTests(SimpleTestCase):
         self.assertEqual(score, 100 + BONUS_INTEREST_MATCH)
 
     def test_졸업요건_부족_카테고리면_BONUS_CATEGORY_SHORT_가산(self):
-        # short_categories는 (category, liberal_subtype) 튜플 set — 전공은 liberal_subtype=None (#47)
+        # short_categories는 (category, liberal_subtype, core_area) 트리플 set — 전공은 둘 다 None (#47 Phase 2)
         course = self._course(category='전공선택')
-        score = self._score(course, short_categories={('전공선택', None)})
+        score = self._score(course, short_categories={('전공선택', None, None)})
         self.assertEqual(score, 100 + BONUS_CATEGORY_SHORT)
 
     def test_교양_4종은_동일_category여도_별개_short_키(self):
@@ -1048,9 +1114,18 @@ class CalculateScoreTests(SimpleTestCase):
         # liberal_subtype 으로 key가 달라 일반교양 과목은 가산점 0 (#47)
         nuclear = self._course(category='교양선택', liberal_subtype='핵심교양')
         general = self._course(category='교양선택', liberal_subtype='일반교양')
-        short_keys = {('교양선택', '핵심교양')}
+        short_keys = {('교양선택', '핵심교양', None)}
         self.assertEqual(self._score(nuclear, short_categories=short_keys), 100 + BONUS_CATEGORY_SHORT)
         self.assertEqual(self._score(general, short_categories=short_keys), 100)
+
+    def test_핵심교양_4영역은_별개_short_키(self):
+        # 역사·철학만 부족, 사회·공동체는 충족인 상태 — 같은 liberal_subtype='핵심교양' 안에서도
+        # core_area로 key가 갈리므로 사회·공동체 과목은 가산점 0 (#47 Phase 2)
+        history = self._course(category='교양선택', liberal_subtype='핵심교양', core_area='역사와 철학')
+        society = self._course(category='교양선택', liberal_subtype='핵심교양', core_area='사회와 공동체')
+        short_keys = {('교양선택', '핵심교양', '역사와 철학')}
+        self.assertEqual(self._score(history, short_categories=short_keys), 100 + BONUS_CATEGORY_SHORT)
+        self.assertEqual(self._score(society, short_categories=short_keys), 100)
 
     def test_전공필수면_BONUS_MAJOR_REQUIRED_가산(self):
         # 다른 분기 회피 위해 year_open=2, semester_open=2 (학년 같음, 학기 다름)

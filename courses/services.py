@@ -217,9 +217,11 @@ def calculate_recommendation_score(
     한 과목에 대한 다음학기 추천 점수를 계산한다. (spec 5.3.1)
 
     순수 함수 — DB 조회를 하지 않는다. 호출자는 사전에 다음을 빌드해 넘긴다:
-      - short_categories: 졸업요건상 잔여학점이 남은 (category, liberal_subtype) 튜플 set.
+      - short_categories: 졸업요건상 잔여학점이 남은 (category, liberal_subtype, core_area) 트리플 set.
         liberal_subtype은 4종(공통/핵심/학문기초/일반) 또는 None(전공·자유선택).
-        교양은 같은 category='교양선택' 안에서도 4종을 따로 카운트한다 (#47).
+        core_area는 핵심교양 4영역(역사·철학/사회·공동체/문화·예술/과학기술·정보) 또는 None.
+        교양은 같은 category='교양선택' 안에서도 4종을 따로 카운트하고, 핵심교양은
+        4영역을 또 따로 카운트한다 (#47 Phase 2).
       - completed_course_ids: 사용자가 이수 완료한 강의 ID set
       - course_prerequisite_ids: 해당 course의 선수과목 강의 ID set
       - course_tags: course의 관심사 태그 리스트. 모델에 Course.tags가 추가되기
@@ -257,9 +259,9 @@ def calculate_recommendation_score(
     if tags and set(tags) & set(user_interest_categories or []):
         score += BONUS_INTEREST_MATCH
 
-    # 졸업요건 부족 카테고리 가산 — 키는 (category, liberal_subtype) 튜플
-    # 교양은 같은 category 안에서도 4종(공통/핵심/학문기초/일반)이 별개 진척도라 튜플로 식별 (#47)
-    if (course.category, course.liberal_subtype) in short_categories:
+    # 졸업요건 부족 카테고리 가산 — 키는 (category, liberal_subtype, core_area) 트리플
+    # 교양 4종은 같은 category 안에서도 별개 진척도, 핵심교양은 4영역까지 별개 진척도 (#47 Phase 2)
+    if (course.category, course.liberal_subtype, course.core_area) in short_categories:
         score += BONUS_CATEGORY_SHORT
 
     # 전공필수 가산
@@ -293,12 +295,12 @@ def calculate_recommendation_score(
 
 def _build_short_categories(user):
     """
-    졸업요건상 잔여학점이 남은 (category, liberal_subtype) 튜플 set을 빌드한다.
+    졸업요건상 잔여학점이 남은 (category, liberal_subtype, core_area) 트리플 set을 빌드한다.
 
     department + admission_year 기준으로 GraduationRequirement를 조회하고,
-    CourseHistory의 (category, liberal_subtype)별 합산 학점과 비교하여 부족분이
-    있는 키만 set에 담는다. 교양은 같은 category 안에서도 4종(공통/핵심/학문기초/일반)이
-    별개 진척도라 튜플로 식별한다 (#47). 전공·자유선택 row는 liberal_subtype=None.
+    CourseHistory의 (category, liberal_subtype, core_area)별 합산 학점과 비교하여
+    부족분이 있는 키만 set에 담는다. 교양 4종은 별개 진척도, 핵심교양은 4영역까지 별개
+    진척도 (#47 Phase 2). 전공·자유선택 row는 liberal_subtype/core_area 모두 None.
 
     user.major 또는 admission_year 미입력 시 빈 set 반환 → 졸업요건 가산점 0점.
     """
@@ -311,16 +313,16 @@ def _build_short_categories(user):
         admission_year=user.admission_year,
     )
 
-    # 사용자 이수이력의 (category, liberal_subtype)별 학점 합산
+    # 사용자 이수이력의 (category, liberal_subtype, core_area)별 학점 합산
     taken_credits_by_key = {}
     for history in user.course_histories.all():
-        key = (history.category, history.liberal_subtype)
+        key = (history.category, history.liberal_subtype, history.core_area)
         taken_credits_by_key[key] = taken_credits_by_key.get(key, 0) + history.credits
 
     # 키별 필요학점 > 이수학점 인 경우만 short으로 분류
     return {
-        (req.category, req.liberal_subtype) for req in requirements
-        if taken_credits_by_key.get((req.category, req.liberal_subtype), 0) < req.required_credits
+        (req.category, req.liberal_subtype, req.core_area) for req in requirements
+        if taken_credits_by_key.get((req.category, req.liberal_subtype, req.core_area), 0) < req.required_credits
     }
 
 
@@ -583,17 +585,18 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
         .prefetch_related('schedules', 'prerequisites')
     )
 
-    # 졸업요건 잔여학점 — 키는 (category, liberal_subtype) 튜플. 교양 4종 별개 진척도 (#47)
+    # 졸업요건 잔여학점 — 키는 (category, liberal_subtype, core_area) 트리플 (#47 Phase 2).
+    # 교양 4종 + 핵심교양 4영역까지 별개 진척도.
     completed_credits_by_key = {}
     for h in user.course_histories.all():
-        key = (h.category, h.liberal_subtype)
+        key = (h.category, h.liberal_subtype, h.core_area)
         completed_credits_by_key[key] = completed_credits_by_key.get(key, 0) + h.credits
-    remaining_by_cat = {}  # 변수명은 호환 유지, 값 키는 튜플
+    remaining_by_cat = {}  # 변수명은 호환 유지, 값 키는 트리플
     if user.major and user.admission_year:
         for req in GraduationRequirement.objects.filter(
             department=user.major, admission_year=user.admission_year,
         ):
-            key = (req.category, req.liberal_subtype)
+            key = (req.category, req.liberal_subtype, req.core_area)
             done = completed_credits_by_key.get(key, 0)
             remaining_by_cat[key] = max(0, req.required_credits - done)
 
@@ -653,7 +656,7 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
                     continue
             eligible.append(course)
 
-        # 잔여 카테고리 매 학기 갱신 — 추천 진행분이 차감된 상태. 키는 (category, liberal_subtype)
+        # 잔여 카테고리 매 학기 갱신 — 추천 진행분이 차감된 상태. 키는 (category, liberal_subtype, core_area)
         short_cats = {key for key, rem in remaining_by_cat.items() if rem > 0}
 
         scored = []
@@ -693,7 +696,7 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
             sem_credits += course.credits
             plan_used_codes.add(course.course_code)
             plan_completed_ids.add(course.id)              # 다음 학기 prereq 검사용
-            key = (course.category, course.liberal_subtype)
+            key = (course.category, course.liberal_subtype, course.core_area)
             if key in remaining_by_cat:
                 remaining_by_cat[key] = max(0, remaining_by_cat[key] - course.credits)
 

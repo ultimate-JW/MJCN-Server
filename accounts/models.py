@@ -92,6 +92,11 @@ class CourseHistory(models.Model):
     liberal_subtype = models.CharField(
         max_length=10, null=True, blank=True, verbose_name='교양 4종 분류',
     )
+    # 핵심교양 4영역 — liberal_subtype=='핵심교양' 행만 채움. save() 시 Course에서 자동 복사 (#47 Phase 2).
+    # 영역별 부족분(영역당 3학점 4row) 판정 키로 사용.
+    core_area = models.CharField(
+        max_length=20, null=True, blank=True, verbose_name='핵심교양 영역',
+    )
     credits = models.IntegerField(verbose_name='학점 수')
 
     class Meta:
@@ -108,15 +113,20 @@ class CourseHistory(models.Model):
         return f'{self.user.email} - {self.course_name}'
 
     def save(self, *args, **kwargs):
-        # liberal_subtype 자동 채움 — course_code로 Course 찾아 복사 (#47).
+        # liberal_subtype / core_area 자동 채움 — course_code로 Course 찾아 복사 (#47).
         # 명시적으로 값을 넘긴 호출자가 있으면 덮지 않음. bulk_create는 save() 우회하니 별도 보강 필요.
-        if not self.liberal_subtype and self.course_code:
+        need_subtype = not self.liberal_subtype
+        need_area = not self.core_area
+        if (need_subtype or need_area) and self.course_code:
             from courses.models import Course
-            sub = Course.objects.filter(course_code=self.course_code).values_list(
-                'liberal_subtype', flat=True,
+            row = Course.objects.filter(course_code=self.course_code).values(
+                'liberal_subtype', 'core_area',
             ).first()
-            if sub:
-                self.liberal_subtype = sub
+            if row:
+                if need_subtype and row['liberal_subtype']:
+                    self.liberal_subtype = row['liberal_subtype']
+                if need_area and row['core_area']:
+                    self.core_area = row['core_area']
         super().save(*args, **kwargs)
 
 

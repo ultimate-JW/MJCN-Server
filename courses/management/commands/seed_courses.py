@@ -19,33 +19,44 @@ from courses.models import AcademicCalendar, GraduationRequirement
 
 
 # 졸업요건 (컴퓨터공학전공 / 2024학번 / 비인증 트랙)
-# 출처: graduation_requirements.md §1.1·§1.2 (일반과정 비인증, 2018~2024학번) + §4.1 전공필수 8과목=24
+# 출처: graduation_requirements.md §2 (일반과정 비인증 2024학번) + §4.3 핵심교양 4영역 + §5.1 전공필수 8과목=24
 # 총 134학점 = 전공 70 + 교양 54 + 자유선택 10
 # 교양 54 = 공통17 + 핵심12 + 학문기초15 + 일반10
+# 핵심교양 12 = 영역별 3학점 × 4영역 (역사·철학/사회·공동체/문화·예술/과학기술·정보)
 SAMPLE_GRADUATION_REQUIREMENTS = [
     # 전공 (70 = 전필 24 + 전선 46)
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
-     'category': '전공필수', 'liberal_subtype': None,
+     'category': '전공필수', 'liberal_subtype': None, 'core_area': None,
      'required_credits': 24, 'total_required': 134},
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
-     'category': '전공선택', 'liberal_subtype': None,
+     'category': '전공선택', 'liberal_subtype': None, 'core_area': None,
      'required_credits': 46, 'total_required': 134},
     # 교양 4종 (54) — category는 호환용 라벨, 실제 4종 분해는 liberal_subtype
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
-     'category': '교양필수', 'liberal_subtype': '공통교양',
+     'category': '교양필수', 'liberal_subtype': '공통교양', 'core_area': None,
      'required_credits': 17, 'total_required': 134},
+    # 핵심교양 — 영역별 1과목(3학점) 4row로 분해. 영역당 부족 시 그 영역 과목에 가산.
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
-     'category': '교양선택', 'liberal_subtype': '핵심교양',
-     'required_credits': 12, 'total_required': 134},
+     'category': '교양선택', 'liberal_subtype': '핵심교양', 'core_area': '역사와 철학',
+     'required_credits': 3, 'total_required': 134},
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
-     'category': '교양선택', 'liberal_subtype': '학문기초교양',
+     'category': '교양선택', 'liberal_subtype': '핵심교양', 'core_area': '사회와 공동체',
+     'required_credits': 3, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '교양선택', 'liberal_subtype': '핵심교양', 'core_area': '문화와 예술',
+     'required_credits': 3, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '교양선택', 'liberal_subtype': '핵심교양', 'core_area': '과학기술과 정보',
+     'required_credits': 3, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '교양선택', 'liberal_subtype': '학문기초교양', 'core_area': None,
      'required_credits': 15, 'total_required': 134},
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
-     'category': '교양선택', 'liberal_subtype': '일반교양',
+     'category': '교양선택', 'liberal_subtype': '일반교양', 'core_area': None,
      'required_credits': 10, 'total_required': 134},
     # 자유선택 (10)
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
-     'category': '자유선택', 'liberal_subtype': None,
+     'category': '자유선택', 'liberal_subtype': None, 'core_area': None,
      'required_credits': 10, 'total_required': 134},
 ]
 
