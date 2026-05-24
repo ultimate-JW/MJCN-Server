@@ -89,6 +89,16 @@ class CompletionStatusView(APIView):
             admission_year=user.admission_year,
         )
 
+        # 자유선택 overflow 자동 합산 (graduation_requirements.md §6) — 다른 카테고리 required 초과분이 자유선택 채움.
+        # 예) 전공 70 required인데 71학점 들으면 초과 1학점이 자유선택으로 자동 인정.
+        overflow = 0
+        for cat in ['전공필수', '전공선택', '공통교양', '핵심교양', '학문기초교양', '일반교양']:
+            cat_required = sum(r.required_credits for r in requirements.filter(category=cat))
+            cat_done = completed_by_category.get(cat, 0)
+            if cat_done > cat_required:
+                overflow += cat_done - cat_required
+        completed_by_category['자유선택'] = completed_by_category.get('자유선택', 0) + overflow
+
         total_required = 0
         total_completed = 0
         categories = []

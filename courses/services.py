@@ -299,6 +299,30 @@ def calculate_recommendation_score(
     return score
 
 
+def _apply_free_election_overflow(taken_credits_by_key, requirements):
+    """카테고리별 required 초과분을 자유선택 completed에 자동 합산 (graduation_requirements.md §6).
+
+    학교 정책: 전공/교양에서 최소 이수학점을 초과한 학점은 자동으로 자유선택으로 인정.
+    예) 컴공 전공 70 required인데 71학점 들으면 초과 1학점 → 자유선택 1학점 추가.
+
+    taken_credits_by_key를 in-place mutate한다. 자유선택 키(('자유선택', None, None))에 overflow 합산.
+    """
+    cat_taken = {}
+    for (cat, _, _), credits in taken_credits_by_key.items():
+        cat_taken[cat] = cat_taken.get(cat, 0) + credits
+    cat_required = {}
+    for r in requirements:
+        cat_required[r.category] = cat_required.get(r.category, 0) + r.required_credits
+
+    overflow = sum(
+        max(0, cat_taken.get(cat, 0) - cat_required.get(cat, 0))
+        for cat in cat_required
+        if cat != '자유선택'
+    )
+    free_key = ('자유선택', None, None)
+    taken_credits_by_key[free_key] = taken_credits_by_key.get(free_key, 0) + overflow
+
+
 def _build_short_categories(user):
     """
     졸업요건상 잔여학점이 남은 (category, liberal_subtype, core_area) 트리플 set을 빌드한다.
@@ -308,22 +332,27 @@ def _build_short_categories(user):
     부족분이 있는 키만 set에 담는다. 교양 4종은 별개 진척도, 핵심교양은 4영역까지 별개
     진척도 (#47 Phase 2). 전공·자유선택 row는 liberal_subtype/core_area 모두 None.
 
+    자유선택은 다른 카테고리에서 required 초과한 학점을 자동 합산해서 short 판정 (graduation_requirements.md §6).
+
     user.major 또는 admission_year 미입력 시 빈 set 반환 → 졸업요건 가산점 0점.
     """
     # 졸업요건 조회 불가 — 학과 또는 입학연도 미입력
     if not user.major or not user.admission_year:
         return set()
 
-    requirements = GraduationRequirement.objects.filter(
+    requirements = list(GraduationRequirement.objects.filter(
         department=user.major,
         admission_year=user.admission_year,
-    )
+    ))
 
     # 사용자 이수이력의 (category, liberal_subtype, core_area)별 학점 합산
     taken_credits_by_key = {}
     for history in user.course_histories.all():
         key = (history.category, history.liberal_subtype, history.core_area)
         taken_credits_by_key[key] = taken_credits_by_key.get(key, 0) + history.credits
+
+    # 자유선택 overflow 합산 — 다른 카테고리 초과분이 자유선택 채움
+    _apply_free_election_overflow(taken_credits_by_key, requirements)
 
     # 키별 필요학점 > 이수학점 인 경우만 short으로 분류
     return {
@@ -600,9 +629,12 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
         completed_credits_by_key[key] = completed_credits_by_key.get(key, 0) + h.credits
     remaining_by_cat = {}  # 변수명은 호환 유지, 값 키는 트리플
     if user.major and user.admission_year:
-        for req in GraduationRequirement.objects.filter(
+        requirements = list(GraduationRequirement.objects.filter(
             department=user.major, admission_year=user.admission_year,
-        ):
+        ))
+        # 자유선택 overflow 합산 — 다른 카테고리 초과분이 자유선택 채움 (graduation_requirements.md §6)
+        _apply_free_election_overflow(completed_credits_by_key, requirements)
+        for req in requirements:
             key = (req.category, req.liberal_subtype, req.core_area)
             done = completed_credits_by_key.get(key, 0)
             remaining_by_cat[key] = max(0, req.required_credits - done)

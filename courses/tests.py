@@ -502,6 +502,24 @@ class CompletionStatusAPITests(APITestCase):
         major_required = next(c for c in res.data['categories'] if c['category'] == '전공필수')
         self.assertEqual(major_required['completed'], 3)
 
+    def test_전공_초과분은_자유선택으로_자동_합산(self):
+        # graduation_requirements.md §6 — 카테고리 required 초과분이 자유선택으로 자동 인정
+        # setUp의 전공필수 42 required인데 45학점 들으면 3학점이 자유선택으로 이동
+        GraduationRequirement.objects.create(
+            department='데이터테크놀로지전공', admission_year=2024,
+            category='자유선택', required_credits=10, total_required=130,
+        )
+        for i in range(15):
+            CourseHistory.objects.create(
+                user=self.user, course_name=f'전공{i}', course_code=f'MAJ{i:03d}',
+                year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+            )  # 총 45학점 = required 42 + 초과 3
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        free = next(c for c in res.data['categories'] if c['category'] == '자유선택')
+        self.assertEqual(free['completed'], 3)   # 초과 3학점 자동 자유선택
+        self.assertEqual(free['remaining'], 7)   # required 10 - 3
+
 
 class NextSemesterRecommendAPITests(APITestCase):
     """다음학기 추천 API 통합 테스트 (spec 5.3.1, 점수 기반 단일 리스트)"""
