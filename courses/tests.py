@@ -1380,3 +1380,70 @@ class ForeignMajorVersionExclusionTests(APITestCase):
         # 전공 버전은 노출, 교양 버전은 차단
         self.assertIn('컴정101', codes)
         self.assertNotIn('기컴101', codes)
+
+
+class TagRulesTests(SimpleTestCase):
+    """Course.tags 룰 매핑 검증 (#48)"""
+
+    def _course(self, name='', major=''):
+        from courses.models import Course
+        return Course(name=name, major=major)
+
+    def test_컴공_전공_과목은_IT개발_default(self):
+        from courses.tag_rules import infer_tags
+        tags = infer_tags(self._course(name='임의이름', major='컴퓨터공학전공'))
+        self.assertIn('IT/개발', tags)
+
+    def test_AI_키워드_매칭(self):
+        from courses.tag_rules import infer_tags
+        tags = infer_tags(self._course(name='AI사회와인간'))
+        self.assertIn('IT/개발', tags)
+        self.assertIn('연구/R&D', tags)
+
+    def test_채플은_기타(self):
+        # 12 카테고리에 종교 없어 '기타'로 매핑
+        from courses.tag_rules import infer_tags
+        tags = infer_tags(self._course(name='채플'))
+        self.assertEqual(tags, {'기타'})
+
+    def test_매칭_없으면_빈_set(self):
+        from courses.tag_rules import infer_tags
+        tags = infer_tags(self._course(name='용인학'))  # 학교 특화 — 룰 매칭 없음
+        self.assertEqual(tags, set())
+
+
+class BackfillCourseTagsTests(TestCase):
+    """backfill_course_tags 명령 (#48)"""
+
+    def test_빈_tags만_채움_기존은_보호(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from courses.models import Course
+        c_empty = Course.objects.create(
+            course_code='TEST001', name='AI개론', college='X',
+            category='전공선택', credits=3, year_open=1, semester_open=1,
+        )
+        c_manual = Course.objects.create(
+            course_code='TEST002', name='AI개론2', college='X',
+            category='전공선택', credits=3, year_open=1, semester_open=1,
+            tags=['디자인'],  # 수동 보강 가정
+        )
+        call_command('backfill_course_tags', stdout=StringIO())
+        c_empty.refresh_from_db()
+        c_manual.refresh_from_db()
+        self.assertIn('IT/개발', c_empty.tags)
+        self.assertEqual(c_manual.tags, ['디자인'])  # 보호됨
+
+    def test_overwrite_옵션은_기존도_덮어씀(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from courses.models import Course
+        c = Course.objects.create(
+            course_code='TEST003', name='AI개론', college='X',
+            category='전공선택', credits=3, year_open=1, semester_open=1,
+            tags=['디자인'],  # 잘못된 수동 태그 가정
+        )
+        call_command('backfill_course_tags', '--overwrite', stdout=StringIO())
+        c.refresh_from_db()
+        self.assertIn('IT/개발', c.tags)
+        self.assertNotIn('디자인', c.tags)
