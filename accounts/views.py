@@ -11,6 +11,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
+from drf_spectacular.utils import extend_schema
+
 from .authentication import blacklist_current_access_token
 from .throttles import VerifyEmailPerEmailThrottle, PasswordResetPerEmailThrottle
 
@@ -34,6 +36,7 @@ User = get_user_model()
 
 # ─── 6.1 인증 ───
 
+@extend_schema(request=SignupSerializer)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def signup(request):
@@ -64,6 +67,7 @@ def signup(request):
     )
 
 
+@extend_schema(request=VerifyEmailSerializer)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([AnonRateThrottle, VerifyEmailPerEmailThrottle])
@@ -100,6 +104,7 @@ def verify_email(request):
     })
 
 
+@extend_schema(request=ResendVerificationSerializer)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def resend_verification(request):
@@ -117,6 +122,7 @@ def resend_verification(request):
     return Response({'detail': '인증 코드가 발송되었습니다.'})
 
 
+@extend_schema(request=LoginSerializer)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_view(request):
@@ -146,6 +152,7 @@ def login_view(request):
     })
 
 
+@extend_schema(request=KakaoLoginSerializer)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def kakao_login(request):
@@ -237,6 +244,7 @@ def kakao_login(request):
     })
 
 
+@extend_schema(request=LogoutSerializer)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def logout_view(request):
@@ -265,6 +273,7 @@ def logout_view(request):
 
 # ─── 비밀번호 재설정 ───
 
+@extend_schema(request=PasswordResetRequestSerializer)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def password_reset_request(request):
@@ -285,6 +294,7 @@ def password_reset_request(request):
     return Response({'detail': '인증 코드가 발송되었습니다.'})
 
 
+@extend_schema(request=PasswordResetVerifySerializer)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([AnonRateThrottle, PasswordResetPerEmailThrottle])
@@ -306,6 +316,7 @@ def password_reset_verify(request):
     return Response({'detail': '인증 코드가 확인되었습니다.'})
 
 
+@extend_schema(request=PasswordResetConfirmSerializer)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([AnonRateThrottle, PasswordResetPerEmailThrottle])
@@ -335,6 +346,7 @@ def password_reset_confirm(request):
 
 # ─── 6.2 프로필 / 설정 ───
 
+@extend_schema(methods=['PUT', 'PATCH'], request=ProfileUpdateSerializer)
 @api_view(['GET', 'PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def profile(request):
@@ -348,6 +360,7 @@ def profile(request):
     return Response(ProfileSerializer(user).data)
 
 
+@extend_schema(methods=['PATCH'], request=SettingsSerializer)
 @api_view(['GET', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def settings_view(request):
@@ -361,6 +374,7 @@ def settings_view(request):
     return Response(serializer.data)
 
 
+@extend_schema(request=WithdrawSerializer)
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def withdraw(request):
