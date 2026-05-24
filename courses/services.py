@@ -406,7 +406,13 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
     )
     excluded_codes = taken_codes | current_codes
 
-    # Hard Filter — 이수/수강 중 제외 + 학기 Offering 매칭
+    # 같은 이름 다른 코드 추천 제외 — 학칙 §9 동일과목 정신 (#47).
+    # 예: 컴공 학생이 컴정101 C언어 들었으면 기컴101 C언어도 후보에서 제외.
+    excluded_names = set(
+        Course.objects.filter(course_code__in=excluded_codes).values_list('name', flat=True)
+    )
+
+    # Hard Filter — 이수/수강 중(같은 코드 + 같은 이름) 제외 + 학기 Offering 매칭
     # Offering 있는 Course 는 target 학기 매칭만 통과, Offering 자체 없으면 통과 (#36)
     # 후자는 기존 #24/#25 더미 시드 호환용 — 운영 데이터는 전부 Offering 동반
     has_offering_qs = CourseOffering.objects.values_list('course_id', flat=True)
@@ -418,6 +424,7 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
     candidates = list(
         Course.objects
         .exclude(course_code__in=excluded_codes)
+        .exclude(name__in=excluded_names)
         .filter(Q(pk__in=matching_qs) | ~Q(pk__in=has_offering_qs))
         .distinct()
         .prefetch_related('prerequisites', 'schedules')
@@ -604,6 +611,10 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
     taken_codes = set(user.course_histories.values_list('course_code', flat=True))
     current_codes = set(user.current_courses.values_list('course_code', flat=True))
     excluded_codes = taken_codes | current_codes
+    # 같은 이름 다른 코드 추천 제외 — 학칙 §9 동일과목 정신 (#47)
+    excluded_names = set(
+        Course.objects.filter(course_code__in=excluded_codes).values_list('name', flat=True)
+    )
 
     # 학기 슬롯 필터 — include_summer/winter에 따라 3/4 토글
     allowed_sems = [1, 2]
@@ -620,6 +631,7 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
             semester_open__in=allowed_sems,
         )
         .exclude(course_code__in=excluded_codes)
+        .exclude(name__in=excluded_names)
         .prefetch_related('schedules', 'prerequisites')
     )
 
@@ -676,6 +688,7 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
     """
     remaining_by_cat = dict(context['remaining_by_cat'])  # 학기마다 갱신
     plan_used_codes = set()                                # 이 plan 안에서 추천된 과목
+    plan_used_names = set()                                # 같은 이름 다른 코드 중복 방지 (학칙 §9, #47)
     plan_completed_ids = set(context['completed_ids'])     # 사용자 이수 + plan 진행분
 
     year, sem = context['first_year'], context['first_sem']
@@ -687,6 +700,8 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
         eligible = []
         for course in context['candidates']:
             if course.course_code in plan_used_codes:
+                continue
+            if course.name in plan_used_names:              # 같은 이름 다른 코드 중복 방지 (#47)
                 continue
             if course.semester_open != sem:                 # 이번 학기에 안 열림
                 continue
@@ -736,6 +751,7 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
             sem_courses.append(course)
             sem_credits += course.credits
             plan_used_codes.add(course.course_code)
+            plan_used_names.add(course.name)               # 같은 이름 다른 코드 후속 학기 제외
             plan_completed_ids.add(course.id)              # 다음 학기 prereq 검사용
             key = (course.category, course.liberal_subtype, course.core_area)
             if key in remaining_by_cat:

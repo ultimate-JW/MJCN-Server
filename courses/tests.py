@@ -1311,3 +1311,30 @@ class ImportPrerequisitesFromCsvTests(TestCase):
             self.assertIn('알고리즘', output)
         finally:
             os.unlink(tmp)
+
+
+class DuplicateNameExclusionTests(APITestCase):
+    """같은 이름 다른 코드 추천 후보 제외 (학칙 §9 동일과목, #47)"""
+    url = '/api/v1/courses/recommend/next/'
+
+    def test_같은_이름_다른_코드는_이수했으면_제외(self):
+        # 컴공 학생이 컴정101 C언어 이수 → 기컴101 C언어도 추천 후보에서 빠져야 함
+        user = _make_user()
+        major_c = _make_course(
+            course_code='컴정101', name='C언어', major='데이터테크놀로지전공',
+            category='전공필수', year_open=1, semester_open=1,
+        )
+        liberal_c = _make_course(
+            course_code='기컴101', name='C언어',  # 같은 이름, 다른 코드
+            category='학문기초교양', year_open=1, semester_open=1,
+        )
+        CourseHistory.objects.create(
+            user=user, course_name='C언어', course_code='컴정101',
+            year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        codes = {item['course_code'] for item in res.data}
+        # 컴정101 이미 이수라 제외 + 기컴101은 동일 이름이라 제외
+        self.assertNotIn('컴정101', codes)
+        self.assertNotIn('기컴101', codes)
