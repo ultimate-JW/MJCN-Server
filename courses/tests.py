@@ -1270,3 +1270,44 @@ class CalculateScoreTests(SimpleTestCase):
             completed_course_ids=set(),
         )
         self.assertEqual(score, 100)
+
+
+class ImportPrerequisitesFromCsvTests(TestCase):
+    """선수과목 csv import 명령 (graduation_requirements.md §7)"""
+
+    def test_매칭_성공_과_미커버_skip(self):
+        from io import StringIO
+        from django.core.management import call_command
+        import tempfile, os
+        # DB 시드: 후수·선수 둘 다 있는 페어와 후수만 있는 페어
+        c_lang = Course.objects.create(
+            course_code='기컴101', name='C언어', college='교양',
+            category='학문기초교양', credits=3, year_open=1, semester_open=1,
+        )
+        oop1 = Course.objects.create(
+            course_code='컴공220', name='객체지향프로그래밍1', college='반도체ICT',
+            major='컴퓨터공학전공', category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        # 후수 DB 미커버 (알고리즘은 DB에 없음)
+
+        csv_content = (
+            '학과명|후수교과코드|후수교과목명|선수교과코드|선수교과목명|선·후수지정연도\n'
+            '컴공|JEJ02220|객체지향프로그래밍1|JEJ02211|C언어|2010\n'
+            '컴공|JEJ02316|알고리즘|JEJ02209|자료구조|2006\n'
+        )
+        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.csv', encoding='utf-8') as f:
+            f.write(csv_content)
+            tmp = f.name
+        try:
+            out = StringIO()
+            call_command('import_prerequisites_from_csv', tmp, stdout=out)
+            # 객체지향프로그래밍1 ← C언어 1건 박힘
+            self.assertEqual(CoursePrerequisite.objects.count(), 1)
+            self.assertEqual(CoursePrerequisite.objects.first().course, oop1)
+            self.assertEqual(CoursePrerequisite.objects.first().prerequisite, c_lang)
+            # 알고리즘은 후수 DB 미커버 → skip + WARN 출력
+            output = out.getvalue()
+            self.assertIn('skip 1', output)
+            self.assertIn('알고리즘', output)
+        finally:
+            os.unlink(tmp)
