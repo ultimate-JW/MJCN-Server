@@ -724,10 +724,10 @@ class ClassifyLiberalSubtypeTests(SimpleTestCase):
         self.assertIsNone(classify_liberal_subtype('GEN', '대학영어'))
         self.assertIsNone(classify_liberal_subtype('', ''))
 
-    def test_by_name_은_학문기초_필수7과목_확정(self):
-        # graduation_requirements.md §3.3 명시 필수 7과목 — prefix가 어떻든 학문기초교양
+    def test_by_name_은_학문기초_필수5과목_확정(self):
+        # graduation_requirements.md §3.3 명시 필수 5과목 — prefix가 어떻든 학문기초교양
         for n in ['미적분학1', '이산수학개론', '선형대수학개론', '공학수학1',
-                  '통계학개론', '물리학1', '물리학실험1']:
+                  '통계학개론']:
             self.assertEqual(
                 classify_liberal_subtype('기자', n), '학문기초교양',
                 msg=f'{n} 이 학문기초교양으로 잡혀야 함',
