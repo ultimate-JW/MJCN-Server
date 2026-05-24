@@ -76,8 +76,17 @@ class CategoryCreditsSerializer(serializers.Serializer):
     remaining = serializers.IntegerField()
 
 
+class ChapelStatusSerializer(serializers.Serializer):
+    """채플 이수 회수 진척도 (graduation_requirements.md §2.1).
+    학번별 required: 1996~1998 = 2회 / 1999 이후 = 4회."""
+    completed = serializers.IntegerField()
+    required = serializers.IntegerField()
+    remaining = serializers.IntegerField()
+
+
 class CompletionStatusSerializer(serializers.Serializer):
     categories = CategoryCreditsSerializer(many=True)
+    chapel = ChapelStatusSerializer()
     total_completed = serializers.IntegerField()
     total_required = serializers.IntegerField()
     total_remaining = serializers.IntegerField()

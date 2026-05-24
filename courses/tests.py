@@ -502,6 +502,26 @@ class CompletionStatusAPITests(APITestCase):
         major_required = next(c for c in res.data['categories'] if c['category'] == '전공필수')
         self.assertEqual(major_required['completed'], 3)
 
+    def test_채플_2024학번은_4회_required(self):
+        # graduation_requirements.md §2.1 — 1999학번 이후 채플 4회 의무
+        self.user.chapel_count = 1
+        self.user.save()
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['chapel']['completed'], 1)
+        self.assertEqual(res.data['chapel']['required'], 4)
+        self.assertEqual(res.data['chapel']['remaining'], 3)
+
+    def test_채플_옛학번은_2회_required(self):
+        # 1996~1998학번은 2회 의무 (시연 범위 외지만 학칙 분기 검증)
+        self.user.admission_year = 1997
+        self.user.chapel_count = 2
+        self.user.save()
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['chapel']['required'], 2)
+        self.assertEqual(res.data['chapel']['remaining'], 0)
+
     def test_전공_초과분은_자유선택으로_자동_합산(self):
         # graduation_requirements.md §6 — 카테고리 required 초과분이 자유선택으로 자동 인정
         # setUp의 전공필수 42 required인데 45학점 들으면 3학점이 자유선택으로 이동

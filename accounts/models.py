@@ -28,6 +28,9 @@ class User(AbstractUser):
     graduation_year = models.IntegerField(null=True, blank=True, verbose_name='졸업 희망 연도')
     graduation_month = models.IntegerField(null=True, blank=True, verbose_name='졸업 희망 월')
     admission_year = models.IntegerField(null=True, blank=True, verbose_name='입학 연도')
+    # 채플 누적 이수 회수 (graduation_requirements.md §2.1).
+    # 학번별 요구: 1996~1998학번 2회 / 1999학번 이후 4회. 학점은 0.5×회수로 공통교양 합산.
+    chapel_count = models.IntegerField(default=0, verbose_name='채플 누적 이수 회수')
     major = models.CharField(max_length=100, blank=True, verbose_name='전공')
     is_email_verified = models.BooleanField(default=False, verbose_name='이메일 인증 여부')
     is_onboarding_completed = models.BooleanField(default=False, verbose_name='온보딩 완료 여부')

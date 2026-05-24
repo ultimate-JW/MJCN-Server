@@ -122,9 +122,23 @@ class CompletionStatusView(APIView):
         first_req = requirements.first()
         graduation_total = first_req.total_required if first_req else 0
 
+        # 채플 이수 회수 (graduation_requirements.md §2.1)
+        # 학번별 required: 1996~1998 = 2회 / 1999학번 이후 = 4회 / 학번 미입력 시 4회 default
+        if user.admission_year and 1996 <= user.admission_year <= 1998:
+            chapel_required = 2
+        else:
+            chapel_required = 4
+        chapel_completed = user.chapel_count or 0
+        chapel = {
+            'completed': chapel_completed,
+            'required': chapel_required,
+            'remaining': max(0, chapel_required - chapel_completed),
+        }
+
         grand_total_completed = total_completed
         data = {
             'categories': categories,
+            'chapel': chapel,
             'total_completed': grand_total_completed,
             'total_required': graduation_total,
             'total_remaining': max(0, graduation_total - grand_total_completed),
