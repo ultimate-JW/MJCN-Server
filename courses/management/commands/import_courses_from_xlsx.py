@@ -53,6 +53,19 @@ LIBERAL_SUBTYPE_TO_CATEGORY = {
     '일반교양': '일반교양',
 }
 
+# 학과별 전공필수 과목명 set (graduation_requirements.md §5.1).
+# 컴공 학생이 듣는 전공 분반(학과코드 컴공/컴정/반아)에서 이 이름이 매칭되면 category='전공필수'로 정정.
+# 학교 xlsx는 컴공 전공필수도 default '전공선택'으로 들어오기 때문에 import 시점에 보강.
+# 학과별로 다르므로 dept_code prefix 기준으로 적용 범위 제한.
+MAJOR_REQUIRED_BY_MAJOR = {
+    '컴퓨터공학전공': {
+        'C언어', '객체지향프로그래밍1', '자료구조', '컴퓨터하드웨어',
+        '운영체제', '소프트웨어공학', '알고리즘', '캡스톤디자인',
+    },
+}
+# 컴공 학생의 전공으로 인정되는 학과코드 prefix (CLAUDE.md §10)
+MAJOR_DEPT_PREFIXES = {'컴퓨터공학전공': ('컴공', '컴정', '반아')}
+
 FILE_NAME_PATTERN = re.compile(r'(\d{4})_(\d)_(.+)\.xlsx$')
 
 
@@ -179,8 +192,15 @@ class Command(BaseCommand):
             if origin == '교양':
                 if liberal_subtype in LIBERAL_SUBTYPE_TO_CATEGORY:
                     row_category = LIBERAL_SUBTYPE_TO_CATEGORY[liberal_subtype]
-                else:
-                    unmapped_liberal.append((str(dept_code or ''), str(name or '')))
+            else:
+                # 전공 파일에서 학칙 §5.1 전공필수 8과목 매칭 시 category 보강 (#47)
+                # 학과코드 prefix가 해당 전공 인정 범위(컴공/컴정/반아)일 때만 전공필수로 정정.
+                # 매칭 실패는 정상(대다수 전공선택)이라 WARN 없음.
+                prefix = (dept_code or '').strip()
+                for m, names in MAJOR_REQUIRED_BY_MAJOR.items():
+                    if name in names and prefix in MAJOR_DEPT_PREFIXES.get(m, ()):
+                        row_category = '전공필수'
+                        break
 
             # 핵심교양 4영역 — 핵심교양 행만 추가 분류 (#47 Phase 2). 그 외는 None.
             core_area = classify_core_area(name) if liberal_subtype == '핵심교양' else None
