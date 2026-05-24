@@ -219,16 +219,16 @@ class NextSemesterRecommendView(APIView):
 
 # 카테고리 → 응답 키 매핑 (spec 5.3.2 4키 분리, #25)
 #   일반선택은 4키 밖이라 추천 결과에서 제외됨 (이슈 #25 명시)
-# 5.3.2 응답 4키 분리 — 7분류 Course.category를 호환 4키로 합침 (#47 Phase 3).
-# 학칙 의무 영역(공통/핵심/학문기초)은 liberal_required로, 비의무는 liberal_elective로.
-# 자유선택은 응답 누락 (spec 5.3.2 정책 — 4키 외 카테고리). 7키 응답 분리는 별도 작업.
+# 5.3.2 응답 7키 분리 — 학칙 7분류 1:1 매핑 (#47 Phase 3).
+# 학생이 영역 구분 직접 볼 수 있도록 7키 각각으로 분리.
 _CATEGORY_TO_KEY = {
     '전공필수': 'major_required',
     '전공선택': 'major_elective',
-    '공통교양': 'liberal_required',
-    '핵심교양': 'liberal_required',
-    '학문기초교양': 'liberal_required',
-    '일반교양': 'liberal_elective',
+    '공통교양': 'liberal_common',
+    '핵심교양': 'liberal_core',
+    '학문기초교양': 'liberal_foundation',
+    '일반교양': 'liberal_general',
+    '자유선택': 'free_elective',
 }
 
 
@@ -253,10 +253,10 @@ def _serialize_course(course):
 
 
 def _split_semester_by_category(semester):
-    """학기 dict의 courses 리스트를 4 카테고리 키로 분리.
+    """학기 dict의 courses 리스트를 학칙 7키로 분리 (#47 Phase 3).
 
     빈 카테고리도 키 유지 (빈 배열) — 프론트가 키 존재 체크 안 해도 됨.
-    매핑에 없는 카테고리(예: 일반선택)는 응답에서 누락.
+    매핑에 없는 카테고리(있다면 카테고리 자체 결함)는 응답에서 누락 + 로그 X (silent).
     """
     buckets = {key: [] for key in _CATEGORY_TO_KEY.values()}
     for course in semester['courses']:
@@ -291,7 +291,9 @@ class CurriculumRecommendView(APIView):
               {
                 "year": int, "semester": int,         # semester: 1/2/3/4
                 "major_required": [...], "major_elective": [...],
-                "liberal_required": [...], "liberal_elective": [...]
+                "liberal_common": [...], "liberal_core": [...],
+                "liberal_foundation": [...], "liberal_general": [...],
+                "free_elective": [...]
               }, ...
             ]
           }, ...

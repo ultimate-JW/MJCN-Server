@@ -1059,9 +1059,8 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 - **최소 2안 이상, 최대 5안 이하의 커리큘럼 제시**
   - 데이터 부족으로 1안만 만들어지는 경우, 가짜 복제 없이 1안 + `note='insufficient_data'` 동반
 - **출력**: 졸업까지 남은 학기별 추천 과목 리스트
-  - 학기마다 4 카테고리 키 분리: `major_required` / `major_elective` / `liberal_required` / `liberal_elective` (옛 4분류 응답 키 — 7분류 도입(#47 Phase 3) 후에도 시연 호환 위해 유지. 7키 응답 분리는 별도 작업)
+  - 학기마다 학칙 7 카테고리 키 분리 (#47 Phase 3): `major_required` / `major_elective` / `liberal_common` / `liberal_core` / `liberal_foundation` / `liberal_general` / `free_elective`
   - 빈 카테고리도 키 유지 (`[]`)
-  - 자유선택은 응답에서 제외 (4키 외 카테고리)
   - 과목정보 포함 내용: 과목명·과목번호·시간·강의실·교수명
 
 ##### 추천 노브 (API body 파라미터, 모두 옵셔널)
@@ -1112,10 +1111,13 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
       "semesters": [
         {
           "year": 2027, "semester": 1,
-          "major_required":   [{"course_code": "...", "name": "...", "credits": 3, "professor": "...", "schedules": [...]}],
-          "major_elective":   [],
-          "liberal_required": [],
-          "liberal_elective": []
+          "major_required":     [{"course_code": "...", "name": "...", "credits": 3, "professor": "...", "schedules": [...]}],
+          "major_elective":     [],
+          "liberal_common":     [],
+          "liberal_core":       [],
+          "liberal_foundation": [],
+          "liberal_general":    [],
+          "free_elective":      []
         }
       ]
     }

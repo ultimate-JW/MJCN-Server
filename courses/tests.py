@@ -901,8 +901,12 @@ class CurriculumRecommendAPITests(APITestCase):
     """
     url = '/api/v1/courses/recommend/curriculum/'
 
-    # 4 카테고리 응답 키
-    CAT_KEYS = ('major_required', 'major_elective', 'liberal_required', 'liberal_elective')
+    # 학칙 7분류 응답 키 (#47 Phase 3)
+    CAT_KEYS = (
+        'major_required', 'major_elective',
+        'liberal_common', 'liberal_core', 'liberal_foundation', 'liberal_general',
+        'free_elective',
+    )
 
     def setUp(self):
         # 사용자: 2학년 2학기, 데이터테크놀로지전공 (graduation 2027.8)
@@ -1088,7 +1092,7 @@ class CurriculumRecommendAPITests(APITestCase):
     def test_category_weights_7종_키_호환(self):
         # #47 Phase 3 — category_weights가 7분류 키(전공필수/전공선택/공통/핵심/학문기초/일반/자유선택)로 동작
         self.client.force_authenticate(user=self.user)
-        # 공통교양 2.0배 가중 + 일반교양 0.5배 — 공통교양 과목이 liberal_required에 더 많이 잡혀야 자연스러움
+        # 공통교양 2.0배 가중 + 일반교양 0.5배 — 공통교양 과목이 liberal_common에 더 많이 잡혀야 자연스러움
         res = self.client.post(self.url, {
             'category_weights': {'공통교양': 2.0, '일반교양': 0.5},
             'num_plans': 1,

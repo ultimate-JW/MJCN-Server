@@ -117,17 +117,20 @@ class NextSemesterRecommendationSerializer(serializers.Serializer):
 
 
 class SemesterPlanSerializer(serializers.Serializer):
-    """학기 1개 응답 — 4 카테고리로 분리 (spec 5.3.2, #25).
+    """학기 1개 응답 — 학칙 7분류로 분리 (spec 5.3.2, #47 Phase 3).
 
     semester 값: 1/2 정규학기, 3 하계 계절학기, 4 동계 계절학기.
     빈 카테고리도 키는 유지 (빈 배열). 프론트가 키 존재 체크 안 해도 됨.
     """
     year = serializers.IntegerField()
     semester = serializers.IntegerField()
-    major_required = RecommendedCourseSerializer(many=True)     # 전공필수
-    major_elective = RecommendedCourseSerializer(many=True)     # 전공선택
-    liberal_required = RecommendedCourseSerializer(many=True)   # 교양필수
-    liberal_elective = RecommendedCourseSerializer(many=True)   # 교양선택
+    major_required = RecommendedCourseSerializer(many=True)       # 전공필수
+    major_elective = RecommendedCourseSerializer(many=True)       # 전공선택
+    liberal_common = RecommendedCourseSerializer(many=True)       # 공통교양
+    liberal_core = RecommendedCourseSerializer(many=True)         # 핵심교양
+    liberal_foundation = RecommendedCourseSerializer(many=True)   # 학문기초교양
+    liberal_general = RecommendedCourseSerializer(many=True)      # 일반교양
+    free_elective = RecommendedCourseSerializer(many=True)        # 자유선택
 
 
 class CurriculumPlanSerializer(serializers.Serializer):
