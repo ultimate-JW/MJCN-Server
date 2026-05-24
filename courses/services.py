@@ -291,10 +291,8 @@ def calculate_recommendation_score(
         if course.year_open < user_grade and course.category in BACKLOG_REQUIRED_CATEGORIES:
             score += BONUS_BACKLOG_REQUIRED
 
-    # 선수과목 미이수 감점
-    if user_major and course.major and course.major == user_major:
-        if course_prerequisite_ids and not set(course_prerequisite_ids).issubset(completed_course_ids):
-            score -= PENALTY_PREREQUISITE_MISSING
+    # 선수과목 미이수는 점수 계산 전에 hard filter로 제외됨 (#47 7번 — 5.3.1·5.3.2 일원화).
+    # PENALTY_PREREQUISITE_MISSING은 호환용 상수로 남겨두되 점수식에서는 적용 안 함.
 
     return score
 
@@ -435,9 +433,13 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
     )
 
     # 후보별 점수 계산
+    # 선수과목 hard filter — 동일 학과 학생이 선수과목 안 들었으면 후보에서 제외 (#47 7번, 5.3.1·5.3.2 일원화)
+    # 타과생은 prereq 제한 면제 (학과 외부 학생이 prereq 모두 들었을 가능성 거의 없음 — 강제하면 결과 빈 학기)
     scored = []
     for course in candidates:
         prereq_ids = {cp.prerequisite_id for cp in course.prerequisites.all()}
+        if user.major and course.major == user.major and prereq_ids and not prereq_ids.issubset(completed_course_ids):
+            continue  # 선수과목 미이수 — 추천 결과에서 제외
         score = calculate_recommendation_score(
             course,
             user_grade=user.grade,

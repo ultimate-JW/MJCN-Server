@@ -599,14 +599,14 @@ class NextSemesterRecommendAPITests(APITestCase):
         codes = {item['course_code'] for item in res.data}
         self.assertNotIn('CSE2001', codes)
 
-    def test_선수과목_미이수는_제외하지_않고_Soft_감점만(self):
-        """spec 5.3.1: 동일 학과 + 선수과목 미이수는 Hard Filter 아닌 Soft 감점 (-15)"""
+    def test_동일학과_선수과목_미이수는_hard_filter(self):
+        """#47 7번: 다음학기 추천도 전체커리큘럼처럼 hard filter — 선수 미이수는 결과에서 제외"""
         CoursePrerequisite.objects.create(course=self.mid, prerequisite=self.base)
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
         codes = {item['course_code'] for item in res.data}
-        # 자료구조(CSE2001) 여전히 후보에 포함됨
-        self.assertIn('CSE2001', codes)
+        # 자료구조(CSE2001)는 base(CSE1001) 선수 미이수라 결과에서 제외
+        self.assertNotIn('CSE2001', codes)
 
     def test_관심사_매칭_과목이_상위에_노출(self):
         """관심사 IT/개발 → IT/개발 태그 과목이 비태그 과목보다 위"""
@@ -1219,15 +1219,16 @@ class CalculateScoreTests(SimpleTestCase):
         score = self._score(course)
         self.assertEqual(score, 100)
 
-    def test_동일학과_선수과목_미이수시_PENALTY_PREREQUISITE_MISSING_감점(self):
+    def test_동일학과_선수과목_미이수여도_점수식은_감점_없음(self):
+        # #47 7번 — 선수 hard filter는 호출 전에 적용. 점수식 자체에는 감점 없음.
         course = self._course(category='전공선택', major='컴퓨터공학전공')
         score = self._score(
             course,
             user_major='컴퓨터공학전공',
             course_prerequisite_ids={101},  # 선수과목 있음
-            completed_course_ids=set(),     # 미이수
+            completed_course_ids=set(),     # 미이수 (실제 호출 전에 후보에서 제외됨)
         )
-        self.assertEqual(score, 100 - PENALTY_PREREQUISITE_MISSING)
+        self.assertEqual(score, 100)
 
     def test_동일학과_선수과목_이수했으면_감점_없음(self):
         course = self._course(category='전공선택', major='컴퓨터공학전공')
