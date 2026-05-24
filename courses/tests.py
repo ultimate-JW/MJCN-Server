@@ -1085,6 +1085,21 @@ class CurriculumRecommendAPITests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIn('plans', res.data)
 
+    def test_category_weights_7종_키_호환(self):
+        # #47 Phase 3 — category_weights가 7분류 키(전공필수/전공선택/공통/핵심/학문기초/일반/자유선택)로 동작
+        self.client.force_authenticate(user=self.user)
+        # 공통교양 2.0배 가중 + 일반교양 0.5배 — 공통교양 과목이 liberal_required에 더 많이 잡혀야 자연스러움
+        res = self.client.post(self.url, {
+            'category_weights': {'공통교양': 2.0, '일반교양': 0.5},
+            'num_plans': 1,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        plan = res.data['plans'][0]
+        # 응답 구조 살아있음 (옛 4분류만 인식해서 빈 응답 나오던 결함 회귀 방지)
+        for s in plan['semesters']:
+            for k in self.CAT_KEYS:
+                self.assertIn(k, s)
+
 
 # 졸업까지 진척도(%) API 테스트는 dashboard 앱으로 이전됨
 # (spec 6.10 — 단독 엔드포인트 제거, dashboard 응답으로 통합).

@@ -219,11 +219,16 @@ class NextSemesterRecommendView(APIView):
 
 # 카테고리 → 응답 키 매핑 (spec 5.3.2 4키 분리, #25)
 #   일반선택은 4키 밖이라 추천 결과에서 제외됨 (이슈 #25 명시)
+# 5.3.2 응답 4키 분리 — 7분류 Course.category를 호환 4키로 합침 (#47 Phase 3).
+# 학칙 의무 영역(공통/핵심/학문기초)은 liberal_required로, 비의무는 liberal_elective로.
+# 자유선택은 응답 누락 (spec 5.3.2 정책 — 4키 외 카테고리). 7키 응답 분리는 별도 작업.
 _CATEGORY_TO_KEY = {
     '전공필수': 'major_required',
     '전공선택': 'major_elective',
-    '교양필수': 'liberal_required',
-    '교양선택': 'liberal_elective',
+    '공통교양': 'liberal_required',
+    '핵심교양': 'liberal_required',
+    '학문기초교양': 'liberal_required',
+    '일반교양': 'liberal_elective',
 }
 
 
