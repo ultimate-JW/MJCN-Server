@@ -32,9 +32,19 @@ SAMPLE_GRADUATION_REQUIREMENTS = [
      'category': '전공선택', 'liberal_subtype': None, 'core_area': None,
      'required_credits': 46, 'total_required': 134},
     # 교양 4종 (54) — 학칙 7분류로 펼침 (#47 Phase 3). liberal_subtype은 category와 동기화(호환용).
+    # 공통교양 17 = 기독교 6 + 사고와 표현 3 + 언어 6 + 진로와 디지털리터러시 2 (graduation_requirements.md §4.2)
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
-     'category': '공통교양', 'liberal_subtype': '공통교양', 'core_area': None,
-     'required_credits': 17, 'total_required': 134},
+     'category': '공통교양', 'liberal_subtype': '공통교양', 'core_area': '기독교',
+     'required_credits': 6, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '공통교양', 'liberal_subtype': '공통교양', 'core_area': '사고와 표현',
+     'required_credits': 3, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '공통교양', 'liberal_subtype': '공통교양', 'core_area': '언어',
+     'required_credits': 6, 'total_required': 134},
+    {'department': '컴퓨터공학전공', 'admission_year': 2024,
+     'category': '공통교양', 'liberal_subtype': '공통교양', 'core_area': '진로와 디지털리터러시',
+     'required_credits': 2, 'total_required': 134},
     # 핵심교양 — 영역별 1과목(3학점) 4row로 분해. 영역당 부족 시 그 영역 과목에 가산.
     {'department': '컴퓨터공학전공', 'admission_year': 2024,
      'category': '핵심교양', 'liberal_subtype': '핵심교양', 'core_area': '역사와 철학',

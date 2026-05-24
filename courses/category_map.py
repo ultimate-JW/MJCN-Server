@@ -84,6 +84,64 @@ CORE_AREA_BY_NAME = {
 }
 
 
+def _normalize_name(name):
+    """공백 제거 — xlsx는 공백 없이('철학과인간'), md는 공백 있게('철학과 인간') 표기되는 차이 흡수."""
+    return (name or '').replace(' ', '').strip()
+
+
+# 공통교양 4영역 매핑 — graduation_requirements.md §4.2.1~4.2.4 과목명 → 영역.
+# 영역별 학점 합산: 기독교 6 + 사고와 표현 3 + 언어 6 + 진로와 디지털리터러시 2 = 17학점.
+COMMON_AREA_BY_NAME = {
+    # §4.2.1 기독교 — 채플 0.5×4 + 기독교영역 교과목 2×2 = 합 6학점
+    '채플': '기독교',
+    '성서와 인간이해': '기독교',
+    '성서와인간이해': '기독교',
+    '현대사회와 기독교 윤리': '기독교',
+    '현대사회와기독교윤리': '기독교',
+    '종교와 과학': '기독교',
+    '종교와과학': '기독교',
+    '기독교와 문화': '기독교',
+    '기독교와문화': '기독교',
+    # §4.2.2 사고와 표현 [택1, 3학점]
+    '글쓰기': '사고와 표현',
+    '발표와토의': '사고와 표현',
+    '발표와 토의': '사고와 표현',
+    # §4.2.3 언어 — 영어1+2 또는 3+4 (2×2=4) / 영어회화1+2 또는 3+4 (1×2=2) = 합 6학점
+    '영어1': '언어',
+    '영어2': '언어',
+    '영어3': '언어',
+    '영어4': '언어',
+    '영어회화1': '언어',
+    '영어회화2': '언어',
+    '영어회화3': '언어',
+    '영어회화4': '언어',
+    # 외국인학생용 한국어 — md §4.2.3 외국인학생 분기 명시 안 됐으나 언어 영역으로 합산
+    '한국어1': '언어',
+    '한국어2': '언어',
+    '한국어3': '언어',
+    '한국어4': '언어',
+    '한국어연습1': '언어',
+    '한국어연습2': '언어',
+    '한국어연습3': '언어',
+    # §4.2.4 진로와 디지털리터러시 [택1, 2학점]
+    '4차산업혁명과 미래사회 진로선택': '진로와 디지털리터러시',
+    '4차산업혁명과미래사회진로선택': '진로와 디지털리터러시',
+    '디지털리터러시의 이해': '진로와 디지털리터러시',
+    '디지털리터러시의이해': '진로와 디지털리터러시',
+}
+
+_COMMON_AREA_BY_NORMALIZED = {_normalize_name(k): v for k, v in COMMON_AREA_BY_NAME.items()}
+
+
+def classify_common_area(course_name):
+    """과목명 → 공통교양 4영역 또는 None.
+
+    호출자는 liberal_subtype=='공통교양'인 행에 한해 이 함수를 부르고
+    반환값을 Course.core_area에 채운다 (필드 이름은 core_area지만 의미는 일반 교양 영역).
+    """
+    return _COMMON_AREA_BY_NORMALIZED.get(_normalize_name(course_name))
+
+
 def classify_liberal_subtype(subject_code, course_name):
     """학과코드 + 교과목명 → 4종 분류 또는 None.
 
@@ -106,11 +164,6 @@ def classify_liberal_subtype(subject_code, course_name):
         return PREFIX_TO_SUBTYPE['균']
 
     return None
-
-
-def _normalize_name(name):
-    """공백 제거 — xlsx는 공백 없이('철학과인간'), md는 공백 있게('철학과 인간') 표기되는 차이 흡수."""
-    return (name or '').replace(' ', '').strip()
 
 
 # 정규화된 매핑 dict — _normalize_name 결과 기준으로 lookup

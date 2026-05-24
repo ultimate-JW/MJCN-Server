@@ -22,7 +22,7 @@ import openpyxl
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from courses.category_map import classify_liberal_subtype, classify_core_area
+from courses.category_map import classify_common_area, classify_core_area, classify_liberal_subtype
 from courses.models import Course, CourseOffering, CourseSchedule
 
 # CourseSchedule.day_of_week 가능 값. 토/일 강의는 현재 모델 미지원이라 skip.
@@ -193,9 +193,18 @@ class Command(BaseCommand):
                         break
 
             # 핵심교양 4영역 — 핵심교양 행만 추가 분류 (#47 Phase 2). 그 외는 None.
-            core_area = classify_core_area(name) if liberal_subtype == '핵심교양' else None
-            if liberal_subtype == '핵심교양' and core_area is None:
-                unmapped_core.append((str(dept_code or ''), str(name or '')))
+            # 교양 영역 — core_area 필드 한 곳에 박음. liberal_subtype 따라 다른 매핑 dict 사용.
+            # 핵심교양: §4.3.1~4.3.4 (역사·철학/사회·공동체/문화·예술/과학기술·정보)
+            # 공통교양: §4.2.1~4.2.4 (기독교/사고와 표현/언어/진로와 디지털리터러시)
+            if liberal_subtype == '핵심교양':
+                core_area = classify_core_area(name)
+                if core_area is None:
+                    unmapped_core.append((str(dept_code or ''), str(name or '')))
+            elif liberal_subtype == '공통교양':
+                core_area = classify_common_area(name)
+                # 공통교양 미매핑은 폐지·이수구분 변경 과목(graduation_requirements.md §9.1)일 수도 있어 WARN 안 띄움
+            else:
+                core_area = None
 
             # Course — 과목코드 unique. 같은 과목코드가 분반/요일별로 여러 행에 등장하므로 update_or_create.
             # semester_open은 권장 학기 의미라 import 학기로 일단 채움 (Course 단위로 더 정확한 값이 없음, 추후 보정)
