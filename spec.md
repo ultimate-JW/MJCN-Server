@@ -379,8 +379,9 @@ User ||--o{ Bookmark : "has"
 | year | IntegerField | 수강 연도 |
 | semester | IntegerField | 수강 학기 |
 | grade_received | CharField(blank) | 취득 성적 |
-| category | CharField | 전공필수/전공선택/교양필수/교양선택/일반선택 |
-| liberal_subtype | CharField(null, blank) | 교양 4종 — 공통교양/핵심교양/학문기초교양/일반교양. 저장 시 course_code로 Course 찾아 자동 채움 (#47). 명시값은 안 덮음. bulk_create는 save() 우회하므로 별도 보강 필요. |
+| category | CharField | 전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택 (학칙 7분류, #47 Phase 3) |
+| liberal_subtype | CharField(null, blank) | 교양 4종 — 공통교양/핵심교양/학문기초교양/일반교양. category와 호환 동기화 (#47). 저장 시 course_code로 Course 찾아 자동 채움. 명시값은 안 덮음. bulk_create는 save() 우회하므로 별도 보강 필요. |
+| core_area | CharField(null, blank) | 핵심교양 4영역(역사와 철학/사회와 공동체/문화와 예술/과학기술과 정보) + 공통교양 4영역(기독교/사고와 표현/언어/진로와 디지털리터러시). liberal_subtype=='핵심교양'/'공통교양' 행에만 채움 (#47 Phase 2). |
 | credits | IntegerField | 학점 수 |
 
 - unique_together: (user, course_code, year, semester) — 동일 학기 같은 과목 중복 등록 방지
@@ -481,8 +482,9 @@ CHAT_CATEGORIES = [
 | college       | CharField | 대학(예: 반도체·ICT대학) |
 | department    | CharField | 학부(예: 컴퓨터정보통신공학부) |
 | major         | CharField | 전공(예: 컴퓨터공학전공) |
-| category      | CharField | 전공필수/전공선택/교양필수/교양선택 |
-| liberal_subtype | CharField(null, blank) | 교양 4종 분류 — 공통교양/핵심교양/학문기초교양/일반교양. 학교 강의시간표 엑셀에는 없는 분류라 import 시점에 학과코드 prefix + 교과목명으로 채움 (#47). 전공 등 분류 대상 외 행은 null. |
+| category      | CharField | 전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택 (학칙 7분류, #47 Phase 3) |
+| liberal_subtype | CharField(null, blank) | 교양 4종 분류 — 공통교양/핵심교양/학문기초교양/일반교양. category와 호환 동기화 (#47). 학교 강의시간표 엑셀에는 없는 분류라 import 시점에 학과코드 prefix + 교과목명으로 채움. 전공 등 분류 대상 외 행은 null. |
+| core_area     | CharField(null, blank) | 교양 영역 — 핵심교양 4(역사와 철학/사회와 공동체/문화와 예술/과학기술과 정보) + 공통교양 4(기독교/사고와 표현/언어/진로와 디지털리터러시). liberal_subtype='핵심교양'/'공통교양' 행에만 채움 (#47 Phase 2). |
 | credits       | IntegerField | 학점 |
 | year_open     | IntegerField | 권장 수강 학년 (1~4). **`0` = 전학년 / 학년 무관 sentinel** — 추천 점수 함수에서 학년 비교 분기(==/</>) 모두 skip (#36) |
 | semester_open | IntegerField | 권장 수강 학기 (1/2/3/4 — 5.3.2 매핑) |
@@ -566,12 +568,14 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 |------|------|---------------------|
 | department | CharField | 학과                  |
 | admission_year | IntegerField | 입학 연도               |
-| category | CharField | 전공필수/전공선택/교양필수/교양선택/자유선택 |
-| liberal_subtype | CharField(null, blank) | 교양 4종 — 공통교양/핵심교양/학문기초교양/일반교양. 학칙 §1·§3 4종 분해 진척도용 (#47). 전공/자유선택 row는 null. |
+| category | CharField | 전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택 (학칙 7분류, #47 Phase 3) |
+| liberal_subtype | CharField(null, blank) | 교양 4종 — 공통교양/핵심교양/학문기초교양/일반교양. category와 호환 동기화. 전공/자유선택 row는 null. |
+| core_area | CharField(null, blank) | 교양 영역 — 핵심교양 4영역 / 공통교양 4영역(#47 Phase 2). 영역별 진척도 분해용. 그 외 row는 null. |
 | required_credits | IntegerField | 필요 학점               |
 | total_required | IntegerField | 총 졸업 학점             |
 
-- **유니크 제약**: `(department, admission_year, category, liberal_subtype)`. SQLite/PG는 표준 SQL NULL != NULL 정책상 `liberal_subtype=NULL` row 끼리는 (전공/자유선택) 키 충돌이 별도로 발생하지 않으므로, 같은 학번 row 묶어 시드 하나에서 박는 식으로 운용.
+- **유니크 제약**: `(department, admission_year, category, liberal_subtype, core_area)`. SQLite/PG NULL != NULL 정책상 null 필드끼리는 키 충돌이 별도로 발생하지 않음. 같은 학번 row 묶어 시드 하나에서 박는 식으로 운용.
+- 컴공 2024학번 비인증 13 row 예시: 전필 24 / 전선 46 / 공통교양 4영역 분해(6/3/6/2=17) / 핵심교양 4영역 분해(3×4=12) / 학문기초 15 / 일반교양 10 / 자유선택 10 = 134학점.
 
 #### AcademicCalendar (학사일정)
 
@@ -986,7 +990,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 - **입력**: 사용자의 기존 수강이력 + 현재 수강중인 과목(해당 시) + 전공 + 학년/학기 + 관심사
   + **추천 대상 학기 (`target_year` / `target_semester`)** — 미지정 시 사용자 학기 기반 자동 결정 (#36)
 - **고려사항**: 졸업요건 충족, 선후수 과목, 남은 학기 수를 고려하여
-  **이수구분별 카테고리(전공필수 / 전공선택 / 교양필수 / 교양선택 / 일반선택)**를 균형있게 배분
+  **학칙 7분류 카테고리(전공필수 / 전공선택 / 공통교양 / 핵심교양 / 학문기초교양 / 일반교양 / 자유선택)**를 균형있게 배분 (#47 Phase 3)
 - **개설 학기 필터 (#36)**: `CourseOffering(year, semester)`가 target과 일치하는 분반이
   존재하는 `Course`만 후보. Offering 자체가 없는 Course는 통과 (기존 시드 호환).
 - **학년 무관 처리 (#36)**: `Course.year_open == 0` 인 과목은 추천 점수에서 학년 비교 분기
@@ -1009,14 +1013,16 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 2. **Hard Filter (무조건 제외)**
    - 이미 이수 완료한 과목
    - 현재 수강 중인 과목
-3. **졸업요건 잔여학점 분석** — `(category, liberal_subtype)` 튜플 키 각각의 부족 학점 계산. 교양은 같은 category('교양선택') 안에서도 공통/핵심/학문기초/일반 4종이 별개 진척도 (#47).
+3. **졸업요건 잔여학점 분석** — `(category, liberal_subtype, core_area)` 트리플 키 각각의 부족 학점 계산. 핵심교양 12학점은 4영역(역사·철학/사회·공동체/문화·예술/과학기술·정보)별, 공통교양 17학점은 4영역(기독교/사고와 표현/언어/진로와 디지털리터러시)별 별개 진척도 (#47 Phase 2). 자유선택은 다른 카테고리 초과분 자동 합산 (학칙 §6 정책, #47).
 4. **추천 점수 계산** (Soft Constraint)
    - 관심사 매칭 가산점
    - 졸업요건 부족 카테고리 가산점
-   - 전공필수/교양필수 카테고리 자체 가산점
+   - 전공필수 카테고리 가산점(+25) / 학칙 의무 영역(공통/핵심/학문기초) 가산점(+15) (#47 Phase 3 — `BONUS_DESIGNATED_REQUIRED`)
    - 학년/학기 적합성 — 권장 학년 초과 시 감점
-   - 권장 학년이 지난 전공필수/교양필수 가산점 — 졸업 지연 방지용 우선 노출
-   - 동일 학과 학생 + 선수과목 미이수 시 감점
+   - 권장 학년이 지난 필수/지정 과목(전공필수/공통/핵심/학문기초) 가산점 — 졸업 지연 방지용 우선 노출
+   - **선수과목 hard filter** (#47): 동일 학과 학생이 선수 미이수면 후보에서 제외 (5.3.1·5.3.2 정책 일원화). 타과생은 prereq 면제
+   - **동일과목 정신** (학칙 §9, #47): 같은 이름 다른 코드 자동 제외 (예: 컴공 학생이 컴정101 C언어 들었으면 기컴101 C언어도 추천 후보 X)
+   - **학과별 교양 블랙리스트** (#47): 학생 전공의 전공필수 8과목과 같은 이름의 타과·교양 버전 노출 차단
 5. **최종 정렬** — `score DESC → category priority → course_code ASC`
 6. **추천 결과 반환**
 
@@ -1053,9 +1059,9 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 - **최소 2안 이상, 최대 5안 이하의 커리큘럼 제시**
   - 데이터 부족으로 1안만 만들어지는 경우, 가짜 복제 없이 1안 + `note='insufficient_data'` 동반
 - **출력**: 졸업까지 남은 학기별 추천 과목 리스트
-  - 학기마다 4 카테고리 키 분리: `major_required` / `major_elective` / `liberal_required` / `liberal_elective`
+  - 학기마다 4 카테고리 키 분리: `major_required` / `major_elective` / `liberal_required` / `liberal_elective` (옛 4분류 응답 키 — 7분류 도입(#47 Phase 3) 후에도 시연 호환 위해 유지. 7키 응답 분리는 별도 작업)
   - 빈 카테고리도 키 유지 (`[]`)
-  - 일반선택은 응답에서 제외 (4키 외 카테고리)
+  - 자유선택은 응답에서 제외 (4키 외 카테고리)
   - 과목정보 포함 내용: 과목명·과목번호·시간·강의실·교수명
 
 ##### 추천 노브 (API body 파라미터, 모두 옵셔널)
@@ -1066,7 +1072,7 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 | 노브 | 타입 | 기본 | 설명 |
 |------|------|------|------|
 | `max_credits` | int | 18 | 학기당 학점 상한 베이스. 변형 plan은 베이스 ±오프셋 적용 |
-| `category_weights` | dict | `{}` | `{카테고리: 배수}`. 카테고리 가산점에 추가 배수 (예: `{"교양선택": 1.5}`) |
+| `category_weights` | dict | `{}` | `{카테고리: 배수}`. 학칙 7분류 키(전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택) 가산점에 추가 배수. 예: `{"핵심교양": 1.5}` (#47 Phase 3) |
 | `interest_weight` | float | 1.0 | 관심사 매칭 가산점 배수 |
 | `include_summer` | bool | false | 하계 계절학기(semester_open=3) 포함 여부 |
 | `include_winter` | bool | false | 동계 계절학기(semester_open=4) 포함 여부 |
@@ -1122,10 +1128,14 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 
 - 사용자가 등록한 `수강 이력`, `현재 수강 과목` 데이터를 기준으로 카테고리별 이수현황을 계산한다.
 
-- 카테고리
-  - 전공필수, 전공선택, 교양필수, 교양선택, 일반선택
+- 카테고리 (학칙 7분류, #47 Phase 3)
+  - 전공필수, 전공선택, 공통교양, 핵심교양, 학문기초교양, 일반교양, 자유선택
+  - 핵심교양은 GR 4영역 row sum으로 합산, 공통교양은 4영역 row sum으로 합산 (#47 Phase 2)
+  - 자유선택은 다른 카테고리 required 초과분 자동 합산 (학칙 §6, #47)
 
 - 각 카테고리별 `이수학점`, `필요학점`, `잔여학점`을 계산하여 제공한다.
+
+- **채플** 별도 키 — 학번별 의무 회수 (1996~98 = 2회 / 1999+ = 4회). `User.chapel_count` 누적 카운트 (#47).
 
 - 남은 총 이수 필요 학점
   - 각 카테고리별 잔여학점을 합산하여 계산한다.
