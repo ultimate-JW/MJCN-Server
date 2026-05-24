@@ -16,6 +16,7 @@ from datetime import date
 
 from django.db.models import Q
 
+from .major_required import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
 from .models import (
     AcademicCalendar,
     Course,
@@ -23,6 +24,27 @@ from .models import (
     CoursePrerequisite,
     GraduationRequirement,
 )
+
+
+def _foreign_major_versions_to_exclude(user_major):
+    """학생 전공의 전공필수 8과목 이름과 같은 이름인데 다른 학과코드(타과·교양 버전)인 Course.course_code set.
+
+    예) 컴공 학생 → 'C언어' 이름의 기컴101(교양)을 추천 후보에서 차단.
+    전공 버전(컴정101)은 그대로 후보에 남음.
+    학칙 §9 동일과목 정신 + UX (학생이 같은 이름 두 개 동시 노출 시 혼란 방지).
+    """
+    if not user_major or user_major not in MAJOR_REQUIRED_BY_MAJOR:
+        return set()
+    names = MAJOR_REQUIRED_BY_MAJOR[user_major]
+    prefixes = MAJOR_DEPT_PREFIXES.get(user_major, ())
+    if not prefixes:
+        return set()
+    prefix_q = Q()
+    for p in prefixes:
+        prefix_q |= Q(course_code__startswith=p)
+    return set(
+        Course.objects.filter(name__in=names).exclude(prefix_q).values_list('course_code', flat=True)
+    )
 
 
 # ────────────────────────────────────────
@@ -182,22 +204,28 @@ def calc_graduation_progress(user):
 BONUS_INTEREST_MATCH = 20          # 사용자 관심사 카테고리 일치
 BONUS_CATEGORY_SHORT = 15          # 졸업요건상 잔여학점이 남은 카테고리에 속한 과목이면 가산
 BONUS_MAJOR_REQUIRED = 25          # 전공필수 가산
-BONUS_LIBERAL_REQUIRED = 15        # 교양필수 가산 
+BONUS_DESIGNATED_REQUIRED = 15     # 학칙 의무 영역(공통/핵심/학문기초) 가산 (#47 Phase 3, 기존 BONUS_LIBERAL_REQUIRED 대체)
 BONUS_GRADE_SEMESTER_MATCH = 10    # 과목 권장 "학년/학기"가 사용자 현재 "학년/학기"와 정확히 일치
-BONUS_BACKLOG_REQUIRED = 10        # 권장 학년이 지났는데 안 들은 "전공필수/교양필수" 
+BONUS_BACKLOG_REQUIRED = 10        # 권장 학년이 지났는데 안 들은 필수/지정 과목
 PENALTY_GRADE_EXCEEDED = 10        # 권장 학년이 사용자 학년보다 위 (상위 학년 과목)
 PENALTY_PREREQUISITE_MISSING = 15  # 동일 학과 학생이 선수과목을 안 들음 (타과생은 영향 없음)
 
-# 권장 학년이 지난 필수 과목 가산점 적용 대상 카테고리
-BACKLOG_REQUIRED_CATEGORIES = ('전공필수', '교양필수')
+# 학칙 의무 영역 — 학생이 지정된 과목을 들어야 하는 카테고리 (graduation_requirements.md §4.2~4.4)
+# 일반교양/자유선택/전공선택은 "학점만 채우면 됨"이라 제외, 전공필수는 별도 +25 가산
+DESIGNATED_CATEGORIES = {'공통교양', '핵심교양', '학문기초교양'}
+
+# 권장 학년이 지난 필수/지정 과목 가산점 적용 대상 카테고리
+BACKLOG_REQUIRED_CATEGORIES = ('전공필수',) + tuple(DESIGNATED_CATEGORIES)
 
 # 정렬 2차 키 — 동점 시 카테고리 우선순위 (숫자낮을수록 상위)
 CATEGORY_PRIORITY = {
     '전공필수': 1,
-    '교양필수': 2,
-    '전공선택': 3,
-    '교양선택': 4,
-    '일반선택': 5,
+    '공통교양': 2,
+    '핵심교양': 3,
+    '학문기초교양': 4,
+    '전공선택': 5,
+    '일반교양': 6,
+    '자유선택': 7,
 }
 
 
@@ -217,7 +245,11 @@ def calculate_recommendation_score(
     한 과목에 대한 다음학기 추천 점수를 계산한다. (spec 5.3.1)
 
     순수 함수 — DB 조회를 하지 않는다. 호출자는 사전에 다음을 빌드해 넘긴다:
-      - short_categories: 졸업요건상 잔여학점이 남은 카테고리 set
+      - short_categories: 졸업요건상 잔여학점이 남은 (category, liberal_subtype, core_area) 트리플 set.
+        liberal_subtype은 4종(공통/핵심/학문기초/일반) 또는 None(전공·자유선택).
+        core_area는 핵심교양 4영역(역사·철학/사회·공동체/문화·예술/과학기술·정보) 또는 None.
+        교양은 같은 category='교양선택' 안에서도 4종을 따로 카운트하고, 핵심교양은
+        4영역을 또 따로 카운트한다 (#47 Phase 2).
       - completed_course_ids: 사용자가 이수 완료한 강의 ID set
       - course_prerequisite_ids: 해당 course의 선수과목 강의 ID set
       - course_tags: course의 관심사 태그 리스트. 모델에 Course.tags가 추가되기
@@ -255,17 +287,18 @@ def calculate_recommendation_score(
     if tags and set(tags) & set(user_interest_categories or []):
         score += BONUS_INTEREST_MATCH
 
-    # 졸업요건 부족 카테고리 가산
-    if course.category in short_categories:
+    # 졸업요건 부족 카테고리 가산 — 키는 (category, liberal_subtype, core_area) 트리플
+    # 교양 4종은 같은 category 안에서도 별개 진척도, 핵심교양은 4영역까지 별개 진척도 (#47 Phase 2)
+    if (course.category, course.liberal_subtype, course.core_area) in short_categories:
         score += BONUS_CATEGORY_SHORT
 
     # 전공필수 가산
     if course.category == '전공필수':
         score += BONUS_MAJOR_REQUIRED
 
-    # 교양필수 가산
-    if course.category == '교양필수':
-        score += BONUS_LIBERAL_REQUIRED
+    # 학칙 의무 영역(공통/핵심/학문기초) 가산 — graduation_requirements.md §4.2~4.4 지정 과목 우선 (#47 Phase 3)
+    if course.category in DESIGNATED_CATEGORIES:
+        score += BONUS_DESIGNATED_REQUIRED
 
     # 학년/학기 적합성 — year_open=0 은 "전학년 대상" sentinel (#36 import에서 매핑)
     # 어떤 학년 학생에게도 동일하게 적합해야 하므로 학년 관련 가감산 전부 skip
@@ -280,21 +313,46 @@ def calculate_recommendation_score(
         if course.year_open < user_grade and course.category in BACKLOG_REQUIRED_CATEGORIES:
             score += BONUS_BACKLOG_REQUIRED
 
-    # 선수과목 미이수 감점
-    if user_major and course.major and course.major == user_major:
-        if course_prerequisite_ids and not set(course_prerequisite_ids).issubset(completed_course_ids):
-            score -= PENALTY_PREREQUISITE_MISSING
+    # 선수과목 미이수는 점수 계산 전에 hard filter로 제외됨 (#47 7번 — 5.3.1·5.3.2 일원화).
+    # PENALTY_PREREQUISITE_MISSING은 호환용 상수로 남겨두되 점수식에서는 적용 안 함.
 
     return score
 
 
+def _apply_free_election_overflow(taken_credits_by_key, requirements):
+    """카테고리별 required 초과분을 자유선택 completed에 자동 합산 (graduation_requirements.md §6).
+
+    학교 정책: 전공/교양에서 최소 이수학점을 초과한 학점은 자동으로 자유선택으로 인정.
+    예) 컴공 전공 70 required인데 71학점 들으면 초과 1학점 → 자유선택 1학점 추가.
+
+    taken_credits_by_key를 in-place mutate한다. 자유선택 키(('자유선택', None, None))에 overflow 합산.
+    """
+    cat_taken = {}
+    for (cat, _, _), credits in taken_credits_by_key.items():
+        cat_taken[cat] = cat_taken.get(cat, 0) + credits
+    cat_required = {}
+    for r in requirements:
+        cat_required[r.category] = cat_required.get(r.category, 0) + r.required_credits
+
+    overflow = sum(
+        max(0, cat_taken.get(cat, 0) - cat_required.get(cat, 0))
+        for cat in cat_required
+        if cat != '자유선택'
+    )
+    free_key = ('자유선택', None, None)
+    taken_credits_by_key[free_key] = taken_credits_by_key.get(free_key, 0) + overflow
+
+
 def _build_short_categories(user):
     """
-    졸업요건상 잔여학점이 남은 카테고리 set을 빌드한다.
+    졸업요건상 잔여학점이 남은 (category, liberal_subtype, core_area) 트리플 set을 빌드한다.
 
     department + admission_year 기준으로 GraduationRequirement를 조회하고,
-    CourseHistory의 카테고리별 합산 학점과 비교하여 부족분이 있는 카테고리만
-    set에 담는다. 점수 계산의 `short_categories` 인자로 그대로 사용된다.
+    CourseHistory의 (category, liberal_subtype, core_area)별 합산 학점과 비교하여
+    부족분이 있는 키만 set에 담는다. 교양 4종은 별개 진척도, 핵심교양은 4영역까지 별개
+    진척도 (#47 Phase 2). 전공·자유선택 row는 liberal_subtype/core_area 모두 None.
+
+    자유선택은 다른 카테고리에서 required 초과한 학점을 자동 합산해서 short 판정 (graduation_requirements.md §6).
 
     user.major 또는 admission_year 미입력 시 빈 set 반환 → 졸업요건 가산점 0점.
     """
@@ -302,22 +360,24 @@ def _build_short_categories(user):
     if not user.major or not user.admission_year:
         return set()
 
-    requirements = GraduationRequirement.objects.filter(
+    requirements = list(GraduationRequirement.objects.filter(
         department=user.major,
         admission_year=user.admission_year,
-    )
+    ))
 
-    # 사용자 이수이력의 카테고리별 학점 합산
-    taken_credits_by_category = {}
+    # 사용자 이수이력의 (category, liberal_subtype, core_area)별 학점 합산
+    taken_credits_by_key = {}
     for history in user.course_histories.all():
-        taken_credits_by_category[history.category] = (
-            taken_credits_by_category.get(history.category, 0) + history.credits
-        )
+        key = (history.category, history.liberal_subtype, history.core_area)
+        taken_credits_by_key[key] = taken_credits_by_key.get(key, 0) + history.credits
 
-    # 카테고리별 필요학점 > 이수학점 인 경우만 short으로 분류
+    # 자유선택 overflow 합산 — 다른 카테고리 초과분이 자유선택 채움
+    _apply_free_election_overflow(taken_credits_by_key, requirements)
+
+    # 키별 필요학점 > 이수학점 인 경우만 short으로 분류
     return {
-        req.category for req in requirements
-        if taken_credits_by_category.get(req.category, 0) < req.required_credits
+        (req.category, req.liberal_subtype, req.core_area) for req in requirements
+        if taken_credits_by_key.get((req.category, req.liberal_subtype, req.core_area), 0) < req.required_credits
     }
 
 
@@ -368,7 +428,16 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
     )
     excluded_codes = taken_codes | current_codes
 
-    # Hard Filter — 이수/수강 중 제외 + 학기 Offering 매칭
+    # 같은 이름 다른 코드 추천 제외 — 학칙 §9 동일과목 정신 (#47).
+    # 예: 컴공 학생이 컴정101 C언어 들었으면 기컴101 C언어도 후보에서 제외.
+    # 주의: foreign_major_versions는 코드 기준만 제외 (이름 제외에 포함하면 전공 버전도 같이 제외돼버림)
+    excluded_names = set(
+        Course.objects.filter(course_code__in=excluded_codes).values_list('name', flat=True)
+    )
+    # 학생 전공의 전공필수와 같은 이름의 타과·교양 버전은 코드 기준만 추가 제외 (#47)
+    excluded_codes = excluded_codes | _foreign_major_versions_to_exclude(user.major)
+
+    # Hard Filter — 이수/수강 중(같은 코드 + 같은 이름) 제외 + 학기 Offering 매칭
     # Offering 있는 Course 는 target 학기 매칭만 통과, Offering 자체 없으면 통과 (#36)
     # 후자는 기존 #24/#25 더미 시드 호환용 — 운영 데이터는 전부 Offering 동반
     has_offering_qs = CourseOffering.objects.values_list('course_id', flat=True)
@@ -380,6 +449,7 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
     candidates = list(
         Course.objects
         .exclude(course_code__in=excluded_codes)
+        .exclude(name__in=excluded_names)
         .filter(Q(pk__in=matching_qs) | ~Q(pk__in=has_offering_qs))
         .distinct()
         .prefetch_related('prerequisites', 'schedules')
@@ -395,9 +465,13 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
     )
 
     # 후보별 점수 계산
+    # 선수과목 hard filter — 동일 학과 학생이 선수과목 안 들었으면 후보에서 제외 (#47 7번, 5.3.1·5.3.2 일원화)
+    # 타과생은 prereq 제한 면제 (학과 외부 학생이 prereq 모두 들었을 가능성 거의 없음 — 강제하면 결과 빈 학기)
     scored = []
     for course in candidates:
         prereq_ids = {cp.prerequisite_id for cp in course.prerequisites.all()}
+        if user.major and course.major == user.major and prereq_ids and not prereq_ids.issubset(completed_course_ids):
+            continue  # 선수과목 미이수 — 추천 결과에서 제외
         score = calculate_recommendation_score(
             course,
             user_grade=user.grade,
@@ -562,6 +636,12 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
     taken_codes = set(user.course_histories.values_list('course_code', flat=True))
     current_codes = set(user.current_courses.values_list('course_code', flat=True))
     excluded_codes = taken_codes | current_codes
+    # 같은 이름 다른 코드 추천 제외 — 학칙 §9 동일과목 정신 (#47)
+    excluded_names = set(
+        Course.objects.filter(course_code__in=excluded_codes).values_list('name', flat=True)
+    )
+    # 학생 전공의 전공필수와 같은 이름의 타과·교양 버전은 코드 기준만 추가 제외 (학과별 교양 블랙리스트, #47)
+    excluded_codes = excluded_codes | _foreign_major_versions_to_exclude(user.major)
 
     # 학기 슬롯 필터 — include_summer/winter에 따라 3/4 토글
     allowed_sems = [1, 2]
@@ -570,29 +650,35 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
     if include_winter:
         allowed_sems.append(4)                          # 동계
 
-    # 후보 — 사용자 전공 또는 교양 중에서 위 학기 슬롯에 열리는 것만
+    # 후보 — 사용자 전공 또는 교양 4종 중에서 위 학기 슬롯에 열리는 것만 (#47 Phase 3)
+    liberal_categories = ['공통교양', '핵심교양', '학문기초교양', '일반교양']
     candidates = list(
         Course.objects.filter(
-            Q(major=user.major) | Q(category__in=['교양필수', '교양선택']),
+            Q(major=user.major) | Q(category__in=liberal_categories),
             semester_open__in=allowed_sems,
         )
         .exclude(course_code__in=excluded_codes)
+        .exclude(name__in=excluded_names)
         .prefetch_related('schedules', 'prerequisites')
     )
 
-    # 졸업요건 잔여학점 (카테고리별) — 점수의 BONUS_CATEGORY_SHORT용
-    completed_credits_by_cat = {}
+    # 졸업요건 잔여학점 — 키는 (category, liberal_subtype, core_area) 트리플 (#47 Phase 2).
+    # 교양 4종 + 핵심교양 4영역까지 별개 진척도.
+    completed_credits_by_key = {}
     for h in user.course_histories.all():
-        completed_credits_by_cat[h.category] = (
-            completed_credits_by_cat.get(h.category, 0) + h.credits
-        )
-    remaining_by_cat = {}
+        key = (h.category, h.liberal_subtype, h.core_area)
+        completed_credits_by_key[key] = completed_credits_by_key.get(key, 0) + h.credits
+    remaining_by_cat = {}  # 변수명은 호환 유지, 값 키는 트리플
     if user.major and user.admission_year:
-        for req in GraduationRequirement.objects.filter(
+        requirements = list(GraduationRequirement.objects.filter(
             department=user.major, admission_year=user.admission_year,
-        ):
-            done = completed_credits_by_cat.get(req.category, 0)
-            remaining_by_cat[req.category] = max(0, req.required_credits - done)
+        ))
+        # 자유선택 overflow 합산 — 다른 카테고리 초과분이 자유선택 채움 (graduation_requirements.md §6)
+        _apply_free_election_overflow(completed_credits_by_key, requirements)
+        for req in requirements:
+            key = (req.category, req.liberal_subtype, req.core_area)
+            done = completed_credits_by_key.get(key, 0)
+            remaining_by_cat[key] = max(0, req.required_credits - done)
 
     # 이수 Course.id set — plan_completed_ids의 시작점 (선수과목 검사용)
     completed_ids = set(
@@ -629,6 +715,7 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
     """
     remaining_by_cat = dict(context['remaining_by_cat'])  # 학기마다 갱신
     plan_used_codes = set()                                # 이 plan 안에서 추천된 과목
+    plan_used_names = set()                                # 같은 이름 다른 코드 중복 방지 (학칙 §9, #47)
     plan_completed_ids = set(context['completed_ids'])     # 사용자 이수 + plan 진행분
 
     year, sem = context['first_year'], context['first_sem']
@@ -641,6 +728,8 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
         for course in context['candidates']:
             if course.course_code in plan_used_codes:
                 continue
+            if course.name in plan_used_names:              # 같은 이름 다른 코드 중복 방지 (#47)
+                continue
             if course.semester_open != sem:                 # 이번 학기에 안 열림
                 continue
             prereq_ids = context['prereq_ids_by_course_id'].get(course.id, set())
@@ -650,8 +739,8 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
                     continue
             eligible.append(course)
 
-        # 잔여 카테고리 매 학기 갱신 — 추천 진행분이 차감된 상태
-        short_cats = {cat for cat, rem in remaining_by_cat.items() if rem > 0}
+        # 잔여 카테고리 매 학기 갱신 — 추천 진행분이 차감된 상태. 키는 (category, liberal_subtype, core_area)
+        short_cats = {key for key, rem in remaining_by_cat.items() if rem > 0}
 
         scored = []
         for course in eligible:
@@ -689,11 +778,11 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
             sem_courses.append(course)
             sem_credits += course.credits
             plan_used_codes.add(course.course_code)
+            plan_used_names.add(course.name)               # 같은 이름 다른 코드 후속 학기 제외
             plan_completed_ids.add(course.id)              # 다음 학기 prereq 검사용
-            if course.category in remaining_by_cat:
-                remaining_by_cat[course.category] = max(
-                    0, remaining_by_cat[course.category] - course.credits,
-                )
+            key = (course.category, course.liberal_subtype, course.core_area)
+            if key in remaining_by_cat:
+                remaining_by_cat[key] = max(0, remaining_by_cat[key] - course.credits)
 
         if sem_courses:
             semesters.append({

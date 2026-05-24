@@ -127,13 +127,24 @@ class CompletionStatusView(APIView):
             admission_year=user.admission_year,
         )
 
+        # 자유선택 overflow 자동 합산 (graduation_requirements.md §6) — 다른 카테고리 required 초과분이 자유선택 채움.
+        # 예) 전공 70 required인데 71학점 들으면 초과 1학점이 자유선택으로 자동 인정.
+        overflow = 0
+        for cat in ['전공필수', '전공선택', '공통교양', '핵심교양', '학문기초교양', '일반교양']:
+            cat_required = sum(r.required_credits for r in requirements.filter(category=cat))
+            cat_done = completed_by_category.get(cat, 0)
+            if cat_done > cat_required:
+                overflow += cat_done - cat_required
+        completed_by_category['자유선택'] = completed_by_category.get('자유선택', 0) + overflow
+
         total_required = 0
         total_completed = 0
         categories = []
 
-        for cat in ['전공필수', '전공선택', '교양필수', '교양선택']:
-            req = requirements.filter(category=cat).first()
-            required = req.required_credits if req else 0
+        # 학칙 7분류 순회 (#47 Phase 3). 핵심교양은 GR이 4영역으로 분해돼 있어 sum 필요.
+        for cat in ['전공필수', '공통교양', '핵심교양', '학문기초교양', '전공선택', '일반교양', '자유선택']:
+            cat_reqs = requirements.filter(category=cat)
+            required = sum(r.required_credits for r in cat_reqs)
             completed = completed_by_category.get(cat, 0)
             remaining = max(0, required - completed)
             total_required += required
@@ -145,22 +156,27 @@ class CompletionStatusView(APIView):
                 'remaining': remaining,
             })
 
-        # 일반선택: 총 졸업학점 - 위 카테고리 필요학점 합
+        # 졸업 총학점 — GR 어디서든 total_required 가져옴 (모든 row 동일값)
         first_req = requirements.first()
         graduation_total = first_req.total_required if first_req else 0
-        general_required = max(0, graduation_total - total_required)
-        general_completed = completed_by_category.get('일반선택', 0)
 
-        categories.append({
-            'category': '일반선택',
-            'completed': general_completed,
-            'required': general_required,
-            'remaining': max(0, general_required - general_completed),
-        })
+        # 채플 이수 회수 (graduation_requirements.md §2.1)
+        # 학번별 required: 1996~1998 = 2회 / 1999학번 이후 = 4회 / 학번 미입력 시 4회 default
+        if user.admission_year and 1996 <= user.admission_year <= 1998:
+            chapel_required = 2
+        else:
+            chapel_required = 4
+        chapel_completed = user.chapel_count or 0
+        chapel = {
+            'completed': chapel_completed,
+            'required': chapel_required,
+            'remaining': max(0, chapel_required - chapel_completed),
+        }
 
-        grand_total_completed = total_completed + general_completed
+        grand_total_completed = total_completed
         data = {
             'categories': categories,
+            'chapel': chapel,
             'total_completed': grand_total_completed,
             'total_required': graduation_total,
             'total_remaining': max(0, graduation_total - grand_total_completed),
@@ -254,11 +270,16 @@ class NextSemesterRecommendView(APIView):
 
 # 카테고리 → 응답 키 매핑 (spec 5.3.2 4키 분리, #25)
 #   일반선택은 4키 밖이라 추천 결과에서 제외됨 (이슈 #25 명시)
+# 5.3.2 응답 7키 분리 — 학칙 7분류 1:1 매핑 (#47 Phase 3).
+# 학생이 영역 구분 직접 볼 수 있도록 7키 각각으로 분리.
 _CATEGORY_TO_KEY = {
     '전공필수': 'major_required',
     '전공선택': 'major_elective',
-    '교양필수': 'liberal_required',
-    '교양선택': 'liberal_elective',
+    '공통교양': 'liberal_common',
+    '핵심교양': 'liberal_core',
+    '학문기초교양': 'liberal_foundation',
+    '일반교양': 'liberal_general',
+    '자유선택': 'free_elective',
 }
 
 
@@ -283,10 +304,10 @@ def _serialize_course(course):
 
 
 def _split_semester_by_category(semester):
-    """학기 dict의 courses 리스트를 4 카테고리 키로 분리.
+    """학기 dict의 courses 리스트를 학칙 7키로 분리 (#47 Phase 3).
 
     빈 카테고리도 키 유지 (빈 배열) — 프론트가 키 존재 체크 안 해도 됨.
-    매핑에 없는 카테고리(예: 일반선택)는 응답에서 누락.
+    매핑에 없는 카테고리(있다면 카테고리 자체 결함)는 응답에서 누락 + 로그 X (silent).
     """
     buckets = {key: [] for key in _CATEGORY_TO_KEY.values()}
     for course in semester['courses']:
@@ -321,7 +342,9 @@ class CurriculumRecommendView(APIView):
               {
                 "year": int, "semester": int,         # semester: 1/2/3/4
                 "major_required": [...], "major_elective": [...],
-                "liberal_required": [...], "liberal_elective": [...]
+                "liberal_common": [...], "liberal_core": [...],
+                "liberal_foundation": [...], "liberal_general": [...],
+                "free_elective": [...]
               }, ...
             ]
           }, ...

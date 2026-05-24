@@ -2,11 +2,42 @@ from django.db import models
 
 # 강의 기본 정보(코드, 이름, 학점 등등)
 class Course(models.Model):
+    # graduation_requirements.md §1·§3·§4 학칙 7분류로 펼침 (#47 Phase 3).
+    # 교양 4종을 category 1단으로 직접 표현 — 기존 '교양필수'/'교양선택'은 학칙 행정 분류와 불일치라 폐기.
+    # liberal_subtype 필드는 호환용으로 유지(category와 동기화).
     CATEGORY_CHOICES = [
         ('전공필수', '전공필수'),
         ('전공선택', '전공선택'),
-        ('교양필수', '교양필수'),
-        ('교양선택', '교양선택'),
+        ('공통교양', '공통교양'),
+        ('핵심교양', '핵심교양'),
+        ('학문기초교양', '학문기초교양'),
+        ('일반교양', '일반교양'),
+        ('자유선택', '자유선택'),
+    ]
+
+    # 교양 4종 (학칙 별표2·2-1 + graduation_requirements.md §3). 전공 과목은 null.
+    # 학교 강의시간표 엑셀에는 이 분류가 없어서 import 시점에 매핑 룰로 채운다 (courses/category_map.py).
+    LIBERAL_SUBTYPE_CHOICES = [
+        ('공통교양', '공통교양'),
+        ('핵심교양', '핵심교양'),
+        ('학문기초교양', '학문기초교양'),
+        ('일반교양', '일반교양'),
+    ]
+
+    # 교양 영역 — core_area 필드에 박힘 (이름은 핵심교양 도입 시 정해진 것이나 의미는 일반 교양 영역).
+    # 핵심교양 4영역 (graduation_requirements.md §4.3, 영역당 1과목 택1):
+    # 공통교양 4영역 (graduation_requirements.md §4.2, 영역별 학점 6/3/6/2 = 17학점):
+    CORE_AREA_CHOICES = [
+        # 핵심교양 (liberal_subtype='핵심교양' 행에만)
+        ('역사와 철학', '역사와 철학'),
+        ('사회와 공동체', '사회와 공동체'),
+        ('문화와 예술', '문화와 예술'),
+        ('과학기술과 정보', '과학기술과 정보'),
+        # 공통교양 (liberal_subtype='공통교양' 행에만)
+        ('기독교', '기독교'),
+        ('사고와 표현', '사고와 표현'),
+        ('언어', '언어'),
+        ('진로와 디지털리터러시', '진로와 디지털리터러시'),
     ]
 
     # 학기 개설 값 매핑 (spec 5.3.2, #25)
@@ -24,6 +55,15 @@ class Course(models.Model):
     department = models.CharField(max_length=50, null=True, blank=True)
     major = models.CharField(max_length=50, null=True, blank=True)
     category = models.CharField(max_length=10, choices=CATEGORY_CHOICES)
+    # 교양 세부 분류 — category='교양선택'/'교양필수' 행에 한해 채움. 전공/군사 등은 null.
+    liberal_subtype = models.CharField(
+        max_length=10, choices=LIBERAL_SUBTYPE_CHOICES, null=True, blank=True
+    )
+    # 핵심교양 4영역 — liberal_subtype=='핵심교양' 행만 채움. 그 외 null.
+    # (영역별 필수 1과목 충족 판정용. import 시점에 category_map.classify_core_area로 채운다.)
+    core_area = models.CharField(
+        max_length=20, choices=CORE_AREA_CHOICES, null=True, blank=True
+    )
     credits = models.IntegerField()
     year_open = models.IntegerField()
     semester_open = models.IntegerField(choices=SEMESTER_OPEN_CHOICES)
@@ -117,25 +157,33 @@ class CourseSchedule(models.Model):
 
 # 졸업 필요 학점
 class GraduationRequirement(models.Model):
-    CATEGORY_CHOICES = [
-        ('전공필수', '전공필수'),
-        ('전공선택', '전공선택'),
-        ('교양필수', '교양필수'),
-        ('교양선택', '교양선택'),
-    ]
+    # Course와 동일한 7분류 사용 (#47 Phase 3)
+    CATEGORY_CHOICES = Course.CATEGORY_CHOICES
 
     department = models.CharField(max_length=50)
     admission_year = models.IntegerField()
     category = models.CharField(max_length=10, choices=CATEGORY_CHOICES)
+    # 교양 4종 분해용 (graduation_requirements.md §1·§3). 전공·자유선택 row는 null.
+    # (department, admission_year, category, liberal_subtype, core_area) 조합이 유일해야 함.
+    liberal_subtype = models.CharField(
+        max_length=10, choices=Course.LIBERAL_SUBTYPE_CHOICES, null=True, blank=True
+    )
+    # 핵심교양 4영역 row 분해용 — liberal_subtype=='핵심교양'일 때만 채움 (graduation_requirements.md §4.3).
+    # 영역당 3학점 4 row(역사·철학/사회·공동체/문화·예술/과학기술·정보)로 핵심교양 12학점을 쪼개 박는다.
+    core_area = models.CharField(
+        max_length=20, choices=Course.CORE_AREA_CHOICES, null=True, blank=True
+    )
     required_credits = models.IntegerField()
     total_required = models.IntegerField()
 
     class Meta:
         db_table = 'courses_graduationrequirement'
-        unique_together = ('department', 'admission_year', 'category')
+        unique_together = ('department', 'admission_year', 'category', 'liberal_subtype', 'core_area')
 
     def __str__(self):
-        return f"{self.department} {self.admission_year} {self.category}: {self.required_credits}학점"
+        sub = f"/{self.liberal_subtype}" if self.liberal_subtype else ''
+        area = f"/{self.core_area}" if self.core_area else ''
+        return f"{self.department} {self.admission_year} {self.category}{sub}{area}: {self.required_credits}학점"
 
 
 # 학사 일정 : 수강신청 기간, 학기 시작/종료일

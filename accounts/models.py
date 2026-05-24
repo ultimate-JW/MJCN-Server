@@ -28,6 +28,9 @@ class User(AbstractUser):
     graduation_year = models.IntegerField(null=True, blank=True, verbose_name='졸업 희망 연도')
     graduation_month = models.IntegerField(null=True, blank=True, verbose_name='졸업 희망 월')
     admission_year = models.IntegerField(null=True, blank=True, verbose_name='입학 연도')
+    # 채플 누적 이수 회수 (graduation_requirements.md §2.1).
+    # 학번별 요구: 1996~1998학번 2회 / 1999학번 이후 4회. 학점은 0.5×회수로 공통교양 합산.
+    chapel_count = models.IntegerField(default=0, verbose_name='채플 누적 이수 회수')
     major = models.CharField(max_length=100, blank=True, verbose_name='전공')
     is_email_verified = models.BooleanField(default=False, verbose_name='이메일 인증 여부')
     is_onboarding_completed = models.BooleanField(default=False, verbose_name='온보딩 완료 여부')
@@ -87,6 +90,16 @@ class CourseHistory(models.Model):
     semester = models.IntegerField(verbose_name='수강 학기')
     grade_received = models.CharField(max_length=10, blank=True, verbose_name='취득 성적')
     category = models.CharField(max_length=20, verbose_name='이수구분')
+    # 교양 4종 (공통/핵심/학문기초/일반). 저장 시 course_code로 Course 찾아 자동 채움 (#47).
+    # 전공·자유선택·매칭 안되는 교양은 null. 점수 계산의 4종별 진척도 키로 사용 (services._build_short_keys).
+    liberal_subtype = models.CharField(
+        max_length=10, null=True, blank=True, verbose_name='교양 4종 분류',
+    )
+    # 핵심교양 4영역 — liberal_subtype=='핵심교양' 행만 채움. save() 시 Course에서 자동 복사 (#47 Phase 2).
+    # 영역별 부족분(영역당 3학점 4row) 판정 키로 사용.
+    core_area = models.CharField(
+        max_length=20, null=True, blank=True, verbose_name='핵심교양 영역',
+    )
     credits = models.IntegerField(verbose_name='학점 수')
 
     class Meta:
@@ -101,6 +114,23 @@ class CourseHistory(models.Model):
 
     def __str__(self):
         return f'{self.user.email} - {self.course_name}'
+
+    def save(self, *args, **kwargs):
+        # liberal_subtype / core_area 자동 채움 — course_code로 Course 찾아 복사 (#47).
+        # 명시적으로 값을 넘긴 호출자가 있으면 덮지 않음. bulk_create는 save() 우회하니 별도 보강 필요.
+        need_subtype = not self.liberal_subtype
+        need_area = not self.core_area
+        if (need_subtype or need_area) and self.course_code:
+            from courses.models import Course
+            row = Course.objects.filter(course_code=self.course_code).values(
+                'liberal_subtype', 'core_area',
+            ).first()
+            if row:
+                if need_subtype and row['liberal_subtype']:
+                    self.liberal_subtype = row['liberal_subtype']
+                if need_area and row['core_area']:
+                    self.core_area = row['core_area']
+        super().save(*args, **kwargs)
 
 
 class CurrentCourse(models.Model):

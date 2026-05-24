@@ -30,6 +30,12 @@ media/
 # Claude Code (작업자 로컬 전용)
 CLAUDE.md
 
+# 작업일지 (작업자 로컬 전용 — 원격 금지)
+.작업일지/
+
+# 학칙 PDF 추출 원문·스크린샷 (로컬 reference 전용)
+image/
+
 # OS
 .DS_Store
 Thumbs.db

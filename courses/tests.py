@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import CourseHistory, CurrentCourse
+from courses.category_map import classify_liberal_subtype, classify_core_area
 from courses.management.commands.import_courses_from_xlsx import parse_year_open
 from courses.models import (
     AcademicCalendar,
@@ -21,9 +22,9 @@ from courses.models import (
 from courses.services import (
     BONUS_BACKLOG_REQUIRED,
     BONUS_CATEGORY_SHORT,
+    BONUS_DESIGNATED_REQUIRED,
     BONUS_GRADE_SEMESTER_MATCH,
     BONUS_INTEREST_MATCH,
-    BONUS_LIBERAL_REQUIRED,
     BONUS_MAJOR_REQUIRED,
     PENALTY_GRADE_EXCEEDED,
     PENALTY_PREREQUISITE_MISSING,
@@ -194,22 +195,46 @@ class GraduationRequirementModelTests(TestCase):
         self.assertEqual(req.required_credits, 42)
 
     def test_unique_together(self):
+        # 4종 + 핵심교양 4영역 도입(#47 Phase 2) 후 unique 키는
+        # (dept, year, category, liberal_subtype, core_area).
+        # SQLite NULL != NULL 정책상 core_area=NULL row끼리는 충돌 안 잡히므로,
+        # 핵심교양 + 영역 명시 값으로 모든 컬럼 같을 때만 검증한다.
         GraduationRequirement.objects.create(
             department='융합소프트웨어학부',
             admission_year=2024,
-            category='전공필수',
-            required_credits=42,
-            total_required=130,
+            category='일반교양',
+            liberal_subtype='핵심교양',
+            core_area='역사와 철학',
+            required_credits=3,
+            total_required=134,
         )
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 GraduationRequirement.objects.create(
                     department='융합소프트웨어학부',
                     admission_year=2024,
-                    category='전공필수',
-                    required_credits=45,
-                    total_required=130,
+                    category='일반교양',
+                    liberal_subtype='핵심교양',
+                    core_area='역사와 철학',
+                    required_credits=4,
+                    total_required=134,
                 )
+
+    def test_핵심교양_4영역은_별개_row로_허용(self):
+        # 같은 liberal_subtype='핵심교양'이라도 core_area가 다르면 별개 row (#47 Phase 2)
+        for area in ['역사와 철학', '사회와 공동체', '문화와 예술', '과학기술과 정보']:
+            GraduationRequirement.objects.create(
+                department='컴퓨터공학전공',
+                admission_year=2024,
+                category='일반교양',
+                liberal_subtype='핵심교양',
+                core_area=area,
+                required_credits=3,
+                total_required=134,
+            )
+        self.assertEqual(
+            GraduationRequirement.objects.filter(liberal_subtype='핵심교양').count(), 4
+        )
 
     # 동일 학과여도 입학년도가 다르면 별도 졸업요건이 저장되는지
     def test_같은_학과_다른_입학년도는_허용(self):
@@ -302,7 +327,7 @@ class CourseSearchAPITests(APITestCase):
         self.user = _make_user()
         _make_course(course_code='CSE1001', name='프로그래밍기초', category='전공필수', credits=3)
         _make_course(course_code='CSE2001', name='자료구조', category='전공필수', credits=3)
-        _make_course(course_code='GEN1001', name='글쓰기', category='교양필수', credits=2,
+        _make_course(course_code='GEN1001', name='글쓰기', category='공통교양', credits=2,
                      department='교양', major='교양')
 
     def test_인증_없으면_401(self):
@@ -330,7 +355,7 @@ class CourseSearchAPITests(APITestCase):
 
     def test_category_필터(self):
         self.client.force_authenticate(user=self.user)
-        res = self.client.get(self.url, {'category': '교양필수'})
+        res = self.client.get(self.url, {'category': '공통교양'})
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(res.data['results'][0]['course_code'], 'GEN1001')
 
@@ -427,11 +452,11 @@ class CompletionStatusAPITests(APITestCase):
         )
         GraduationRequirement.objects.create(
             department='데이터테크놀로지전공', admission_year=2024,
-            category='교양필수', required_credits=18, total_required=130,
+            category='공통교양', required_credits=18, total_required=130,
         )
         GraduationRequirement.objects.create(
             department='데이터테크놀로지전공', admission_year=2024,
-            category='교양선택', required_credits=16, total_required=130,
+            category='일반교양', required_credits=16, total_required=130,
         )
 
     def test_인증_없으면_401(self):
@@ -452,7 +477,7 @@ class CompletionStatusAPITests(APITestCase):
         cats = [c['category'] for c in res.data['categories']]
         self.assertEqual(
             cats,
-            ['전공필수', '전공선택', '교양필수', '교양선택', '일반선택'],
+            ['전공필수', '공통교양', '핵심교양', '학문기초교양', '전공선택', '일반교양', '자유선택'],
         )
 
     def test_CourseHistory_가_이수학점에_반영(self):
@@ -476,6 +501,44 @@ class CompletionStatusAPITests(APITestCase):
         res = self.client.get(self.url)
         major_required = next(c for c in res.data['categories'] if c['category'] == '전공필수')
         self.assertEqual(major_required['completed'], 3)
+
+    def test_채플_2024학번은_4회_required(self):
+        # graduation_requirements.md §2.1 — 1999학번 이후 채플 4회 의무
+        self.user.chapel_count = 1
+        self.user.save()
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['chapel']['completed'], 1)
+        self.assertEqual(res.data['chapel']['required'], 4)
+        self.assertEqual(res.data['chapel']['remaining'], 3)
+
+    def test_채플_옛학번은_2회_required(self):
+        # 1996~1998학번은 2회 의무 (시연 범위 외지만 학칙 분기 검증)
+        self.user.admission_year = 1997
+        self.user.chapel_count = 2
+        self.user.save()
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['chapel']['required'], 2)
+        self.assertEqual(res.data['chapel']['remaining'], 0)
+
+    def test_전공_초과분은_자유선택으로_자동_합산(self):
+        # graduation_requirements.md §6 — 카테고리 required 초과분이 자유선택으로 자동 인정
+        # setUp의 전공필수 42 required인데 45학점 들으면 3학점이 자유선택으로 이동
+        GraduationRequirement.objects.create(
+            department='데이터테크놀로지전공', admission_year=2024,
+            category='자유선택', required_credits=10, total_required=130,
+        )
+        for i in range(15):
+            CourseHistory.objects.create(
+                user=self.user, course_name=f'전공{i}', course_code=f'MAJ{i:03d}',
+                year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+            )  # 총 45학점 = required 42 + 초과 3
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        free = next(c for c in res.data['categories'] if c['category'] == '자유선택')
+        self.assertEqual(free['completed'], 3)   # 초과 3학점 자동 자유선택
+        self.assertEqual(free['remaining'], 7)   # required 10 - 3
 
 
 class NextSemesterRecommendAPITests(APITestCase):
@@ -506,7 +569,7 @@ class NextSemesterRecommendAPITests(APITestCase):
             year_open=3, semester_open=1, tags=[],
         )
         self.liberal = _make_course(
-            course_code='GEN1001', name='글쓰기', category='교양필수',
+            course_code='GEN1001', name='글쓰기', category='공통교양',
             department='교양', major='교양',
             year_open=1, semester_open=2, tags=[],
         )
@@ -556,14 +619,14 @@ class NextSemesterRecommendAPITests(APITestCase):
         codes = {item['course_code'] for item in res.data}
         self.assertNotIn('CSE2001', codes)
 
-    def test_선수과목_미이수는_제외하지_않고_Soft_감점만(self):
-        """spec 5.3.1: 동일 학과 + 선수과목 미이수는 Hard Filter 아닌 Soft 감점 (-15)"""
+    def test_동일학과_선수과목_미이수는_hard_filter(self):
+        """#47 7번: 다음학기 추천도 전체커리큘럼처럼 hard filter — 선수 미이수는 결과에서 제외"""
         CoursePrerequisite.objects.create(course=self.mid, prerequisite=self.base)
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
         codes = {item['course_code'] for item in res.data}
-        # 자료구조(CSE2001) 여전히 후보에 포함됨
-        self.assertIn('CSE2001', codes)
+        # 자료구조(CSE2001)는 base(CSE1001) 선수 미이수라 결과에서 제외
+        self.assertNotIn('CSE2001', codes)
 
     def test_관심사_매칭_과목이_상위에_노출(self):
         """관심사 IT/개발 → IT/개발 태그 과목이 비태그 과목보다 위"""
@@ -672,6 +735,163 @@ class ParseYearOpenTests(SimpleTestCase):
         self.assertEqual(parse_year_open('abc'), 0)
 
 
+# ===== 교양 4종 매핑 단위 테스트 (#? — graduation_requirements.md §3, 학칙 §6 표시기호) =====
+
+class ClassifyLiberalSubtypeTests(SimpleTestCase):
+    """classify_liberal_subtype — 학과코드 prefix + 교과목명 → 교양 4종 분류."""
+
+    def test_prefix_교필_은_공통교양(self):
+        # 학칙 §6 표시기호: 교필 = 공통교양 (이름은 "교양필수"지만 학교 의미는 공통)
+        self.assertEqual(classify_liberal_subtype('교필', '채플'), '공통교양')
+
+    def test_prefix_교선_은_핵심교양(self):
+        # 학칙 §6 표시기호: 교선 = 핵심교양
+        self.assertEqual(classify_liberal_subtype('교선', '동양철학사'), '핵심교양')
+
+    def test_prefix_기자_는_학문기초교양(self):
+        # 자연계 학문기초 — 미적분/물리/통계 등
+        self.assertEqual(classify_liberal_subtype('기자', '일반화학'), '학문기초교양')
+
+    def test_prefix_기컴_은_학문기초교양(self):
+        # 컴퓨터 학문기초 — C언어/파이썬/엑셀 등
+        self.assertEqual(classify_liberal_subtype('기컴', '파이썬프로그래밍입문'), '학문기초교양')
+
+    def test_prefix_균_시작은_일반교양(self):
+        # 균형교양은 '균자'/'균인' 등 1글자 더 붙는 코드도 있어 startswith로 매칭
+        self.assertEqual(classify_liberal_subtype('균자', '환경과생활'), '일반교양')
+        self.assertEqual(classify_liberal_subtype('균인', '문학산책'), '일반교양')
+
+    def test_전공_prefix_는_None(self):
+        # 컴정/컴공/반아는 전공이라 4종 분류 대상 외 (Course.category로 별도 관리)
+        self.assertIsNone(classify_liberal_subtype('컴공', '자료구조'))
+        self.assertIsNone(classify_liberal_subtype('컴정', 'C언어'))
+        self.assertIsNone(classify_liberal_subtype('반아', '반도체개론'))
+
+    def test_군사학_prefix_는_None(self):
+        # 군*는 컴공 졸업요건 외 → 명시적 제외
+        self.assertIsNone(classify_liberal_subtype('군과', '기초미적분학'))
+        self.assertIsNone(classify_liberal_subtype('군인', '기초영어'))
+
+    def test_예술_prefix_는_None(self):
+        # 학칙 §6에 명시 없음 → 수동 보강 전까지 분류 보류
+        self.assertIsNone(classify_liberal_subtype('예술', '미술감상'))
+
+    def test_미지_prefix_는_None(self):
+        # 매핑 룰에 없는 prefix는 None — import 시점에 경고로 표면화
+        self.assertIsNone(classify_liberal_subtype('GEN', '대학영어'))
+        self.assertIsNone(classify_liberal_subtype('', ''))
+
+    def test_by_name_은_학문기초_필수5과목_확정(self):
+        # graduation_requirements.md §3.3 명시 필수 5과목 — prefix가 어떻든 학문기초교양
+        for n in ['미적분학1', '이산수학개론', '선형대수학개론', '공학수학1',
+                  '통계학개론']:
+            self.assertEqual(
+                classify_liberal_subtype('기자', n), '학문기초교양',
+                msg=f'{n} 이 학문기초교양으로 잡혀야 함',
+            )
+
+    def test_by_name_은_prefix_excluded_도_이김(self):
+        # 만약 학교가 prefix를 군과로 분류해도 이름이 필수 7과목이면 학문기초교양으로 인정
+        # (현재 PREFIX_EXCLUDED 체크보다 by_name 우선순위가 높음 — 학칙 명시 과목 보호)
+        self.assertEqual(
+            classify_liberal_subtype('군과', '미적분학1'), '학문기초교양',
+        )
+
+    def test_None_입력_안전(self):
+        self.assertIsNone(classify_liberal_subtype(None, None))
+
+
+# ===== 핵심교양 4영역 매핑 (#47 Phase 2) =====
+
+class ClassifyCoreAreaTests(SimpleTestCase):
+    """classify_core_area — 과목명 → 핵심교양 4영역 분류 (graduation_requirements.md §4.3)."""
+
+    def test_영역별_대표_과목_매핑(self):
+        # 4영역 각각 대표 과목 1개씩 — md §4.3.1~4.3.4
+        self.assertEqual(classify_core_area('철학과 인간'), '역사와 철학')
+        self.assertEqual(classify_core_area('민주주의와 현대사회'), '사회와 공동체')
+        self.assertEqual(classify_core_area('예술과 창조성'), '문화와 예술')
+        self.assertEqual(classify_core_area('인공지능입문'), '과학기술과 정보')
+
+    def test_창업과_공동체는_사회와_공동체_단일(self):
+        # md §4.3 ※ 주석상 (2)·(4) 양쪽 표기였으나 오타 확정 — 사회와 공동체로만 매핑
+        self.assertEqual(classify_core_area('창업과 공동체'), '사회와 공동체')
+
+    def test_외국인전용도_매핑됨(self):
+        # 외국인학생전용도 같은 dict에 포함, 필터링 없이 매핑 반환
+        self.assertEqual(classify_core_area('외국인학생을 위한 한국현대사'), '역사와 철학')
+        self.assertEqual(classify_core_area('외국인학생을위한컴퓨터활용'), '과학기술과 정보')
+
+    def test_미매핑_과목은_None(self):
+        # 4영역 dict에 없는 과목 — 핵심교양인데 None 반환되면 호출자가 WARN 처리
+        self.assertIsNone(classify_core_area('자료구조'))
+        self.assertIsNone(classify_core_area('대학영어'))
+
+    def test_None_빈문자열_안전(self):
+        self.assertIsNone(classify_core_area(None))
+        self.assertIsNone(classify_core_area(''))
+
+
+# ===== CourseHistory.liberal_subtype 자동 동기화 (#47) =====
+
+class CourseHistoryLiberalSubtypeSyncTests(TestCase):
+    """CourseHistory 저장 시 course_code로 Course 찾아 liberal_subtype 복사 (#47)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            email='c@test.com', password='pw',
+            name='이수자', major='컴퓨터공학전공', admission_year=2024,
+        )
+        # 4종 라벨된 Course 시드 — 학문기초교양 미적분학1
+        cls.course = Course.objects.create(
+            course_code='기자101', name='미적분학1',
+            college='교양', category='학문기초교양', liberal_subtype='학문기초교양',
+            credits=3, year_open=1, semester_open=1,
+        )
+
+    def test_liberal_subtype_자동_채움(self):
+        # 호출자가 liberal_subtype 안 넘겨도 Course에서 자동 복사
+        h = CourseHistory.objects.create(
+            user=self.user, course_name='미적분학1', course_code='기자101',
+            year=2026, semester=1, category='일반교양', credits=3,
+        )
+        self.assertEqual(h.liberal_subtype, '학문기초교양')
+
+    def test_명시값은_안_덮음(self):
+        # 호출자가 명시한 값은 우선 — Course가 '학문기초교양'이어도 명시값 유지
+        h = CourseHistory.objects.create(
+            user=self.user, course_name='미적분학1', course_code='기자101',
+            year=2026, semester=1, category='일반교양', credits=3,
+            liberal_subtype='일반교양',
+        )
+        self.assertEqual(h.liberal_subtype, '일반교양')
+
+    def test_Course_미존재시_None_유지(self):
+        # course_code가 DB에 없으면 null 그대로 (강제 fail 아님)
+        h = CourseHistory.objects.create(
+            user=self.user, course_name='없는과목', course_code='없음999',
+            year=2026, semester=1, category='일반교양', credits=3,
+        )
+        self.assertIsNone(h.liberal_subtype)
+        self.assertIsNone(h.core_area)
+
+    def test_core_area_자동_채움(self):
+        # 핵심교양 Course가 core_area 가지면 CourseHistory 저장 시 자동 복사 (#47 Phase 2)
+        Course.objects.create(
+            course_code='교선301', name='철학과 인간',
+            college='교양', category='핵심교양', liberal_subtype='핵심교양',
+            core_area='역사와 철학',
+            credits=3, year_open=1, semester_open=1,
+        )
+        h = CourseHistory.objects.create(
+            user=self.user, course_name='철학과 인간', course_code='교선301',
+            year=2026, semester=1, category='일반교양', credits=3,
+        )
+        self.assertEqual(h.liberal_subtype, '핵심교양')
+        self.assertEqual(h.core_area, '역사와 철학')
+
+
 class CurriculumRecommendAPITests(APITestCase):
     """전체 커리큘럼 추천 API 통합 테스트 (spec 5.3.2, #25).
 
@@ -681,15 +901,19 @@ class CurriculumRecommendAPITests(APITestCase):
     """
     url = '/api/v1/courses/recommend/curriculum/'
 
-    # 4 카테고리 응답 키
-    CAT_KEYS = ('major_required', 'major_elective', 'liberal_required', 'liberal_elective')
+    # 학칙 7분류 응답 키 (#47 Phase 3)
+    CAT_KEYS = (
+        'major_required', 'major_elective',
+        'liberal_common', 'liberal_core', 'liberal_foundation', 'liberal_general',
+        'free_elective',
+    )
 
     def setUp(self):
         # 사용자: 2학년 2학기, 데이터테크놀로지전공 (graduation 2027.8)
         self.user = _make_user()
 
         # 졸업요건 — 4 카테고리 모두 부족하도록 설정
-        for cat, req in [('전공필수', 12), ('전공선택', 8), ('교양필수', 6), ('교양선택', 4)]:
+        for cat, req in [('전공필수', 12), ('전공선택', 8), ('공통교양', 6), ('일반교양', 4)]:
             GraduationRequirement.objects.create(
                 department='데이터테크놀로지전공', admission_year=2024,
                 category=cat, required_credits=req, total_required=40,
@@ -705,10 +929,10 @@ class CurriculumRecommendAPITests(APITestCase):
                      year_open=3, semester_open=1, credits=3, tags=['IT/개발'])
         _make_course(course_code='CSE3005', name='데이터베이스', category='전공선택',
                      year_open=3, semester_open=1, credits=3, tags=['IT/개발'])
-        _make_course(course_code='GEN1001', name='글쓰기', category='교양필수',
+        _make_course(course_code='GEN1001', name='글쓰기', category='공통교양',
                      department='교양', major='교양',
                      year_open=1, semester_open=1, credits=2, tags=[])
-        _make_course(course_code='GEN1003', name='교양영어', category='교양선택',
+        _make_course(course_code='GEN1003', name='교양영어', category='일반교양',
                      department='교양', major='교양',
                      year_open=1, semester_open=1, credits=2, tags=[])
         # 2학기 (semester_open=2)
@@ -718,7 +942,7 @@ class CurriculumRecommendAPITests(APITestCase):
                      year_open=3, semester_open=2, credits=3, tags=['IT/개발'])
         _make_course(course_code='CSE3006', name='네트워크', category='전공선택',
                      year_open=3, semester_open=2, credits=3, tags=['IT/개발'])
-        _make_course(course_code='GEN1002', name='발표와토론', category='교양필수',
+        _make_course(course_code='GEN1002', name='발표와토론', category='공통교양',
                      department='교양', major='교양',
                      year_open=1, semester_open=2, credits=2, tags=[])
 
@@ -865,6 +1089,21 @@ class CurriculumRecommendAPITests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIn('plans', res.data)
 
+    def test_category_weights_7종_키_호환(self):
+        # #47 Phase 3 — category_weights가 7분류 키(전공필수/전공선택/공통/핵심/학문기초/일반/자유선택)로 동작
+        self.client.force_authenticate(user=self.user)
+        # 공통교양 2.0배 가중 + 일반교양 0.5배 — 공통교양 과목이 liberal_common에 더 많이 잡혀야 자연스러움
+        res = self.client.post(self.url, {
+            'category_weights': {'공통교양': 2.0, '일반교양': 0.5},
+            'num_plans': 1,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        plan = res.data['plans'][0]
+        # 응답 구조 살아있음 (옛 4분류만 인식해서 빈 응답 나오던 결함 회귀 방지)
+        for s in plan['semesters']:
+            for k in self.CAT_KEYS:
+                self.assertIn(k, s)
+
 
 # 졸업까지 진척도(%) API 테스트는 dashboard 앱으로 이전됨
 # (spec 6.10 — 단독 엔드포인트 제거, dashboard 응답으로 통합).
@@ -922,9 +1161,41 @@ class CalculateScoreTests(SimpleTestCase):
         self.assertEqual(score, 100 + BONUS_INTEREST_MATCH)
 
     def test_졸업요건_부족_카테고리면_BONUS_CATEGORY_SHORT_가산(self):
+        # short_categories는 (category, liberal_subtype, core_area) 트리플 set — 전공은 둘 다 None (#47 Phase 2)
         course = self._course(category='전공선택')
-        score = self._score(course, short_categories={'전공선택'})
+        score = self._score(course, short_categories={('전공선택', None, None)})
         self.assertEqual(score, 100 + BONUS_CATEGORY_SHORT)
+
+    def test_교양_4종은_동일_category여도_별개_short_키(self):
+        # 핵심교양만 부족하고 일반교양은 다 채워진 상태 — category='일반교양' 같지만
+        # liberal_subtype 으로 key가 달라 일반교양 과목은 가산점 0 (#47)
+        nuclear = self._course(category='핵심교양', liberal_subtype='핵심교양')
+        general = self._course(category='일반교양', liberal_subtype='일반교양')
+        short_keys = {('핵심교양', '핵심교양', None)}
+        # 핵심교양은 학칙 의무 영역 → BONUS_DESIGNATED_REQUIRED(+15) 가산.
+        # 헬퍼 디폴트(year_open=1, user_grade=2) 가 backlog 조건 맞아 BONUS_BACKLOG_REQUIRED(+10)도 발동.
+        self.assertEqual(
+            self._score(nuclear, short_categories=short_keys),
+            100 + BONUS_CATEGORY_SHORT + BONUS_DESIGNATED_REQUIRED + BONUS_BACKLOG_REQUIRED,
+        )
+        self.assertEqual(self._score(general, short_categories=short_keys), 100)
+
+    def test_핵심교양_4영역은_별개_short_키(self):
+        # 역사·철학만 부족, 사회·공동체는 충족인 상태 — 같은 liberal_subtype='핵심교양' 안에서도
+        # core_area로 key가 갈리므로 사회·공동체 과목은 가산점 0 (#47 Phase 2)
+        history = self._course(category='핵심교양', liberal_subtype='핵심교양', core_area='역사와 철학')
+        society = self._course(category='핵심교양', liberal_subtype='핵심교양', core_area='사회와 공동체')
+        short_keys = {('핵심교양', '핵심교양', '역사와 철학')}
+        # 둘 다 BONUS_DESIGNATED_REQUIRED(+15) + BONUS_BACKLOG_REQUIRED(+10) 기본.
+        # 역사·철학만 short이라 그 영역 과목에만 BONUS_CATEGORY_SHORT(+15) 추가.
+        self.assertEqual(
+            self._score(history, short_categories=short_keys),
+            100 + BONUS_CATEGORY_SHORT + BONUS_DESIGNATED_REQUIRED + BONUS_BACKLOG_REQUIRED,
+        )
+        self.assertEqual(
+            self._score(society, short_categories=short_keys),
+            100 + BONUS_DESIGNATED_REQUIRED + BONUS_BACKLOG_REQUIRED,
+        )
 
     def test_전공필수면_BONUS_MAJOR_REQUIRED_가산(self):
         # 다른 분기 회피 위해 year_open=2, semester_open=2 (학년 같음, 학기 다름)
@@ -932,10 +1203,10 @@ class CalculateScoreTests(SimpleTestCase):
         score = self._score(course)
         self.assertEqual(score, 100 + BONUS_MAJOR_REQUIRED)
 
-    def test_교양필수면_BONUS_LIBERAL_REQUIRED_가산(self):
-        course = self._course(category='교양필수', year_open=2, semester_open=2)
+    def test_교양필수면_BONUS_DESIGNATED_REQUIRED_가산(self):
+        course = self._course(category='공통교양', year_open=2, semester_open=2)
         score = self._score(course)
-        self.assertEqual(score, 100 + BONUS_LIBERAL_REQUIRED)
+        self.assertEqual(score, 100 + BONUS_DESIGNATED_REQUIRED)
 
     def test_학년_학기_정확히_일치시_BONUS_GRADE_SEMESTER_MATCH_가산(self):
         course = self._course(category='전공선택', year_open=2, semester_open=1)
@@ -957,9 +1228,9 @@ class CalculateScoreTests(SimpleTestCase):
 
     def test_밀린_교양필수면_BACKLOG_가산_포함(self):
         # 교양필수 자체 가산 +15도 함께 발동
-        course = self._course(category='교양필수', year_open=1, semester_open=1)
+        course = self._course(category='공통교양', year_open=1, semester_open=1)
         score = self._score(course)
-        self.assertEqual(score, 100 + BONUS_LIBERAL_REQUIRED + BONUS_BACKLOG_REQUIRED)
+        self.assertEqual(score, 100 + BONUS_DESIGNATED_REQUIRED + BONUS_BACKLOG_REQUIRED)
 
     def test_밀린_전공선택은_BACKLOG_가산_안받음(self):
         """BACKLOG_REQUIRED_CATEGORIES = ('전공필수','교양필수') — 선택과목은 제외"""
@@ -987,15 +1258,16 @@ class CalculateScoreTests(SimpleTestCase):
         score = self._score(course)
         self.assertEqual(score, 100)
 
-    def test_동일학과_선수과목_미이수시_PENALTY_PREREQUISITE_MISSING_감점(self):
+    def test_동일학과_선수과목_미이수여도_점수식은_감점_없음(self):
+        # #47 7번 — 선수 hard filter는 호출 전에 적용. 점수식 자체에는 감점 없음.
         course = self._course(category='전공선택', major='컴퓨터공학전공')
         score = self._score(
             course,
             user_major='컴퓨터공학전공',
             course_prerequisite_ids={101},  # 선수과목 있음
-            completed_course_ids=set(),     # 미이수
+            completed_course_ids=set(),     # 미이수 (실제 호출 전에 후보에서 제외됨)
         )
-        self.assertEqual(score, 100 - PENALTY_PREREQUISITE_MISSING)
+        self.assertEqual(score, 100)
 
     def test_동일학과_선수과목_이수했으면_감점_없음(self):
         course = self._course(category='전공선택', major='컴퓨터공학전공')
@@ -1017,3 +1289,94 @@ class CalculateScoreTests(SimpleTestCase):
             completed_course_ids=set(),
         )
         self.assertEqual(score, 100)
+
+
+class ImportPrerequisitesFromCsvTests(TestCase):
+    """선수과목 csv import 명령 (graduation_requirements.md §7)"""
+
+    def test_매칭_성공_과_미커버_skip(self):
+        from io import StringIO
+        from django.core.management import call_command
+        import tempfile, os
+        # DB 시드: 후수·선수 둘 다 있는 페어와 후수만 있는 페어
+        c_lang = Course.objects.create(
+            course_code='기컴101', name='C언어', college='교양',
+            category='학문기초교양', credits=3, year_open=1, semester_open=1,
+        )
+        oop1 = Course.objects.create(
+            course_code='컴공220', name='객체지향프로그래밍1', college='반도체ICT',
+            major='컴퓨터공학전공', category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        # 후수 DB 미커버 (알고리즘은 DB에 없음)
+
+        csv_content = (
+            '학과명|후수교과코드|후수교과목명|선수교과코드|선수교과목명|선·후수지정연도\n'
+            '컴공|JEJ02220|객체지향프로그래밍1|JEJ02211|C언어|2010\n'
+            '컴공|JEJ02316|알고리즘|JEJ02209|자료구조|2006\n'
+        )
+        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.csv', encoding='utf-8') as f:
+            f.write(csv_content)
+            tmp = f.name
+        try:
+            out = StringIO()
+            call_command('import_prerequisites_from_csv', tmp, stdout=out)
+            # 객체지향프로그래밍1 ← C언어 1건 박힘
+            self.assertEqual(CoursePrerequisite.objects.count(), 1)
+            self.assertEqual(CoursePrerequisite.objects.first().course, oop1)
+            self.assertEqual(CoursePrerequisite.objects.first().prerequisite, c_lang)
+            # 알고리즘은 후수 DB 미커버 → skip + WARN 출력
+            output = out.getvalue()
+            self.assertIn('skip 1', output)
+            self.assertIn('알고리즘', output)
+        finally:
+            os.unlink(tmp)
+
+
+class DuplicateNameExclusionTests(APITestCase):
+    """같은 이름 다른 코드 추천 후보 제외 (학칙 §9 동일과목, #47)"""
+    url = '/api/v1/courses/recommend/next/'
+
+    def test_같은_이름_다른_코드는_이수했으면_제외(self):
+        # 컴공 학생이 컴정101 C언어 이수 → 기컴101 C언어도 추천 후보에서 빠져야 함
+        user = _make_user()
+        major_c = _make_course(
+            course_code='컴정101', name='C언어', major='데이터테크놀로지전공',
+            category='전공필수', year_open=1, semester_open=1,
+        )
+        liberal_c = _make_course(
+            course_code='기컴101', name='C언어',  # 같은 이름, 다른 코드
+            category='학문기초교양', year_open=1, semester_open=1,
+        )
+        CourseHistory.objects.create(
+            user=user, course_name='C언어', course_code='컴정101',
+            year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        codes = {item['course_code'] for item in res.data}
+        # 컴정101 이미 이수라 제외 + 기컴101은 동일 이름이라 제외
+        self.assertNotIn('컴정101', codes)
+        self.assertNotIn('기컴101', codes)
+
+
+class ForeignMajorVersionExclusionTests(APITestCase):
+    """학과별 교양 블랙리스트 — 컴공 전공필수 이름의 교양 버전 차단 (#47 A2)"""
+    url = '/api/v1/courses/recommend/next/'
+
+    def test_컴공_학생은_안_들었어도_기컴_C언어_제외(self):
+        user = _make_user(major='컴퓨터공학전공')
+        # 전공 버전(컴정101) + 교양 버전(기컴101) 둘 다 DB, 학생은 아직 안 들음
+        _make_course(
+            course_code='컴정101', name='C언어', major='컴퓨터공학전공',
+            category='전공필수', year_open=1, semester_open=1,
+        )
+        _make_course(
+            course_code='기컴101', name='C언어', major=None,
+            category='학문기초교양', year_open=1, semester_open=1,
+        )
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        codes = {item['course_code'] for item in res.data}
+        # 전공 버전은 노출, 교양 버전은 차단
+        self.assertIn('컴정101', codes)
+        self.assertNotIn('기컴101', codes)

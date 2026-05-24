@@ -22,6 +22,7 @@ import openpyxl
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from courses.category_map import classify_common_area, classify_core_area, classify_liberal_subtype
 from courses.models import Course, CourseOffering, CourseSchedule
 
 # CourseSchedule.day_of_week 가능 값. 토/일 강의는 현재 모델 미지원이라 skip.
@@ -40,8 +41,20 @@ FILE_NAME_MAPPING = {
     '컴퓨터공학전공': ('반도체·ICT대학', '컴퓨터정보통신공학부', '컴퓨터공학전공', '전공선택'),
     '컴퓨터정보통신공학부': ('반도체·ICT대학', '컴퓨터정보통신공학부', None, '전공선택'),
     '반도체ICT대학': ('반도체·ICT대학', None, None, '전공선택'),
-    '교양': ('교양', None, None, '교양선택'),
+    # 교양 파일은 row별로 liberal_subtype 따라 category가 다름. 기본값은 '일반교양' fallback (#47 Phase 3)
+    '교양': ('교양', None, None, '일반교양'),
 }
+
+# 교양 파일에서 liberal_subtype 분류 결과를 category로 사용할 영역 (#47 Phase 3)
+LIBERAL_SUBTYPE_TO_CATEGORY = {
+    '공통교양': '공통교양',
+    '핵심교양': '핵심교양',
+    '학문기초교양': '학문기초교양',
+    '일반교양': '일반교양',
+}
+
+# 학과별 전공필수 과목/prefix 상수는 services와 공유하기 위해 별도 모듈로 분리.
+from courses.major_required import MAJOR_REQUIRED_BY_MAJOR, MAJOR_DEPT_PREFIXES
 
 FILE_NAME_PATTERN = re.compile(r'(\d{4})_(\d)_(.+)\.xlsx$')
 
@@ -93,7 +106,7 @@ class Command(BaseCommand):
         parser.add_argument('--college', help='대학 (파일명 매핑 없으면 필요)')
         parser.add_argument('--department', help='학부')
         parser.add_argument('--major', help='전공')
-        parser.add_argument('--category', help='이수구분 (전공필수/전공선택/교양필수/교양선택)')
+        parser.add_argument('--category', help='이수구분 (전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택)')
         parser.add_argument(
             '--dump-csv', action='store_true',
             help='엑셀과 같은 폴더에 .csv도 함께 dump (VSCode에서 미리보기/diff용)',
@@ -149,13 +162,49 @@ class Command(BaseCommand):
         n_course_new = n_offering_new = n_schedule_new = 0
         n_rows = 0
         n_schedule_skipped = 0  # 시간/요일 누락된 행 (사이버·계약 강의 등)
+        unmapped_liberal = []  # 교양 카테고리인데 4종 분류가 안 잡힌 (학과코드, 교과목명) 모음 — stdout 경고용
+        unmapped_core = []     # 핵심교양인데 4영역 매핑이 안 잡힌 (학과코드, 교과목명) 모음 — category_map.CORE_AREA_BY_NAME 보강 시그널
 
         for row in ws.iter_rows(min_row=2, values_only=True):
             if not row[0]:  # 학년 비어있는 행 skip (엑셀 trailing 빈줄 등)
                 continue
-            (year_open, name, course_code, _dept_code, _course_no, credits, _hours,
+            (year_open, name, course_code, dept_code, _course_no, credits, _hours,
              professor, section_no, capacity, day, start, end, room, note) = row
             n_rows += 1
+
+            # 교양 4종(공통/핵심/학문기초/일반) 분류 — 학과코드 prefix + 교과목명으로 결정 (category_map).
+            # 교양 파일에서만 의미 있고 전공/군사는 null 반환.
+            liberal_subtype = classify_liberal_subtype(dept_code, name)
+
+            # 교양 파일이면 liberal_subtype을 category로 박음 (#47 Phase 3 — 학칙 7분류)
+            # liberal_subtype 매핑 실패 시 fallback default_category(='일반교양')로 둠 — WARN으로 표면화
+            row_category = category
+            if origin == '교양':
+                if liberal_subtype in LIBERAL_SUBTYPE_TO_CATEGORY:
+                    row_category = LIBERAL_SUBTYPE_TO_CATEGORY[liberal_subtype]
+            else:
+                # 전공 파일에서 학칙 §5.1 전공필수 8과목 매칭 시 category 보강 (#47)
+                # 학과코드 prefix가 해당 전공 인정 범위(컴공/컴정/반아)일 때만 전공필수로 정정.
+                # 매칭 실패는 정상(대다수 전공선택)이라 WARN 없음.
+                prefix = (dept_code or '').strip()
+                for m, names in MAJOR_REQUIRED_BY_MAJOR.items():
+                    if name in names and prefix in MAJOR_DEPT_PREFIXES.get(m, ()):
+                        row_category = '전공필수'
+                        break
+
+            # 핵심교양 4영역 — 핵심교양 행만 추가 분류 (#47 Phase 2). 그 외는 None.
+            # 교양 영역 — core_area 필드 한 곳에 박음. liberal_subtype 따라 다른 매핑 dict 사용.
+            # 핵심교양: §4.3.1~4.3.4 (역사·철학/사회·공동체/문화·예술/과학기술·정보)
+            # 공통교양: §4.2.1~4.2.4 (기독교/사고와 표현/언어/진로와 디지털리터러시)
+            if liberal_subtype == '핵심교양':
+                core_area = classify_core_area(name)
+                if core_area is None:
+                    unmapped_core.append((str(dept_code or ''), str(name or '')))
+            elif liberal_subtype == '공통교양':
+                core_area = classify_common_area(name)
+                # 공통교양 미매핑은 폐지·이수구분 변경 과목(graduation_requirements.md §9.1)일 수도 있어 WARN 안 띄움
+            else:
+                core_area = None
 
             # Course — 과목코드 unique. 같은 과목코드가 분반/요일별로 여러 행에 등장하므로 update_or_create.
             # semester_open은 권장 학기 의미라 import 학기로 일단 채움 (Course 단위로 더 정확한 값이 없음, 추후 보정)
@@ -166,7 +215,9 @@ class Command(BaseCommand):
                     'college': college,
                     'department': department,
                     'major': major,
-                    'category': category,
+                    'category': row_category,
+                    'liberal_subtype': liberal_subtype,
+                    'core_area': core_area,
                     'credits': int(credits) if credits else 0,
                     'year_open': parse_year_open(year_open),
                     'semester_open': int(semester),
@@ -226,3 +277,21 @@ class Command(BaseCommand):
         if csv_dump_path:
             msg += f"\n  CSV dump: {csv_dump_path}"
         self.stdout.write(self.style.SUCCESS(msg))
+
+        # 4종 매핑 안 잡힌 교양 과목 경고 — 학과코드/과목명 (중복 제거)
+        if unmapped_liberal:
+            unique = sorted(set(unmapped_liberal))
+            self.stdout.write(self.style.WARNING(
+                f"  [WARN] 교양 4종 분류 미매핑 {len(unique)}건 (category_map.py 보강 필요):"
+            ))
+            for dept_code, cname in unique:
+                self.stdout.write(f"    - [{dept_code}] {cname}")
+
+        # 핵심교양 4영역 매핑 안 잡힌 행 경고 — CORE_AREA_BY_NAME 보강 시그널
+        if unmapped_core:
+            unique = sorted(set(unmapped_core))
+            self.stdout.write(self.style.WARNING(
+                f"  [WARN] 핵심교양 4영역 미매핑 {len(unique)}건 (CORE_AREA_BY_NAME 보강 필요):"
+            ))
+            for dept_code, cname in unique:
+                self.stdout.write(f"    - [{dept_code}] {cname}")
