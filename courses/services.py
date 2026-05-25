@@ -268,9 +268,9 @@ def calculate_recommendation_score(
       +20  관심사 매칭 (course_tags ∩ user_interest_categories 비어있지 않음)
       +15  졸업요건 잔여 카테고리에 속함
       +25  전공필수 카테고리
-      +15  교양필수 카테고리
+      +15  학칙 의무 영역(공통교양/핵심교양/학문기초교양) 카테고리
       +10  course.year_open == user_grade AND course.semester_open == user_semester
-      +10  course.year_open < user_grade AND category ∈ {전공필수, 교양필수}
+      +10  course.year_open < user_grade AND category ∈ {전공필수, 공통교양, 핵심교양, 학문기초교양}
             (밀린 필수 과목 — 졸업 지연 방지용 우선 노출)
       -10  course.year_open > user_grade
       -15  user_major == course.major AND 선수과목 미이수
@@ -309,7 +309,7 @@ def calculate_recommendation_score(
         # 권장 학년이 사용자보다 위 감점
         if course.year_open > user_grade:
             score -= PENALTY_GRADE_EXCEEDED
-        # 권장 학년이 지난 "전공필수/교양필수" 가산 — 졸업 지연 방지 (일반선택/전공선택 제외)
+        # 권장 학년이 지난 필수 영역(전공필수 + 공통/핵심/학문기초) 가산 — 졸업 지연 방지 (전공선택/일반/자유선택 제외)
         if course.year_open < user_grade and course.category in BACKLOG_REQUIRED_CATEGORIES:
             score += BONUS_BACKLOG_REQUIRED
 
@@ -564,7 +564,7 @@ def generate_curriculum_plans(
     user,
     *,
     max_credits=DEFAULT_MAX_CREDITS,  # 한 학기 최대 학점 (예: 18, 21)
-    category_weights=None,            # 카테고리별 가중치 (예: 교양 더 듣고싶으면 {"교양선택": 1.5})
+    category_weights=None,            # 카테고리별 가중치 (예: 핵심교양 더 듣고싶으면 {"핵심교양": 1.5})
     interest_weight=DEFAULT_INTEREST_WEIGHT, # 관심사 매칭 가중치
     include_summer=False,             # 계절학기 포함 여부
     include_winter=False,

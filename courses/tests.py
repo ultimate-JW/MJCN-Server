@@ -789,7 +789,7 @@ class NextSemesterRecommendAPITests(APITestCase):
         )
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
-        # 같은 점수면 전공필수가 교양필수보다 위 (CATEGORY_PRIORITY: 전필=1 < 교필=2)
+        # 같은 점수면 전공필수가 공통교양보다 위 (CATEGORY_PRIORITY: 전필=1 < 공통=2)
         ordered = [item['course_code'] for item in res.data]
         if 'CSE0001' in ordered and 'GEN1001' in ordered:
             cse_score = next(i['score'] for i in res.data if i['course_code'] == 'CSE0001')
@@ -1361,7 +1361,7 @@ class CalculateScoreTests(SimpleTestCase):
         self.assertEqual(score, 100 + BONUS_DESIGNATED_REQUIRED + BONUS_BACKLOG_REQUIRED)
 
     def test_밀린_전공선택은_BACKLOG_가산_안받음(self):
-        """BACKLOG_REQUIRED_CATEGORIES = ('전공필수','교양필수') — 선택과목은 제외"""
+        """BACKLOG_REQUIRED_CATEGORIES = ('전공필수','공통교양','핵심교양','학문기초교양') — 선택과목은 제외"""
         course = self._course(category='전공선택', year_open=1, semester_open=1)
         score = self._score(course)
         self.assertEqual(score, 100)
