@@ -7,6 +7,7 @@
 - POST /api/v1/notifications/devices/ — FCM 토큰 등록·갱신 (멱등)
 - DELETE /api/v1/notifications/devices/ — FCM 토큰 삭제
 """
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.generics import ListAPIView, UpdateAPIView
@@ -14,6 +15,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import FCMDevice, Notification
+from .schemas import (
+    FCMDeviceErrorResponseSerializer,
+    ReadAllResponseSerializer,
+    UnreadCountResponseSerializer,
+)
 from .serializers import FCMDeviceRegisterSerializer, FCMDeviceSerializer, NotificationSerializer
 
 
@@ -42,6 +48,7 @@ class NotificationDetailView(UpdateAPIView):
         return Notification.objects.filter(user=self.request.user)
 
 
+@extend_schema(responses={200: UnreadCountResponseSerializer})
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def unread_count(request):
@@ -50,6 +57,7 @@ def unread_count(request):
     return Response({'unread_count': count})
 
 
+@extend_schema(request=None, responses={200: ReadAllResponseSerializer})
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def read_all(request):
@@ -62,6 +70,20 @@ def read_all(request):
 
 # ─── FCM 디바이스 ───
 
+@extend_schema(
+    methods=['POST'],
+    request=FCMDeviceRegisterSerializer,
+    responses={200: FCMDeviceSerializer, 201: FCMDeviceSerializer},
+)
+@extend_schema(
+    methods=['DELETE'],
+    request=FCMDeviceRegisterSerializer,
+    responses={
+        204: None,
+        400: FCMDeviceErrorResponseSerializer,
+        404: FCMDeviceErrorResponseSerializer,
+    },
+)
 @api_view(['POST', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def fcm_device(request):

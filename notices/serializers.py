@@ -20,10 +20,10 @@ class _NoticeBaseSerializerMixin:
                          (department 비어있거나 접두사 없으면 원본 title 그대로)
     """
 
-    def get_department_display(self, obj):
+    def get_department_display(self, obj) -> str:
         return obj.department or obj.get_source_display()
 
-    def get_title_without_dept(self, obj):
+    def get_title_without_dept(self, obj) -> str:
         if obj.department and obj.title:
             # 첫 [...] 만 제거 후 앞 공백 trim. base.py의 추출 정규식과 동일 패턴.
             return _DEPT_PREFIX_RE.sub('', obj.title, count=1).lstrip()
@@ -50,7 +50,7 @@ class NoticeListSerializer(_NoticeBaseSerializerMixin, serializers.ModelSerializ
             'match_score',
         ]
 
-    def get_summary(self, obj):
+    def get_summary(self, obj) -> str:
         ai_result = getattr(obj, 'ai_result', None)
         return ai_result.summary if ai_result else ''
 

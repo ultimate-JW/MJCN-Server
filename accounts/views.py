@@ -11,12 +11,18 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, OpenApiResponse
 
 from .authentication import blacklist_current_access_token
 from .throttles import VerifyEmailPerEmailThrottle, PasswordResetPerEmailThrottle
 
 from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark
+from .schemas import (
+    DetailResponseSerializer,
+    KakaoLoginResponseSerializer,
+    TokenPairResponseSerializer,
+    VerifyEmailResponseSerializer,
+)
 from .serializers import (
     SignupSerializer, VerifyEmailSerializer, ResendVerificationSerializer,
     LoginSerializer, LogoutSerializer, KakaoLoginSerializer,
@@ -36,7 +42,14 @@ User = get_user_model()
 
 # ─── 6.1 인증 ───
 
-@extend_schema(request=SignupSerializer)
+@extend_schema(
+    request=SignupSerializer,
+    responses={
+        201: DetailResponseSerializer,
+        400: DetailResponseSerializer,
+        503: DetailResponseSerializer,
+    },
+)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def signup(request):
@@ -67,7 +80,10 @@ def signup(request):
     )
 
 
-@extend_schema(request=VerifyEmailSerializer)
+@extend_schema(
+    request=VerifyEmailSerializer,
+    responses={200: VerifyEmailResponseSerializer, 400: DetailResponseSerializer},
+)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([AnonRateThrottle, VerifyEmailPerEmailThrottle])
@@ -104,7 +120,10 @@ def verify_email(request):
     })
 
 
-@extend_schema(request=ResendVerificationSerializer)
+@extend_schema(
+    request=ResendVerificationSerializer,
+    responses={200: DetailResponseSerializer},
+)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def resend_verification(request):
@@ -122,7 +141,14 @@ def resend_verification(request):
     return Response({'detail': '인증 코드가 발송되었습니다.'})
 
 
-@extend_schema(request=LoginSerializer)
+@extend_schema(
+    request=LoginSerializer,
+    responses={
+        200: TokenPairResponseSerializer,
+        401: DetailResponseSerializer,
+        403: DetailResponseSerializer,
+    },
+)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_view(request):
@@ -152,7 +178,15 @@ def login_view(request):
     })
 
 
-@extend_schema(request=KakaoLoginSerializer)
+@extend_schema(
+    request=KakaoLoginSerializer,
+    responses={
+        200: KakaoLoginResponseSerializer,
+        401: DetailResponseSerializer,
+        500: DetailResponseSerializer,
+        502: DetailResponseSerializer,
+    },
+)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def kakao_login(request):
@@ -244,7 +278,10 @@ def kakao_login(request):
     })
 
 
-@extend_schema(request=LogoutSerializer)
+@extend_schema(
+    request=LogoutSerializer,
+    responses={200: DetailResponseSerializer, 400: DetailResponseSerializer},
+)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def logout_view(request):
@@ -273,7 +310,10 @@ def logout_view(request):
 
 # ─── 비밀번호 재설정 ───
 
-@extend_schema(request=PasswordResetRequestSerializer)
+@extend_schema(
+    request=PasswordResetRequestSerializer,
+    responses={200: DetailResponseSerializer},
+)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def password_reset_request(request):
@@ -294,7 +334,10 @@ def password_reset_request(request):
     return Response({'detail': '인증 코드가 발송되었습니다.'})
 
 
-@extend_schema(request=PasswordResetVerifySerializer)
+@extend_schema(
+    request=PasswordResetVerifySerializer,
+    responses={200: DetailResponseSerializer, 400: DetailResponseSerializer},
+)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([AnonRateThrottle, PasswordResetPerEmailThrottle])
@@ -316,7 +359,10 @@ def password_reset_verify(request):
     return Response({'detail': '인증 코드가 확인되었습니다.'})
 
 
-@extend_schema(request=PasswordResetConfirmSerializer)
+@extend_schema(
+    request=PasswordResetConfirmSerializer,
+    responses={200: DetailResponseSerializer, 400: DetailResponseSerializer},
+)
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([AnonRateThrottle, PasswordResetPerEmailThrottle])
@@ -346,7 +392,12 @@ def password_reset_confirm(request):
 
 # ─── 6.2 프로필 / 설정 ───
 
-@extend_schema(methods=['PUT', 'PATCH'], request=ProfileUpdateSerializer)
+@extend_schema(methods=['GET'], responses={200: ProfileSerializer})
+@extend_schema(
+    methods=['PUT', 'PATCH'],
+    request=ProfileUpdateSerializer,
+    responses={200: ProfileSerializer},
+)
 @api_view(['GET', 'PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def profile(request):
@@ -360,7 +411,11 @@ def profile(request):
     return Response(ProfileSerializer(user).data)
 
 
-@extend_schema(methods=['PATCH'], request=SettingsSerializer)
+@extend_schema(methods=['GET'], responses={200: SettingsSerializer})
+@extend_schema(
+    methods=['PATCH'], request=SettingsSerializer,
+    responses={200: SettingsSerializer},
+)
 @api_view(['GET', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def settings_view(request):
@@ -374,7 +429,10 @@ def settings_view(request):
     return Response(serializer.data)
 
 
-@extend_schema(request=WithdrawSerializer)
+@extend_schema(
+    request=WithdrawSerializer,
+    responses={200: DetailResponseSerializer, 401: DetailResponseSerializer},
+)
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def withdraw(request):
@@ -400,6 +458,9 @@ def withdraw(request):
 class InterestAreaViewSet(viewsets.ModelViewSet):
     serializer_class = InterestAreaSerializer
     http_method_names = ['get', 'post', 'delete']
+    # drf-spectacular가 path parameter 타입을 모델에서 추론하도록 클래스 속성 명시.
+    # 실제 조회는 아래 get_queryset()이 user 필터를 추가해 처리.
+    queryset = InterestArea.objects.all()
 
     def get_queryset(self):
         return InterestArea.objects.filter(user=self.request.user)
@@ -419,6 +480,7 @@ class InterestAreaViewSet(viewsets.ModelViewSet):
 class CourseHistoryViewSet(viewsets.ModelViewSet):
     serializer_class = CourseHistorySerializer
     http_method_names = ['get', 'post', 'put', 'delete']
+    queryset = CourseHistory.objects.all()  # drf-spectacular path param 추론용
 
     def get_queryset(self):
         return CourseHistory.objects.filter(user=self.request.user)
@@ -430,6 +492,7 @@ class CourseHistoryViewSet(viewsets.ModelViewSet):
 class CurrentCourseViewSet(viewsets.ModelViewSet):
     serializer_class = CurrentCourseSerializer
     http_method_names = ['get', 'post', 'put', 'delete']
+    queryset = CurrentCourse.objects.all()  # drf-spectacular path param 추론용
 
     def get_queryset(self):
         return CurrentCourse.objects.filter(user=self.request.user)

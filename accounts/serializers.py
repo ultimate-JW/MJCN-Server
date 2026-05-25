@@ -3,6 +3,7 @@ import re
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password as django_validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark
@@ -251,6 +252,9 @@ class BookmarkListSerializer(serializers.ModelSerializer):
         model = Bookmark
         fields = ['id', 'content_type', 'object_id', 'created_at', 'target']
 
+    # content_type에 따라 NoticeListSerializer 또는 InformationListSerializer
+    # 결과를 반환 — polymorphic. Swagger에는 nullable object로 명시.
+    @extend_schema_field(serializers.DictField(allow_null=True))
     def get_target(self, obj):
         # 지연 import — 순환 의존 방지
         from notices.serializers import NoticeListSerializer
