@@ -20,6 +20,7 @@ from .client import AIResponseParseError, call_json, call_text
 from .prompts import (
     BUILD_CARDS_SYSTEM,
     CLASSIFY_SYSTEM,
+    EXTRACT_TAGS_SYSTEM,
     SUMMARIZE_SYSTEM,
     build_user_message,
 )
@@ -100,4 +101,42 @@ def build_cards(content: str, notice_type: str) -> list[dict[str, Any]]:
 
     if not cleaned:
         raise AIResponseParseError('cards가 비어있음')
+    return cleaned
+
+
+# --- Stage 4 ---
+
+# Notice.tags 길이 상한 — 프롬프트로 3~8 유도하지만 모델이 더 많이 줘도 자르기 위함.
+MAX_TAGS = 10
+
+
+def extract_tags(content: str) -> list[str]:
+    """공지 본문 → 매칭용 키워드 list (spec 9.1.6).
+
+    InterestArea 카테고리·전공명·도메인 키워드를 추출한다.
+    실패 시 AIResponseParseError를 던지지만, processor에서 graceful 처리.
+    """
+    truncated = truncate_content(content)
+    data = call_json(EXTRACT_TAGS_SYSTEM, truncated)
+    tags = data.get('tags')
+    if not isinstance(tags, list):
+        raise AIResponseParseError(
+            f'tags가 list가 아님: {type(tags).__name__}'
+        )
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for t in tags:
+        if not isinstance(t, str):
+            continue
+        t = t.strip()
+        if not t:
+            continue
+        # 중복 제거 (대소문자 구분 없이) — 매칭 시 lower로 정규화되므로 여기서도 정렬
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(t)
+        if len(cleaned) >= MAX_TAGS:
+            break
     return cleaned

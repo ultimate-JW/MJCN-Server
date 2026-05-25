@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from django.conf import settings
+from django.db.models import Q
 
 from notices.models import Notice, NoticeAIResult
 
@@ -67,6 +68,8 @@ def process_notice(
         force
         or result.status not in ('success', 'empty_content')
         or result.content_hash != current_hash
+        # Stage 4(키워드 추출) 미완 — graceful 실패로 status=success지만 tags 없음 → 재시도 (spec 9.1.6)
+        or (result.status == 'success' and result.last_stage != 'extract_tags')
     )
     if not needs_reprocess:
         return result, 'skipped'
@@ -118,9 +121,24 @@ def process_notice(
         if not result.cards:
             result.cards = pipeline.build_cards(effective_content, result.notice_type)
             result.last_stage = 'build_cards'
+            result.save(update_fields=['cards', 'last_stage', 'updated_at'])
+
+        # Stage 4: 키워드 추출 → Notice.tags 저장 (spec 9.1.6)
+        # graceful 처리 — 실패해도 NoticeAIResult.status는 success 유지하고
+        # Notice.tags는 빈 채로 둠. last_stage='extract_tags' 마킹은 성공 시에만.
+        if result.last_stage != 'extract_tags':
+            try:
+                notice.tags = pipeline.extract_tags(effective_content)
+                notice.save(update_fields=['tags'])
+                result.last_stage = 'extract_tags'
+            except (AIClientError, ValueError) as e:
+                logger.warning(
+                    '[AI:%s] Stage 4(키워드 추출) 실패 (graceful — tags 빈 채로 유지): %s',
+                    notice.id, e,
+                )
 
         result.status = 'success'
-        result.save(update_fields=['cards', 'last_stage', 'status', 'updated_at'])
+        result.save(update_fields=['last_stage', 'status', 'updated_at'])
         logger.info('[AI:%s] 처리 성공 (last_stage=%s)',
                     notice.id, result.last_stage)
         return result, 'processed'
@@ -185,12 +203,15 @@ def get_pending_notices(
         # 모든 Notice 대상
         pass
     else:
-        # status가 success/empty_content가 아니거나 ai_result가 아예 없는 것만
-        # (content 변경 감지는 process_notice 안에서 hash 비교로 처리)
+        # 다음 중 하나라도 해당하면 처리 대상:
+        #  (a) ai_result가 아예 없음
+        #  (b) status가 success/empty_content가 아님
+        #  (c) status='success'이지만 last_stage != 'extract_tags' — Stage 4(spec 9.1.6) 미완
+        # content 변경 감지는 process_notice 안에서 hash 비교로 처리.
         qs = qs.filter(
-            ai_result__isnull=True,
-        ) | qs.exclude(
-            ai_result__status__in=['success', 'empty_content'],
+            Q(ai_result__isnull=True)
+            | ~Q(ai_result__status__in=['success', 'empty_content'])
+            | (Q(ai_result__status='success') & ~Q(ai_result__last_stage='extract_tags'))
         )
 
     qs = qs.distinct().order_by('-published_at', 'id')
