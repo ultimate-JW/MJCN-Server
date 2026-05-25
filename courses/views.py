@@ -3,6 +3,8 @@ from collections import defaultdict
 from django.db.models import Q
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
+
+from .schemas import CurriculumRecommendResponseSerializer
 from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
@@ -110,6 +112,7 @@ class CompletionStatusView(APIView):
     """GET /api/v1/courses/status/ - 이수현황 분석"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(responses={200: CompletionStatusSerializer})
     def get(self, request):
         user = request.user
 
@@ -255,7 +258,8 @@ class NextSemesterRecommendView(APIView):
                 description='추천 대상 학기 (1/2/3/4). 미지정 시 자동. spec 5.3.2 매핑.',
                 enum=[1, 2, 3, 4],
             ),
-        ]
+        ],
+        responses={200: NextSemesterRecommendationSerializer(many=True), 400: OpenApiTypes.OBJECT},
     )
     def get(self, request):
         target_year, target_semester = self._parse_term(request)
@@ -396,6 +400,10 @@ class CurriculumRecommendView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        request=OpenApiTypes.OBJECT,
+        responses={200: CurriculumRecommendResponseSerializer},
+    )
     def post(self, request):
         body = request.data or {}
 
