@@ -541,6 +541,134 @@ class CompletionStatusAPITests(APITestCase):
         self.assertEqual(free['remaining'], 7)   # required 10 - 3
 
 
+class CompletionStatusBreakdownTests(APITestCase):
+    """이수현황 응답 영역/필수 과목 분해 (#68).
+
+    공통교양/핵심교양 → areas (core_area 4영역)
+    전공필수/학문기초교양 → required_courses (학칙 §5.1, §4.4 강제 과목)
+    그 외 카테고리 → 둘 다 None
+    """
+    url = '/api/v1/courses/status/'
+
+    def _gr(self, **kwargs):
+        defaults = dict(
+            department='컴퓨터공학전공', admission_year=2024, total_required=134,
+        )
+        defaults.update(kwargs)
+        return GraduationRequirement.objects.create(**defaults)
+
+    def setUp(self):
+        # 컴공 2024 학생 — required_courses.py에 박힌 학과
+        self.user = _make_user(major='컴퓨터공학전공')
+        # 공통교양 17 = 4영역 분해 (graduation_requirements.md §4.2)
+        self._gr(category='공통교양', liberal_subtype='공통교양', core_area='기독교', required_credits=6)
+        self._gr(category='공통교양', liberal_subtype='공통교양', core_area='사고와 표현', required_credits=3)
+        self._gr(category='공통교양', liberal_subtype='공통교양', core_area='언어', required_credits=6)
+        self._gr(category='공통교양', liberal_subtype='공통교양', core_area='진로와 디지털리터러시', required_credits=2)
+        # 핵심교양 12 = 4영역 × 3학점 (§4.3)
+        self._gr(category='핵심교양', liberal_subtype='핵심교양', core_area='역사와 철학', required_credits=3)
+        self._gr(category='핵심교양', liberal_subtype='핵심교양', core_area='사회와 공동체', required_credits=3)
+        self._gr(category='핵심교양', liberal_subtype='핵심교양', core_area='문화와 예술', required_credits=3)
+        self._gr(category='핵심교양', liberal_subtype='핵심교양', core_area='과학기술과 정보', required_credits=3)
+        # 학문기초 / 전공필수 / 전공선택 / 일반교양 / 자유선택 — 분해 검증에는 합계만 있으면 됨
+        self._gr(category='학문기초교양', liberal_subtype='학문기초교양', required_credits=15)
+        self._gr(category='전공필수', required_credits=24)
+        self._gr(category='전공선택', required_credits=46)
+        self._gr(category='일반교양', liberal_subtype='일반교양', required_credits=10)
+        self._gr(category='자유선택', required_credits=10)
+        self.client.force_authenticate(user=self.user)
+
+    # --- areas (공통교양 / 핵심교양) ---
+
+    def test_공통교양_areas_4영역_노출(self):
+        res = self.client.get(self.url)
+        common = next(c for c in res.data['categories'] if c['category'] == '공통교양')
+        areas = common['areas']
+        self.assertEqual(len(areas), 4)
+        names = [a['area'] for a in areas]
+        self.assertIn('기독교', names)
+        self.assertIn('사고와 표현', names)
+        self.assertIn('언어', names)
+        self.assertIn('진로와 디지털리터러시', names)
+
+    def test_공통교양_areas_이수학점_반영(self):
+        # 기독교 영역에 2학점 이수 → 그 영역만 completed 2
+        CourseHistory.objects.create(
+            user=self.user, course_name='성서와 인간이해', course_code='GEN1011',
+            year=2024, semester=1, grade_received='A',
+            category='공통교양', liberal_subtype='공통교양', core_area='기독교', credits=2,
+        )
+        res = self.client.get(self.url)
+        common = next(c for c in res.data['categories'] if c['category'] == '공통교양')
+        gidok = next(a for a in common['areas'] if a['area'] == '기독교')
+        self.assertEqual(gidok['completed'], 2)
+        self.assertEqual(gidok['remaining'], 4)   # required 6 - 2
+        # 다른 영역은 0 그대로
+        sago = next(a for a in common['areas'] if a['area'] == '사고와 표현')
+        self.assertEqual(sago['completed'], 0)
+
+    def test_핵심교양_areas_4영역_노출(self):
+        res = self.client.get(self.url)
+        core = next(c for c in res.data['categories'] if c['category'] == '핵심교양')
+        self.assertEqual(len(core['areas']), 4)
+        for area in core['areas']:
+            self.assertEqual(area['required'], 3)
+
+    # --- required_courses (전공필수 / 학문기초교양) ---
+
+    def test_전공필수_required_courses_8과목(self):
+        res = self.client.get(self.url)
+        major_req = next(c for c in res.data['categories'] if c['category'] == '전공필수')
+        names = [c['name'] for c in major_req['required_courses']]
+        # 학칙 §5.1 컴공 전공필수 8과목 (graduation_requirements.md)
+        self.assertEqual(len(names), 8)
+        self.assertIn('C언어', names)
+        self.assertIn('캡스톤디자인', names)
+        # 미이수 상태 → 전부 false
+        self.assertTrue(all(c['completed'] is False for c in major_req['required_courses']))
+
+    def test_전공필수_이수한_과목만_completed_true(self):
+        CourseHistory.objects.create(
+            user=self.user, course_name='C언어', course_code='CSE1001',
+            year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+        )
+        res = self.client.get(self.url)
+        major_req = next(c for c in res.data['categories'] if c['category'] == '전공필수')
+        c_lang = next(c for c in major_req['required_courses'] if c['name'] == 'C언어')
+        algo = next(c for c in major_req['required_courses'] if c['name'] == '알고리즘')
+        self.assertTrue(c_lang['completed'])
+        self.assertFalse(algo['completed'])
+
+    def test_학문기초_required_courses_5과목(self):
+        res = self.client.get(self.url)
+        foundation = next(c for c in res.data['categories'] if c['category'] == '학문기초교양')
+        names = [c['name'] for c in foundation['required_courses']]
+        # 학칙 §4.4 컴공 학문기초 5과목
+        self.assertEqual(names, ['미적분학1', '통계학개론', '공학수학1', '이산수학개론', '선형대수학개론'])
+
+    # --- 분해 대상 외 카테고리 ---
+
+    def test_분해_없는_카테고리는_areas_required_courses_모두_None(self):
+        res = self.client.get(self.url)
+        for cat_name in ('전공선택', '일반교양', '자유선택'):
+            cat = next(c for c in res.data['categories'] if c['category'] == cat_name)
+            self.assertIsNone(cat['areas'], f'{cat_name} areas')
+            self.assertIsNone(cat['required_courses'], f'{cat_name} required_courses')
+
+    def test_타과_학생은_required_courses_None(self):
+        # required_courses.py에 등록 안 된 학과 → 필수 과목 분해 None
+        other_user = _make_user(email='other@mju.ac.kr', major='데이터테크놀로지전공')
+        self.client.force_authenticate(user=other_user)
+        # 데이터테크놀로지 GR도 필요
+        GraduationRequirement.objects.create(
+            department='데이터테크놀로지전공', admission_year=2024,
+            category='전공필수', required_credits=30, total_required=130,
+        )
+        res = self.client.get(self.url)
+        major_req = next(c for c in res.data['categories'] if c['category'] == '전공필수')
+        self.assertIsNone(major_req['required_courses'])
+
+
 class NextSemesterRecommendAPITests(APITestCase):
     """다음학기 추천 API 통합 테스트 (spec 5.3.1, 점수 기반 단일 리스트)"""
     url = '/api/v1/courses/recommend/next/'

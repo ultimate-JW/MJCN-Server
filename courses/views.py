@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Course, GraduationRequirement
+from .required_courses import get_required_courses
 from .serializers import (
     CompletionStatusSerializer,
     CourseListSerializer,
@@ -20,6 +21,10 @@ from .services import (
     generate_curriculum_plans,
     recommend_next_semester_courses,
 )
+
+
+# 카테고리 → 응답 areas 분해 대상 (공통교양 / 핵심교양 — core_area 4영역) (#68)
+_AREA_DECOMPOSED_CATEGORIES = ('공통교양', '핵심교양')
 
 
 # 과목 검색
@@ -112,14 +117,26 @@ class CompletionStatusView(APIView):
 
         # 카테고리별 이수학점 합산
         completed_by_category = defaultdict(int)
+        # 카테고리 + 영역별 이수학점 (공통교양/핵심교양 영역 분해용, #68)
+        completed_by_area = defaultdict(int)  # key: (category, core_area)
+        # 학생이 이수한 과목명 set (전공필수/학문기초 과목별 충족 판정용, #68)
+        completed_course_names = set()
+
         for h in CourseHistory.objects.filter(user=user):
             completed_by_category[h.category] += h.credits
+            if h.core_area:
+                completed_by_area[(h.category, h.core_area)] += h.credits
+            if h.course_name:
+                completed_course_names.add(h.course_name)
 
         # 현재 수강 중인 과목도 포함 (course_code로 Course 매칭)
         for cc in CurrentCourse.objects.filter(user=user):
             course = Course.objects.filter(course_code=cc.course_code).first()
             if course:
                 completed_by_category[course.category] += course.credits
+                if course.core_area:
+                    completed_by_area[(course.category, course.core_area)] += course.credits
+                completed_course_names.add(course.name)
 
         # 졸업요건 조회
         requirements = GraduationRequirement.objects.filter(
@@ -149,11 +166,36 @@ class CompletionStatusView(APIView):
             remaining = max(0, required - completed)
             total_required += required
             total_completed += completed
+
+            # 영역 분해 (공통교양 / 핵심교양) — GR core_area row를 1:1 펼침 (#68)
+            areas = None
+            if cat in _AREA_DECOMPOSED_CATEGORIES:
+                areas = [
+                    {
+                        'area': req.core_area,
+                        'completed': completed_by_area.get((cat, req.core_area), 0),
+                        'required': req.required_credits,
+                        'remaining': max(0, req.required_credits - completed_by_area.get((cat, req.core_area), 0)),
+                    }
+                    for req in cat_reqs if req.core_area
+                ]
+
+            # 필수 과목 분해 (전공필수 / 학문기초교양) — 학과별 강제 과목 cross-check (#68)
+            required_courses = None
+            course_names = get_required_courses(cat, user.major)
+            if course_names:
+                required_courses = [
+                    {'name': name, 'completed': name in completed_course_names}
+                    for name in course_names
+                ]
+
             categories.append({
                 'category': cat,
                 'completed': completed,
                 'required': required,
                 'remaining': remaining,
+                'areas': areas,
+                'required_courses': required_courses,
             })
 
         # 졸업 총학점 — GR 어디서든 total_required 가져옴 (모든 row 동일값)
