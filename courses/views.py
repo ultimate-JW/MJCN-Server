@@ -50,7 +50,7 @@ _AREA_DECOMPOSED_CATEGORIES = ('공통교양', '핵심교양')
         ),
         OpenApiParameter(
             'category', OpenApiTypes.STR, OpenApiParameter.QUERY,
-            description='이수 구분 정확 일치 (전공필수/전공선택/교양필수/교양선택/일반선택)',
+            description='이수 구분 정확 일치 (전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택)',
         ),
         OpenApiParameter(
             'credits', OpenApiTypes.INT, OpenApiParameter.QUERY,
