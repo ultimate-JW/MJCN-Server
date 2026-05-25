@@ -69,11 +69,30 @@ class AcademicCalendarSerializer(serializers.ModelSerializer):
 
 # --- 추천/이수현황 응답 Serializer ---
 
+class AreaCreditsSerializer(serializers.Serializer):
+    """카테고리 안 영역별 학점 진척도 (공통교양 4영역 / 핵심교양 4영역).
+    학칙 §4.2, §4.3 의무 — 영역별 충족 여부 노출용 (#68)."""
+    area = serializers.CharField()
+    completed = serializers.IntegerField()
+    required = serializers.IntegerField()
+    remaining = serializers.IntegerField()
+
+
+class RequiredCourseStatusSerializer(serializers.Serializer):
+    """카테고리 안 필수 과목 이수 여부 (전공필수 8과목 / 학문기초 5과목).
+    학칙 §5.1, §4.4 의무 — 과목 단위 충족 여부 노출용 (#68)."""
+    name = serializers.CharField()
+    completed = serializers.BooleanField()
+
+
 class CategoryCreditsSerializer(serializers.Serializer):
     category = serializers.CharField()
     completed = serializers.IntegerField()
     required = serializers.IntegerField()
     remaining = serializers.IntegerField()
+    # 카테고리별 세부 분해 (#68). 카테고리별 적용 영역/과목이 없으면 None.
+    areas = AreaCreditsSerializer(many=True, required=False, allow_null=True)
+    required_courses = RequiredCourseStatusSerializer(many=True, required=False, allow_null=True)
 
 
 class ChapelStatusSerializer(serializers.Serializer):
