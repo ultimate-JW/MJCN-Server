@@ -16,7 +16,7 @@ from datetime import date
 
 from django.db.models import Q
 
-from .major_required import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
+from .required_courses import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
 from .models import (
     AcademicCalendar,
     Course,

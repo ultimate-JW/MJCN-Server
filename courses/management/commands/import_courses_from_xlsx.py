@@ -53,8 +53,8 @@ LIBERAL_SUBTYPE_TO_CATEGORY = {
     '일반교양': '일반교양',
 }
 
-# 학과별 전공필수 과목/prefix 상수는 services와 공유하기 위해 별도 모듈로 분리.
-from courses.major_required import MAJOR_REQUIRED_BY_MAJOR, MAJOR_DEPT_PREFIXES
+# 학과별 전공필수 과목/prefix 상수는 services 등과 공유하기 위해 별도 모듈로 분리.
+from courses.required_courses import MAJOR_REQUIRED_BY_MAJOR, MAJOR_DEPT_PREFIXES
 
 FILE_NAME_PATTERN = re.compile(r'(\d{4})_(\d)_(.+)\.xlsx$')
 
