@@ -608,7 +608,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | published_at | DateTimeField | 게시일 |
 | end_date | DateField(null) | 마감일 (있는 경우) |
 | created_at | DateTimeField | 수집 시각 |
-| tags | JSONField(default=list) | 자동 태깅 키워드 |
+| tags | JSONField(default=list) | 관심사 매칭용 자동 태깅 키워드 (AI 파이프라인 Stage 4가 채움, spec 9.1.6) |
 
 - unique_together: (source, url) — 동일 출처에서 동일 URL 중복 저장 방지 (크롤링 재실행 시 upsert 기준)
 - AI 파이프라인 입력 우선순위: `extracted_content` 있으면 그것 사용, 없으면 `content` 사용
@@ -633,7 +633,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | summary | CharField(200, blank) | Stage 2 결과 (100자 이내 한 문장) |
 | cards | JSONField(default=list) | Stage 3 결과 (cards 배열, 각 항목은 title+items) |
 | status | CharField(choices) | "pending" / "processing" / "success" / "failed" |
-| last_stage | CharField(blank) | 어디까지 성공했는지 ("classify"/"summarize"/"build_cards") |
+| last_stage | CharField(blank) | 어디까지 성공했는지 ("summarize"/"classify"/"build_cards"/"extract_tags") |
 | error_message | TextField(blank) | 마지막 실패 메시지 (디버깅용) |
 | retry_count | IntegerField(default=0) | 재시도 누적 횟수 |
 | content_hash | CharField(64, blank) | Notice.content sha256 — 본문 변경 감지용 |
@@ -641,7 +641,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | created_at | DateTimeField | 최초 처리 시각 |
 | updated_at | DateTimeField | 최종 업데이트 시각 |
 
-- 부분 실패 복구: Stage 1·2까지 성공 후 Stage 3 실패 시 다음 실행에서 Stage 3만 재시도
+- 부분 실패 복구: Stage 1·2·3까지 성공 후 Stage 4(키워드 추출) 실패 시, NoticeAIResult.status는 `success` 유지하고 `Notice.tags`만 빈 채로 둠 (다음 cron이 재시도). 그 이전 단계 실패는 같은 단계만 재시도.
 - 재처리 트리거: `content_hash`가 현재 `Notice.content`와 다르면 처음부터 다시 처리
 - cards 형태 예시:
   ```json
@@ -2063,6 +2063,9 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
        - 이모지 제목 + 음슴체 items 통일
        - 행동형: "🚨 지금 해야 할 행동" 카드 최상단 배치
        - 정보형: 행동 카드 없이 정보 중심 구성
+  → [4차] 키워드 추출 — **`Notice.tags`** 갱신 (spec 9.1.6, 매칭용)
+       - InterestArea 카테고리·전공명·도메인 키워드를 JSON list로
+       - 실패 시 `Notice.tags`는 빈 채로 두고 status=success 유지 (graceful)
   → NoticeAIResult 저장 (spec 4.4)
 ```
 
@@ -2288,6 +2291,47 @@ Notice.extracted_content에 추출 텍스트 저장
 - **재시도**: 텍스트 파이프라인과 동일하게 지수 백오프 1~3회
 - **실패 처리**: VLM 호출 실패 시 `extracted_content`는 빈 채로 두고 다음 cron 실행에서 재시도
 - **재추출 트리거**: `--reprocess` 옵션 또는 `image_urls` 변경 시
+
+#### 9.1.6 키워드 추출 (Stage 4 — Notice.tags 자동 채움)
+
+`Notice.tags`는 사용자 관심사 매칭(spec 5.10)에 사용되는 키워드 배열이다. 이 단계는 Stage 3(카드 구조화) 성공 직후 실행되며 별도 LLM 호출(JSON mode)로 처리한다.
+
+##### 정책
+
+- **실행 시점**: build_cards 성공 직후. 본문은 동일하게 `truncate_content(effective_content)` 적용.
+- **저장 위치**: `Notice.tags` (NoticeAIResult 아님 — 매칭에서 자주 조회되는 위치라 Notice 본체에 둠).
+- **실패 처리**: graceful degradation — Stage 4 실패해도 `NoticeAIResult.status='success'` 유지하고 `Notice.tags`만 빈 채로 둠. 다음 cron에서 재시도되어 채워질 수 있음.
+- **재처리 트리거**: `content_hash` 변경 시 처음부터 다시 (다른 stage와 동일). `--reprocess`도 4단계 모두 재실행.
+- **태그 개수**: 3~8개 (프롬프트로 유도, 최대 10개로 강제 절단).
+
+##### 키워드 선정 기준
+
+1. **InterestArea 카테고리 매칭 우선** — `IT/개발`, `디자인`, `마케팅/광고`, `금융/회계`, `교육`, `공기업/공공기관`, `의료/바이오`, `미디어/콘텐츠`, `건축/공간`, `스포츠/예술`, `연구/R&D`, `기타` 중 공지 내용에 적합한 것만.
+2. **학과/전공명** — 공지에 학과 또는 전공이 명시되어 있으면 그 이름 그대로 (예: `컴퓨터공학과`, `데이터테크놀로지전공`).
+3. **도메인 키워드** — 분야·형태·대상을 나타내는 일반 키워드 (예: `장학금`, `인턴십`, `해커톤`, `공모전`, `세미나`).
+4. **제외** — `학생`, `공지`, `안내` 같은 너무 일반적인 단어, 날짜·고유 행사명·인명.
+
+##### 프롬프트 (EXTRACT_TAGS_SYSTEM)
+
+```text
+너는 대학 공지를 사용자 관심사와 매칭하기 위한 키워드 태깅 시스템이야.
+
+공지 내용을 보고 핵심 키워드 3~8개를 JSON list로 반환해.
+
+[키워드 선정 규칙]
+1. 사용자 관심분야 카테고리 중 매칭되는 것을 우선 포함:
+   IT/개발, 디자인, 마케팅/광고, 금융/회계, 교육, 공기업/공공기관,
+   의료/바이오, 미디어/콘텐츠, 건축/공간, 스포츠/예술, 연구/R&D, 기타
+2. 학과/전공명이 명시되어 있으면 그대로 포함 (예: "컴퓨터공학과")
+3. 공지 분야·형태를 나타내는 일반 키워드 (예: "장학금", "인턴십", "해커톤", "공모전")
+4. 너무 일반적인 단어("학생", "공지", "안내") 제외
+5. 영어/한국어 혼용 가능 (원문 그대로)
+
+[출력 형식]
+{"tags": ["키워드1", "키워드2", "키워드3"]}
+
+설명·다른 키 절대 포함 금지.
+```
 
 #### 1차 구현 (완료)
 

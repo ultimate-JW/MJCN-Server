@@ -104,13 +104,71 @@ class BuildCardsTests(TestCase):
                 pipeline.build_cards('본문', '행동형')
 
 
+# --- Stage 4 (키워드 추출) — pipeline 단위 ---
+
+class ExtractTagsTests(TestCase):
+    """spec 9.1.6 — pipeline.extract_tags 단위."""
+
+    def test_정상_추출(self):
+        with patch.object(pipeline, 'call_json',
+                          return_value={'tags': ['IT/개발', '해커톤']}):
+            tags = pipeline.extract_tags('본문')
+        self.assertEqual(tags, ['IT/개발', '해커톤'])
+
+    def test_빈_list_허용(self):
+        # 매칭 가능 키워드 없는 공지는 정상적으로 빈 list 반환 가능
+        with patch.object(pipeline, 'call_json', return_value={'tags': []}):
+            tags = pipeline.extract_tags('본문')
+        self.assertEqual(tags, [])
+
+    def test_중복_제거_대소문자_무관(self):
+        with patch.object(pipeline, 'call_json', return_value={
+            'tags': ['IT/개발', 'it/개발', '해커톤']
+        }):
+            tags = pipeline.extract_tags('본문')
+        self.assertEqual(tags, ['IT/개발', '해커톤'])
+
+    def test_빈_문자열_str_아닌값_제외_및_trim(self):
+        with patch.object(pipeline, 'call_json', return_value={
+            'tags': ['', '  ', 'ok', 123, None, '  good  ']
+        }):
+            tags = pipeline.extract_tags('본문')
+        self.assertEqual(tags, ['ok', 'good'])
+
+    def test_MAX_TAGS_초과는_절단(self):
+        with patch.object(pipeline, 'call_json', return_value={
+            'tags': [f't{i}' for i in range(20)]
+        }):
+            tags = pipeline.extract_tags('본문')
+        self.assertEqual(len(tags), pipeline.MAX_TAGS)
+
+    def test_tags가_list_아니면_에러(self):
+        with patch.object(pipeline, 'call_json',
+                          return_value={'tags': 'not a list'}):
+            with self.assertRaises(AIResponseParseError):
+                pipeline.extract_tags('본문')
+
+    def test_tags_키_없으면_에러(self):
+        with patch.object(pipeline, 'call_json',
+                          return_value={'wrong_key': []}):
+            with self.assertRaises(AIResponseParseError):
+                pipeline.extract_tags('본문')
+
+
 # --- processor (오케스트레이션) ---
 
 class ProcessNoticeFlowTests(TestCase):
-    """Notice 1건 → 3단계 파이프라인 흐름 검증."""
+    """Notice 1건 → 전체 파이프라인 흐름 검증."""
 
     def setUp(self):
         self.notice = make_notice()
+        # Stage 4(extract_tags)는 본 클래스 전 테스트가 거쳐가므로 setUp에서 기본 mock.
+        # Stage 4 동작 자체 검증은 ProcessNoticeStage4Tests에서 별도.
+        self._tags_patcher = patch.object(
+            pipeline, 'extract_tags', return_value=['IT/개발', '해커톤']
+        )
+        self._tags_patcher.start()
+        self.addCleanup(self._tags_patcher.stop)
 
     def _patch_pipeline(self, *, classify='행동형',
                        summarize='요약임.',
@@ -132,7 +190,10 @@ class ProcessNoticeFlowTests(TestCase):
         self.assertEqual(result.notice_type, '행동형')
         self.assertEqual(result.summary, '요약임.')
         self.assertEqual(result.cards, [{'title': 'T', 'items': ['x']}])
-        self.assertEqual(result.last_stage, 'build_cards')
+        # Stage 4까지 성공 — last_stage='extract_tags' (spec 9.1.6)
+        self.assertEqual(result.last_stage, 'extract_tags')
+        self.notice.refresh_from_db()
+        self.assertEqual(self.notice.tags, ['IT/개발', '해커톤'])
         self.assertNotEqual(result.content_hash, '')
 
     def test_재실행시_skipped(self):
@@ -182,11 +243,130 @@ class ProcessNoticeFlowTests(TestCase):
         self.assertEqual(result.summary, '요약2')
 
 
+class ProcessNoticeStage4Tests(TestCase):
+    """Stage 4(키워드 추출) 통합 — Notice.tags 저장, graceful 실패, 자동 재시도 (spec 9.1.6)."""
+
+    def setUp(self):
+        self.notice = make_notice()
+
+    def _patch_123(self):
+        """Stage 1-3 mock — Stage 4만 테스트별로 별도 mock."""
+        return (
+            patch.object(pipeline, 'summarize', return_value='요약임.'),
+            patch.object(pipeline, 'classify', return_value='행동형'),
+            patch.object(pipeline, 'build_cards',
+                         return_value=[{'title': 'T', 'items': ['x']}]),
+        )
+
+    def test_정상_tags_저장(self):
+        s, c, b = self._patch_123()
+        with s, c, b, patch.object(
+            pipeline, 'extract_tags', return_value=['IT/개발', '해커톤']
+        ):
+            result, action = processor.process_notice(self.notice)
+
+        self.notice.refresh_from_db()
+        self.assertEqual(self.notice.tags, ['IT/개발', '해커톤'])
+        self.assertEqual(result.last_stage, 'extract_tags')
+        self.assertEqual(result.status, 'success')
+        self.assertEqual(action, 'processed')
+
+    def test_stage4_실패는_graceful_status_success_유지(self):
+        s, c, b = self._patch_123()
+        with s, c, b, patch.object(
+            pipeline, 'extract_tags', side_effect=AIClientError('rate limit')
+        ):
+            result, action = processor.process_notice(self.notice)
+
+        self.notice.refresh_from_db()
+        self.assertEqual(self.notice.tags, [])
+        # Stage 4 실패 — last_stage는 build_cards에 머무름
+        self.assertEqual(result.last_stage, 'build_cards')
+        # status는 success 유지 (graceful)
+        self.assertEqual(result.status, 'success')
+        self.assertEqual(action, 'processed')
+
+    def test_stage4_실패_공지는_다음_cron에서_stage4만_재시도(self):
+        # 1차: Stage 4 실패 → status='success', last_stage='build_cards'
+        s, c, b = self._patch_123()
+        with s, c, b, patch.object(
+            pipeline, 'extract_tags', side_effect=AIClientError('rate limit')
+        ):
+            processor.process_notice(self.notice)
+
+        # get_pending_notices 에서 재시도 대상으로 잡혀야 함
+        pending_ids = set(
+            processor.get_pending_notices().values_list('id', flat=True)
+        )
+        self.assertIn(self.notice.id, pending_ids)
+
+        # 2차: Stage 1-3는 결과 보존되어 skip, Stage 4만 재호출
+        with patch.object(pipeline, 'summarize') as s2, \
+             patch.object(pipeline, 'classify') as c2, \
+             patch.object(pipeline, 'build_cards') as b2, \
+             patch.object(pipeline, 'extract_tags', return_value=['해커톤']) as e2:
+            result, action = processor.process_notice(self.notice)
+
+        s2.assert_not_called()
+        c2.assert_not_called()
+        b2.assert_not_called()
+        e2.assert_called_once()
+
+        self.notice.refresh_from_db()
+        self.assertEqual(self.notice.tags, ['해커톤'])
+        self.assertEqual(result.last_stage, 'extract_tags')
+        self.assertEqual(action, 'processed')
+
+    def test_stage4_완료_공지는_재실행시_skipped(self):
+        # 1차: 전 단계 완전 성공
+        s, c, b = self._patch_123()
+        with s, c, b, patch.object(
+            pipeline, 'extract_tags', return_value=['IT/개발']
+        ):
+            processor.process_notice(self.notice)
+
+        # 2차: status=success AND last_stage=extract_tags → skipped, 어떤 stage도 미호출
+        with patch.object(pipeline, 'extract_tags') as e2:
+            result, action = processor.process_notice(self.notice)
+
+        self.assertEqual(action, 'skipped')
+        e2.assert_not_called()
+
+    def test_get_pending_notices_stage4_미완_포함(self):
+        """status=success여도 last_stage가 extract_tags 아니면 pending에 포함."""
+        # Stage 3까지만 성공한 상태 시뮬레이션
+        NoticeAIResult.objects.create(
+            notice=self.notice,
+            status='success',
+            last_stage='build_cards',
+            content_hash=processor.compute_content_hash(self.notice.content),
+        )
+        ids = set(processor.get_pending_notices().values_list('id', flat=True))
+        self.assertIn(self.notice.id, ids)
+
+    def test_get_pending_notices_stage4_완료_제외(self):
+        """status=success AND last_stage=extract_tags 면 제외."""
+        NoticeAIResult.objects.create(
+            notice=self.notice,
+            status='success',
+            last_stage='extract_tags',
+            content_hash=processor.compute_content_hash(self.notice.content),
+        )
+        ids = set(processor.get_pending_notices().values_list('id', flat=True))
+        self.assertNotIn(self.notice.id, ids)
+
+
 class PartialFailureRecoveryTests(TestCase):
     """단계별 부분 실패 후 다음 실행에서 이어서 처리되는지."""
 
     def setUp(self):
         self.notice = make_notice()
+        # Stage 4 기본 mock (이 클래스는 Stage 1-3 부분 실패 검증이라 4 단계 영향 회피)
+        self._tags_patcher = patch.object(
+            pipeline, 'extract_tags', return_value=['IT/개발']
+        )
+        self._tags_patcher.start()
+        self.addCleanup(self._tags_patcher.stop)
 
     def test_stage3_실패시_다음실행에서_stage3만_재시도(self):
         # 1차: summarize, classify 성공 → build_cards 실패
@@ -242,7 +422,10 @@ class GetPendingNoticesTests(TestCase):
         self.assertEqual(ids, {self.n1.id, self.n2.id, self.n3.id})
 
     def test_success는_제외(self):
-        NoticeAIResult.objects.create(notice=self.n1, status='success')
+        # status=success AND last_stage=extract_tags 면 완전 종료 (spec 9.1.6)
+        NoticeAIResult.objects.create(
+            notice=self.n1, status='success', last_stage='extract_tags',
+        )
         qs = processor.get_pending_notices()
         ids = set(qs.values_list('id', flat=True))
         self.assertNotIn(self.n1.id, ids)
@@ -269,15 +452,23 @@ class GetPendingNoticesTests(TestCase):
 class ProcessNoticesAggregateTests(TestCase):
     """여러 Notice 처리 집계 카운트."""
 
+    def setUp(self):
+        self._tags_patcher = patch.object(
+            pipeline, 'extract_tags', return_value=['IT/개발']
+        )
+        self._tags_patcher.start()
+        self.addCleanup(self._tags_patcher.stop)
+
     def test_success_skipped_failed_정확히_집계(self):
         n_ok = make_notice(title='ok')
         n_skip = make_notice(title='skip')
         n_fail = make_notice(title='fail')
 
-        # n_skip은 미리 success로 만들어둠
+        # n_skip은 미리 success(Stage 4까지 완료)로 만들어둠
         NoticeAIResult.objects.create(
             notice=n_skip,
             status='success',
+            last_stage='extract_tags',
             content_hash=processor.compute_content_hash(n_skip.content),
         )
 
@@ -319,6 +510,7 @@ class ProcessNoticesAggregateTests(TestCase):
         NoticeAIResult.objects.create(
             notice=n,
             status='success',
+            last_stage='extract_tags',  # Stage 4까지 완료된 상태
             content_hash=processor.compute_content_hash(n.content),
         )
         # reprocess로 강제 포함시킨 뒤 force=False면 skipped 처리됨

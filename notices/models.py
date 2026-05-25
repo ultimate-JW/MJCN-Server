@@ -73,9 +73,10 @@ class NoticeAIResult(models.Model):
     ]
 
     STAGE_CHOICES = [
-        ('classify', '유형 분류'),
         ('summarize', '요약'),
+        ('classify', '유형 분류'),
         ('build_cards', '카드 구조화'),
+        ('extract_tags', '키워드 추출'),
     ]
 
     notice = models.OneToOneField(
