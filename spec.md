@@ -353,6 +353,9 @@ User ||--o{ Bookmark : "has"
 | semester | IntegerField | O | 1: 1학기 / 2: 여름방학 / 3: 2학기 / 4: 겨울방학 |
 | graduation_year | IntegerField(null) | | 졸업 희망 연도 (예: 2028). null 가능 (사용자가 "선택 안 함" 선택 시) |
 | graduation_month | IntegerField(null) | | 졸업 희망 월 (2 또는 8). graduation_year와 세트로 관리, null 가능 |
+| admission_year | IntegerField(null) | | 입학 연도 (졸업일 자동 추정 + 졸업 진척도 계산에 사용, spec 5.3.4·5.3.5) |
+| major | CharField(100, blank) | | 전공명 (예: "컴퓨터공학전공"). 관심사 매칭(spec 5.10)의 키워드 출처 중 하나 |
+| chapel_count | IntegerField(default=0) | | 채플 누적 이수 회수 (졸업요건 확인용, graduation_requirements.md §2.1 / 이슈 #47) |
 | is_onboarding_completed | BooleanField | O | 온보딩 완료 여부 (기본 False). 온보딩 최종 Step 완료 시 True로 업데이트 |
 | is_email_verified | BooleanField | O | 이메일 인증 여부 |
 | notification_enabled | BooleanField | O | 전체 알림 수신 여부 (기본 True) |
@@ -683,7 +686,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | user | FK(User) | |
 | title | CharField | 알림 제목 |
 | message | TextField | 알림 내용 |
-| notification_type | CharField | 알림 종류 (notice/information/course/system) |
+| notification_type | CharField | 알림 종류 (notice/information/course/chat/system) — `chat`은 AI 채팅 알림용 (chat 앱 구현 시 활용, spec 5.2.5) |
 | related_id | IntegerField(null) | 관련 객체 ID (notification_type에 따라 다른 테이블 ID, 프론트 화면 이동용) |
 | is_read | BooleanField(default=False) | 읽음 여부 |
 | is_pushed | BooleanField(default=False) | FCM 푸시 송신 완료 여부 (`send_pending_pushes` cron이 마킹, spec 9.3) |
@@ -1963,12 +1966,18 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 - 공지사항/정보 크롤링: 매일 06:00 KST (Asia/Seoul) 정기 실행
   - 1차 구현: 운영 서버 cron + `manage.py crawl_notices` / `crawl_information` 명령
   - 후속 도입: Django-Q2 또는 Celery Beat로 스케줄러 래핑
+- 공지 VLM 전처리: 매일 06:15 KST (크롤링 직후, 텍스트 파이프라인 직전)
+  - 1차 구현: 운영 서버 cron + `manage.py process_notice_images` 명령
+  - 본문이 이미지로만 구성된 공지의 텍스트를 gpt-4o-mini Vision으로 추출 (spec 9.1.5)
 - 공지사항 AI 처리: 매일 06:30 KST (크롤링 완료 직후 정기 실행)
   - 1차 구현: 운영 서버 cron + `manage.py process_notices_ai` 명령
   - 미처리(`pending`) + 본문 변경 감지(`content_hash` 불일치)된 공지만 처리 (멱등)
 - FCM 푸시 송신: 매일 06:35 KST (crawl+fanout 완료 직후)
   - 1차 구현: 운영 서버 cron + `manage.py send_pending_pushes` 명령
   - `is_pushed=False`이고 최근 24시간 이내인 알림만 송신 (멱등 — 재실행 안전)
+- 위비티 데이터 정리: 매일 06:45 KST
+  - 1차 구현: 운영 서버 cron + `manage.py prune_information` 명령
+  - `end_date`가 365일 지난 wevity 레코드 자동 삭제 (spec 9.2)
 - AI 응답: 스트리밍 응답 고려 (SSE 또는 polling)
 - DB 인덱싱: 자주 조회되는 필드 (user, created_at, deadline 등)
 - API 페이지네이션: 기본 20개, 최대 100개
@@ -2049,7 +2058,7 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 
 #### 9.1.1 공지사항 처리 파이프라인
 
-크롤링된 공지 원문을 (선택적 VLM 전처리 +) 3단계 LLM 호출로 처리:
+크롤링된 공지 원문을 (선택적 VLM 전처리 +) **4단계 LLM 호출**로 처리. 각 단계는 `notices/ai/pipeline.py`의 순수 함수, 전체 흐름은 `notices/ai/processor.py:process_notice`가 오케스트레이션 (부분 성공 시 `NoticeAIResult.last_stage` 이후만 재실행):
 
 ```
 [전처리] content가 비거나 매우 짧고 image_urls가 있으면
@@ -2333,6 +2342,10 @@ Notice.extracted_content에 추출 텍스트 저장
 설명·다른 키 절대 포함 금지.
 ```
 
+### 9.2 외부 공모전 사이트 크롤링 (위비티)
+
+`information` 앱은 학교 자체 게시판 외에 외부 공모전 사이트 위비티(wevity)도 수집한다. 1년 보관 정책에 따라 만료 데이터는 매일 06:45 KST `prune_information` cron이 정리한다 (spec 8.2).
+
 #### 1차 구현 (완료)
 
 - 명지대학교 공지사항 페이지 (학사 / 일반 / 해외 / 학생활동 / 진로·취업·창업 / 장학·학자금 등 학교 자체 게시판)
@@ -2396,68 +2409,76 @@ Notice.extracted_content에 추출 텍스트 저장
 
 ### Phase 1 - 프로젝트 기반 + 인증 API (2주)
 
-- [ ] DRF + SimpleJWT + drf-spectacular + django-cors-headers 설치
-- [ ] settings 분리 (`base.py`, `dev.py`, `prod.py`) + `.env` 관리
-- [ ] Custom User 모델 + accounts 앱 (`AUTH_USER_MODEL` 설정)
-- [ ] 회원가입 / 이메일 인증 / 로그인(JWT) / 로그아웃 API
-- [ ] 프로필 CRUD API (온보딩 + 수정)
-- [ ] 관심분야 / 수강이력 / 현재수강 CRUD API
-- [ ] 설정 API (알림 토글, 회원 탈퇴)
-- [ ] 공통 권한, 페이지네이션, 에러 핸들링 설정
+- [X] DRF + SimpleJWT + drf-spectacular + django-cors-headers 설치
+- [ ] settings 분리 (`base.py`, `dev.py`, `prod.py`) + `.env` 관리 — `.env`는 적용, prod/dev 분리는 미완 (단일 settings.py + env-var 분기로 대체)
+- [X] Custom User 모델 + accounts 앱 (`AUTH_USER_MODEL` 설정)
+- [X] 회원가입 / 이메일 인증 / 로그인(JWT) / 로그아웃 API
+- [X] 프로필 CRUD API (온보딩 + 수정)
+- [X] 관심분야 / 수강이력 / 현재수강 CRUD API
+- [X] 설정 API (알림 토글, 회원 탈퇴)
+- [X] 공통 권한, 페이지네이션, 에러 핸들링 설정
 
 ### Phase 2 - 데이터 수집 (2주)
 
-- [ ] notices 앱: 공지사항 모델 + 크롤러 + management command (`crawl_notices`) — 학교 자체 공지 게시판
-- [ ] information 앱: 정보 모델 + 크롤러 + management command (`crawl_information`) — 학교 자체 공모전 게시판
-- [ ] 크롤러 베이스 클래스 + 사이트별 구현체 분리 (`requests` + `BeautifulSoup4`)
-- [ ] `(source, url)` / `(url,)` upsert 로직, 실패 격리 처리
-- [ ] 매일 06:00 KST cron 등록 (운영 환경)
-- [ ] 오픈톡 CSV import management command (1회성 시딩)
-- [ ] courses 앱: 과목/졸업요건 모델 + Serializer + 시드 데이터
-- [ ] **공지사항 AI 처리 파이프라인** (spec 9.1.1)
-  - [ ] `NoticeAIResult` 모델 + 마이그레이션
-  - [ ] OpenAI 클라이언트 래퍼 (`gpt-4o-mini`, JSON mode, 재시도/타임아웃)
-  - [ ] 3단계 함수: `classify` / `summarize` / `build_cards`
-  - [ ] 본문 truncate 유틸 (단계별 길이 한도)
-  - [ ] 오케스트레이터: `content_hash` 기반 재처리, 단계별 부분 성공 저장
-  - [ ] Management command: `process_notices_ai` (`--source`, `--limit`, `--ids`, `--reprocess`)
-  - [ ] 매일 06:30 KST cron 등록
-  - [ ] 단위 테스트: OpenAI 호출 mock, 부분 실패 복구, 재처리 트리거
-- [ ] **VLM 전처리 (이미지 전용 공지 대응)** (spec 9.1.5)
-  - [ ] Notice 모델에 `extracted_content`, `image_urls` 필드 추가 + 마이그레이션
-  - [ ] 크롤러 수정: `div.artclView` 내 `<img>` URL 절대경로로 수집해 `image_urls`에 저장
-  - [ ] 기존 80건 재크롤링으로 `image_urls` 백필
-  - [ ] VLM 호출 함수 (`gpt-4o-mini` Vision 입력, 다중 이미지 지원, 이미지 개수 한도)
-  - [ ] Management command: `process_notice_images` (`--source`, `--limit`, `--ids`, `--reprocess`)
-  - [ ] 매일 06:15 KST cron 등록 (텍스트 파이프라인 06:30 직전)
-  - [ ] 텍스트 파이프라인이 `extracted_content` 우선 사용하도록 분기
-  - [ ] 단위 테스트: 이미지 mock, 추출 실패 시 재시도, image_urls 비어있으면 skip
-- [ ] **외부 공모전 크롤러 — 위비티(wevity)** (feature/19) [운영팀 회신 반영, 2026-05-12]
-  - [ ] `information/crawlers/wevity.py`: `WevityCrawler(BaseInformationCrawler)` 구현
-  - [ ] 1차 대상 카테고리:
+- [X] notices 앱: 공지사항 모델 + 크롤러 + management command (`crawl_notices`) — 학교 자체 공지 게시판
+- [X] information 앱: 정보 모델 + 크롤러 + management command (`crawl_information`) — 학교 자체 공모전 게시판
+- [X] 크롤러 베이스 클래스 + 사이트별 구현체 분리 (`requests` + `BeautifulSoup4`)
+- [X] `(source, url)` / `(url,)` upsert 로직, 실패 격리 처리
+- [X] 매일 06:00 KST cron 등록 (운영 환경 — 2026-05-25 AWS EC2 가동)
+- [X] 오픈톡 CSV import management command (1회성 시딩)
+- [X] courses 앱: 과목/졸업요건 모델 + Serializer + 시드 데이터 (`seed_courses` 명령)
+- [X] **공지사항 AI 처리 파이프라인** (spec 9.1.1) — PR #17, PR #65 (Stage 4 추가)
+  - [X] `NoticeAIResult` 모델 + 마이그레이션
+  - [X] OpenAI 클라이언트 래퍼 (`gpt-4o-mini`, JSON mode, 재시도/타임아웃)
+  - [X] 4단계 함수: `summarize` / `classify` / `build_cards` / `extract_tags` (Stage 4는 PR #65)
+  - [X] 본문 truncate 유틸 (단계별 길이 한도)
+  - [X] 오케스트레이터: `content_hash` 기반 재처리, 단계별 부분 성공 저장
+  - [X] Management command: `process_notices_ai` (`--source`, `--limit`, `--ids`, `--reprocess`)
+  - [X] 매일 06:30 KST cron 등록
+  - [X] 단위 테스트: OpenAI 호출 mock, 부분 실패 복구, 재처리 트리거
+- [X] **VLM 전처리 (이미지 전용 공지 대응)** (spec 9.1.5)
+  - [X] Notice 모델에 `extracted_content`, `image_urls` 필드 추가 + 마이그레이션 (0003)
+  - [X] 크롤러 수정: `div.artclView` 내 `<img>` URL 절대경로로 수집해 `image_urls`에 저장
+  - [X] 기존 80건 재크롤링으로 `image_urls` 백필
+  - [X] VLM 호출 함수 (`gpt-4o-mini` Vision 입력, 다중 이미지 지원, 이미지 개수 한도)
+  - [X] Management command: `process_notice_images` (`--source`, `--limit`, `--ids`, `--reprocess`)
+  - [X] 매일 06:15 KST cron 등록 (텍스트 파이프라인 06:30 직전)
+  - [X] 텍스트 파이프라인이 `extracted_content` 우선 사용하도록 분기
+  - [X] 단위 테스트: 이미지 mock, 추출 실패 시 재시도, image_urls 비어있으면 skip
+- [X] **외부 공모전 크롤러 — 위비티(wevity)** (PR #19, 2026-05-13)
+  - [X] `information/crawlers/wevity.py`: `WevityCrawler(BaseInformationCrawler)` 구현
+  - [X] 1차 대상 카테고리:
         `cidx=20` (웹/모바일/IT) / `cidx=21` (게임/소프트웨어)
-  - [ ] 페이지네이션 `gp=N` 처리 (빈 페이지면 break, MAX_PAGES 상한)
-  - [ ] **메타 정보만 추출·저장**: title / organizer / start_date / end_date / categories / url
+  - [X] 페이지네이션 `gp=N` 처리 (빈 페이지면 break, MAX_PAGES 상한)
+  - [X] **메타 정보만 추출·저장**: title / organizer / start_date / end_date / categories / url
         (개인정보 보호 정책에 따라 `description`은 저장하지 않음 — 파싱 후 폐기)
-  - [ ] 카테고리 매핑: 위비티 분류 → Information.categories (공모전/대외활동/지원사업/교육·강의/부트캠프)
-  - [ ] `start_date` / `end_date` 파싱
-  - [ ] `is_active` 마감일 기준 자동 판정
-  - [ ] `crawlers/registry.py`에 등록
-  - [ ] 매일 **06:00 KST** cron에 포함 (`crawl_information` 명령으로 일괄 실행)
-  - [ ] 단위 테스트: HTML fixture 기반 list/detail 파싱, upsert 멱등성, 실패 격리, description 빈 채로 저장 확인
-- [ ] **데이터 보관 정책 cron — `prune_information`** (feature/19)
-  - [ ] Management command: `manage.py prune_information [--source wevity] [--days 365] [--dry-run]`
-  - [ ] 기본 동작: `source='wevity' AND end_date < (today - 365)` 삭제
-  - [ ] 매일 **06:45 KST** cron 등록 (크롤링 06:00 + AI 06:30 다음)
-  - [ ] 단위 테스트: 보관 기간 내 / 외 / end_date NULL 케이스
+  - [X] 카테고리 매핑: 위비티 분류 → Information.categories (공모전/대외활동/지원사업/교육·강의/부트캠프)
+  - [X] `start_date` / `end_date` 파싱
+  - [X] `is_active` 마감일 기준 자동 판정
+  - [X] `crawlers/registry.py`에 등록
+  - [X] 매일 **06:00 KST** cron에 포함 (`crawl_information` 명령으로 일괄 실행)
+  - [X] 단위 테스트: HTML fixture 기반 list/detail 파싱, upsert 멱등성, 실패 격리, description 빈 채로 저장 확인
+- [X] **데이터 보관 정책 cron — `prune_information`** (PR #19)
+  - [X] Management command: `manage.py prune_information [--source wevity] [--days 365] [--dry-run]`
+  - [X] 기본 동작: `source='wevity' AND end_date < (today - 365)` 삭제
+  - [X] 매일 **06:45 KST** cron 등록 (크롤링 06:00 + AI 06:30 다음)
+  - [X] 단위 테스트: 보관 기간 내 / 외 / end_date NULL 케이스
+- [X] **강의시간표 엑셀 import** (PR #46)
+  - [X] `CourseOffering` 모델 + 마이그레이션 (0004)
+  - [X] Management command: `manage.py import_courses_from_xlsx` (1회성 시딩)
+  - [X] `manage.py import_prerequisites_from_csv` (선수과목 관계)
+- [X] **Course.tags 룰 기반 자동 채움** (PR #48 / PR #63, 매칭률 65.6% → 99.6%)
+  - [X] `courses/tag_rules.py`: 전공명 + 과목명 키워드 규칙
+  - [X] Management command: `manage.py backfill_course_tags [--overwrite] [--dry-run]`
 - [ ] (후속) 그 외 외부 공모전 사이트(링커리어, 씽굿 등), Django-Q2/Celery Beat 스케줄러 도입
 
 ### Phase 3 - 정보 조회 API (2주)
 
-- [ ] 공지사항 조회 API (전체/맞춤형, 검색, 페이지네이션)
-- [ ] 정보 조회 API (전체/맞춤형, 페이지네이션)
-- [ ] 수강과목 추천 + 이수현황 분석 API
-- [ ] 대시보드 집계 API
+- [X] 공지사항 조회 API (전체/맞춤형, 검색, 페이지네이션)
+- [X] 정보 조회 API (전체/맞춤형, 페이지네이션)
+- [X] 수강과목 추천 + 이수현황 분석 API (PR #24, #25, #32, #36)
+- [X] 대시보드 집계 API (PR #51)
+- [X] 북마크 API (PR #39 — `/api/v1/bookmarks/`)
 
 ### Phase 4 - AI 비서 API (2주)
 
@@ -2470,12 +2491,13 @@ Notice.extracted_content에 추출 텍스트 저장
 
 ### Phase 5 - 알림 + 마무리 (2주)
 
-- [ ] notifications 앱: 알림 모델 + 조회/읽음처리 API
-- [ ] FCM 푸시 송신: `send_pending_pushes` 명령 + 매일 06:35 KST cron 등록
-- [ ] 맞춤 추천 알림 스케줄링 (마감일 전날 등)
-- [ ] API 통합 테스트 + Swagger 문서 검증
-- [ ] 운영 환경 설정 (PostgreSQL, 환경변수 등)
-- [ ] 프론트엔드 팀과 API 연동 테스트
+- [X] notifications 앱: 알림 모델 + 조회/읽음처리 API (PR #42)
+- [X] 공지·정보 자동 fanout 트리거 — 매칭 사용자에게 인앱 알림 생성 (PR #49)
+- [X] FCM 푸시 송신: `send_pending_pushes` 명령 + 매일 06:35 KST cron 등록 (PR #53)
+- [ ] 맞춤 추천 알림 스케줄링 (마감일 전날 등) — Out of Scope, 후속 PR
+- [ ] API 통합 테스트 + Swagger 문서 검증 — 부분 완료, 통합 테스트 미실시
+- [X] 운영 환경 설정 (PostgreSQL, 환경변수 등) — PR #55 (DB 분기) + 2026-05-25 운영 cron 등록
+- [ ] 프론트엔드 팀과 API 연동 테스트 — 진행 중
 - [ ] **위비티 운영팀 통보** (서비스 런칭 직전)
   - [ ] 서비스 공개 URL 전달
   - [ ] 담당자 연락처 전달 (KISA·정부기관 통한 정보 수정/삭제 요청 응답용)
@@ -2505,6 +2527,7 @@ Notice.extracted_content에 추출 텍스트 저장
    - `python-dotenv`, `requests` + `beautifulsoup4` + `lxml` (크롤링), `openai` (AI 파이프라인)
    - `firebase-admin` (FCM PUSH 알림)
    - `psycopg[binary]` (운영 PostgreSQL 어댑터 — spec 8.5)
+   - `openpyxl` (강의시간표 엑셀 import용 — `manage.py import_courses_from_xlsx`)
 7. **DRF 기본 설정** - `DEFAULT_AUTHENTICATION_CLASSES`, `DEFAULT_PAGINATION_CLASS`, `DEFAULT_THROTTLE_RATES`
 8. **CORS 설정** - `CORS_ALLOWED_ORIGINS`에 프론트엔드 도메인 등록
 9. **Swagger 설정** - drf-spectacular `SPECTACULAR_SETTINGS` 구성
