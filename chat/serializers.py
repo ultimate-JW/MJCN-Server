@@ -3,6 +3,11 @@ from rest_framework import serializers
 from .models import ChatAttachment, ChatMessage, ChatRoom
 
 
+class ChatMessageCreateSerializer(serializers.Serializer):
+    """메시지 전송 요청 body (spec 6.5 POST /rooms/<id>/messages/)."""
+    content = serializers.CharField(min_length=1, max_length=4000)
+
+
 class ChatAttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatAttachment
