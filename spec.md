@@ -189,6 +189,17 @@ erDiagram
         bool is_used
     }
 
+    PendingSignup {
+        int id PK
+        string email UK
+        string password_hash
+        string code
+        datetime code_expires_at
+        int attempts
+        datetime created_at
+        datetime updated_at
+    }
+
     ChatRoom {
         int id PK
         int user_id FK
@@ -405,16 +416,38 @@ User ||--o{ Bookmark : "has"
 
 - unique_together: (user, day_of_week, start_time) — 동일 시간대 중복 수강 방지
 
-#### EmailVerification (이메일 인증 / 비밀번호 재설정 공용)
+#### EmailVerification (비밀번호 재설정 전용)
+
+비밀번호 재설정 흐름에서만 사용. 회원가입 흐름은 별도 `PendingSignup` 사용 (§5.1.1 참고).
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | user | FK(User) | |
 | code | CharField(8) | 인증 코드 |
-| purpose | CharField | 용도 ("signup" 또는 "password_reset") |
+| purpose | CharField | 용도 ("password_reset") |
 | created_at | DateTimeField | 생성 시각 |
 | expires_at | DateTimeField | 만료 시각 (생성 후 3분) |
 | is_used | BooleanField | 사용 여부 |
+
+#### PendingSignup (이메일 가입 임시 보관)
+
+회원가입 흐름에서 이메일 인증 코드 검증을 통과하기 **전까지만** 사용. 인증 통과 시점에 `User` row를 만들면서 동시에 삭제된다. `User` FK가 없는 자족적 테이블.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| email | EmailField (unique) | 가입 진행 중인 이메일 (upsert 키) |
+| password_hash | CharField(128) | `make_password()` 결과 (raw 평문 절대 저장 안 함) |
+| code | CharField(8) | 인증 코드 |
+| code_expires_at | DateTimeField | 만료 시각 (생성 후 3분) |
+| attempts | PositiveSmallIntegerField (default 0) | 잘못된 코드 입력 횟수 (brute force 보조 방어) |
+| created_at | DateTimeField | 최초 생성 시각 |
+| updated_at | DateTimeField | 최근 갱신 시각 |
+
+라이프사이클:
+- signup 호출 시 `update_or_create(email=...)`로 row upsert
+- 같은 이메일 재signup 시 기존 row 덮어쓰기 (password·code·expires 전부 갱신, 이전 코드 자동 무효화)
+- verify 성공 시 `User` 생성과 동시에 trigger되는 트랜잭션 안에서 row 삭제
+- 만료 후에도 자동 삭제되지 않음 (follow-up cron이 24h 이상 된 row 청소)
 
 #### Bookmark (공지/정보 북마크)
 
@@ -734,12 +767,18 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 
 #### 5.1.1 이메일 가입
 
-- 이메일 + 비밀번호로 가입
+- 이메일 + 비밀번호로 가입 — 이 시점에는 `User` row를 만들지 않는다. (email, password_hash, code, code_expires_at)을 신규 `PendingSignup` 임시 테이블에 upsert로 저장
 - 가입 후 인증 코드 발송 (이메일로 인증 코드 전송, 유효기간 3분)
 - 인증 코드 입력 화면에서 코드 입력하여 인증 완료
-- 인증 완료 시 JWT access/refresh 토큰 발급 → 프론트가 디바이스에 저장
-- 만료 시 "인증 코드 다시 보내기"로 재발송 가능
-- 인증 완료 전까지 로그인 불가
+- 인증 완료 시점에 비로소 `User` row 생성 (트랜잭션 안에서 PendingSignup → User 변환 + PendingSignup 삭제). JWT access/refresh 토큰 발급 → 프론트가 디바이스에 저장
+- 만료 시 "인증 코드 다시 보내기"로 재발송 가능 (PendingSignup row의 code/expires만 갱신, 새 row 생성 안 함)
+- 인증 완료 전까지 로그인 불가 — 미인증 단계에서는 User가 존재하지 않으므로 로그인 자체가 불가능
+
+##### 미인증 상태에서 앱 종료 시 동작
+
+이메일/비밀번호 입력 후 인증 코드 화면에서 앱을 종료해도 DB에 `User` row가 남지 않는다 (`PendingSignup`만 존재). 사용자가 같은 이메일로 다시 회원가입을 시도하면 기존 `PendingSignup` row가 `update_or_create`로 덮어써져 새 비밀번호·코드로 갱신된다. 이전 코드는 자동 무효화.
+
+PendingSignup row는 `code_expires_at` 경과 후에도 자동 삭제되지 않는다 (다음 가입 시도 시 upsert로 자연스럽게 교체). 영구히 안 돌아오는 row는 별도 cron(`prune_pending_signups`, follow-up)으로 24h 이상 된 항목 청소.
 
 ##### 온보딩 중 앱 종료 후 재접속 시 이어서 진행
 
@@ -891,7 +930,7 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
   1. `code` → `access_token` 교환 (`https://kauth.kakao.com/oauth/token`)
   2. `access_token`으로 카카오 사용자 정보 조회 (`https://kapi.kakao.com/v2/user/me`)
   3. `kakao_id` 기준 `User.objects.get_or_create()` 분기
-     - **신규**: `User` 생성 + `set_unusable_password()` + `is_email_verified=True` + 닉네임·이메일(있으면) 저장 → 온보딩 플로우(`is_onboarding_completed=False`)
+     - **신규**: `User` 생성 + `set_unusable_password()` + `is_email_verified=True` + 닉네임·이메일(있으면) 저장 → 온보딩 플로우(`is_onboarding_completed=False`). 카카오는 OAuth 제공자가 신원을 이미 보장하므로 이메일 가입과 달리 PendingSignup 단계를 거치지 않고 즉시 `User`를 만든다 (정책 차등)
      - **기존**: 그대로 사용 (재로그인)
   4. SimpleJWT 토큰 발급 → `{access, refresh, is_new_user, user}` 응답
 - 카카오 계정 이메일과 기존 이메일 가입 계정이 동일한 경우 계정 연동 처리 (`kakao_id`만 추가)
@@ -1486,9 +1525,9 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 
 | Method | URL | 인증 | 설명 | 요청 body |
 |--------|-----|------|------|-----------|
-| POST | `/api/v1/accounts/signup/` | X | 회원가입 | `{email, password, password_confirm}` |
-| POST | `/api/v1/accounts/verify-email/` | X | 이메일 인증 (인증 코드 검증) | `{email, code}` |
-| POST | `/api/v1/accounts/verify-email/resend/` | X | 인증 코드 재발송 | `{email}` |
+| POST | `/api/v1/accounts/signup/` | X | 회원가입 — `User` 미생성, `PendingSignup` upsert 후 인증 코드 발송 | `{email, password, password_confirm}` |
+| POST | `/api/v1/accounts/verify-email/` | X | 이메일 인증 — 검증 통과 시 `User` 생성 + `PendingSignup` 삭제 + JWT 발급 | `{email, code}` |
+| POST | `/api/v1/accounts/verify-email/resend/` | X | 인증 코드 재발송 — `PendingSignup`의 code/expires 갱신 | `{email}` |
 | POST | `/api/v1/accounts/login/` | X | 로그인 (JWT 발급) | `{email, password}` |
 | POST | `/api/v1/accounts/login/kakao/` | X | 카카오 로그인 (신규/기존 분기) | `{authorization_code}` |
 | POST | `/api/v1/accounts/token/refresh/` | X | 토큰 갱신 | `{refresh}` |
@@ -1955,7 +1994,8 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 - 비밀번호 변경 시 기존 refresh 토큰 전부 블랙리스트 처리
 - 인증 코드 생성: `secrets` 모듈 사용 (암호학적 안전한 PRNG)
 - 동시성 방어: 인증 코드 검증, 관심분야 생성, 회원가입 시 트랜잭션/행 잠금으로 경쟁 조건 차단
-- SMTP 실패 시 트랜잭션 롤백 (회원가입: User 생성 롤백, 코드 재발송: 조용히 실패)
+- 회원가입 동시성: `PendingSignup.update_or_create(email=...)`로 같은 이메일의 동시 가입 시도를 row 덮어쓰기로 흡수. verify는 `select_for_update`로 row 잠금 후 `User` 생성 (`User.email` unique constraint가 race 시 IntegrityError로 동일 400 반환)
+- SMTP 실패 시: 회원가입은 `PendingSignup` row가 남아 사용자가 재발송으로 복구 가능 (의도된 동작). 코드 재발송은 조용히 실패
 
 ### 8.2 성능 (정량적 기준)
 
