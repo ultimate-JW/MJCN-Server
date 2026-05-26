@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'notifications',
     'notices',
     'information',
+    'chat',
 ]
 
 MIDDLEWARE = [
@@ -222,6 +223,11 @@ SPECTACULAR_SETTINGS = {
     'TITLE': 'MJCN API',
     'DESCRIPTION': '명지대학교 학생 AI 비서 서비스 API',
     'VERSION': '1.0.0',
+    # 여러 모델에 'category' 필드가 choices와 함께 정의되어 있어 enum 이름이
+    # 자동 'CategoryA77Enum' 같이 충돌 해결됨. 명시적으로 의미 있는 이름 부여.
+    'ENUM_NAME_OVERRIDES': {
+        'ChatRoomCategoryEnum': 'chat.models.CHAT_CATEGORIES',
+    },
 }
 
 # OpenAI (공지사항 AI 처리 파이프라인 — spec 9.1)
