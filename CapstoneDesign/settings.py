@@ -40,6 +40,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # WhiteNoise: /static/* 요청을 Django가 직접 서빙. SecurityMiddleware 바로 뒤가 권장 위치.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -116,8 +118,16 @@ USE_I18N = True
 USE_TZ = True
 
 # Static / Media files
+#
+# 운영(DEBUG=False)에서는 collectstatic 산출물(STATIC_ROOT)을 WhiteNoise가 서빙한다.
+# 배포 시 한 번: `python manage.py collectstatic --noinput`
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
