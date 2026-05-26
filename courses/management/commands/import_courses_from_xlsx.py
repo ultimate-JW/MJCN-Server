@@ -1,15 +1,16 @@
-"""강의시간표 엑셀(.xlsx) → Course/CourseOffering/CourseSchedule 시딩 (#36).
+"""강의시간표 엑셀(.xlsx) 또는 CSV(.csv) → Course/CourseOffering/CourseSchedule 시딩 (#36).
 
 컬럼 15개 (spec 5.1 정의):
     학년 / 교과목명 / 과목코드 / 학과코드 / 과목번호 / 학점 / 시간 /
     담당교수 / 강좌번호 / 제한인원 / 요일 / 시작시간 / 종료시간 / 강의실 / 비고
 
-파일명에서 연도/학기 추출 — 2026_1_컴퓨터공학전공.xlsx → year=2026, semester=1
+파일명에서 연도/학기 추출 — 2026_1_컴퓨터공학전공.csv → year=2026, semester=1
 파일명 마지막 토큰으로 college/department/major/category 기본값 매핑.
 매핑 없거나 다른 값 쓰고 싶으면 --college 등 인자로 override.
 
 사용 예:
-    python manage.py import_courses_from_xlsx data/2026_1_컴퓨터공학전공.xlsx
+    python manage.py import_courses_from_xlsx data/2026_1_컴퓨터공학전공.csv
+    python manage.py import_courses_from_xlsx data/2026_1_교양_전체.csv
     python manage.py import_courses_from_xlsx data/2026_1_교양.xlsx --category 교양선택
 """
 
@@ -43,7 +44,11 @@ FILE_NAME_MAPPING = {
     '반도체ICT대학': ('반도체·ICT대학', None, None, '전공선택'),
     # 교양 파일은 row별로 liberal_subtype 따라 category가 다름. 기본값은 '일반교양' fallback (#47 Phase 3)
     '교양': ('교양', None, None, '일반교양'),
+    '교양_전체': ('교양', None, None, '일반교양'),
 }
+
+# 교양 파일 origin 토큰 — row별 liberal_subtype 분기 트리거
+LIBERAL_FILE_ORIGINS = {'교양', '교양_전체'}
 
 # 교양 파일에서 liberal_subtype 분류 결과를 category로 사용할 영역 (#47 Phase 3)
 LIBERAL_SUBTYPE_TO_CATEGORY = {
@@ -56,7 +61,7 @@ LIBERAL_SUBTYPE_TO_CATEGORY = {
 # 학과별 전공필수 과목/prefix 상수는 services 등과 공유하기 위해 별도 모듈로 분리.
 from courses.required_courses import MAJOR_REQUIRED_BY_MAJOR, MAJOR_DEPT_PREFIXES
 
-FILE_NAME_PATTERN = re.compile(r'(\d{4})_(\d)_(.+)\.xlsx$')
+FILE_NAME_PATTERN = re.compile(r'(\d{4})_(\d)_(.+)\.(?:xlsx|csv)$')
 
 
 def parse_filename(path):
@@ -97,10 +102,10 @@ def to_time(value):
 
 
 class Command(BaseCommand):
-    help = '강의시간표 엑셀(.xlsx) → Course/CourseOffering/CourseSchedule 시딩 (#36)'
+    help = '강의시간표 엑셀(.xlsx)/CSV(.csv) → Course/CourseOffering/CourseSchedule 시딩 (#36)'
 
     def add_arguments(self, parser):
-        parser.add_argument('path', help='엑셀 파일 경로')
+        parser.add_argument('path', help='엑셀(.xlsx) 또는 CSV(.csv) 파일 경로')
         parser.add_argument('--year', type=int, help='연도 (없으면 파일명에서 추출)')
         parser.add_argument('--semester', type=int, help='학기 1/2/3/4 (없으면 파일명에서 추출)')
         parser.add_argument('--college', help='대학 (파일명 매핑 없으면 필요)')
@@ -109,7 +114,7 @@ class Command(BaseCommand):
         parser.add_argument('--category', help='이수구분 (전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택)')
         parser.add_argument(
             '--dump-csv', action='store_true',
-            help='엑셀과 같은 폴더에 .csv도 함께 dump (VSCode에서 미리보기/diff용)',
+            help='엑셀과 같은 폴더에 .csv도 함께 dump (xlsx 입력일 때만 의미 있음, csv 입력이면 skip)',
         )
 
     @transaction.atomic
@@ -121,7 +126,7 @@ class Command(BaseCommand):
         semester = opts['semester'] or f_semester
         if not year or not semester:
             raise CommandError(
-                "연도/학기 추출 실패. 파일명 패턴(YYYY_S_*.xlsx) 또는 --year/--semester 필요"
+                "연도/학기 추출 실패. 파일명 패턴(YYYY_S_*.xlsx|csv) 또는 --year/--semester 필요"
             )
 
         default_college = default_dept = default_major = default_category = None
@@ -138,23 +143,37 @@ class Command(BaseCommand):
                 "--college, --category 지정"
             )
 
-        wb = openpyxl.load_workbook(path, data_only=True)
-        ws = wb.active
-        header = [c.value for c in ws[1]]
-        if header != EXPECTED_COLUMNS:
+        # xlsx/csv 분기 — 둘 다 (header, data_rows) 만들어 같은 루프로 처리
+        suffix = Path(path).suffix.lower()
+        if suffix == '.xlsx':
+            wb = openpyxl.load_workbook(path, data_only=True)
+            ws = wb.active
+            header = [c.value for c in ws[1]]
+            data_rows = list(ws.iter_rows(min_row=2, values_only=True))
+        elif suffix == '.csv':
+            # utf-8-sig: Excel 저장 .csv의 BOM 제거. 빈 cell은 '' (xlsx는 None) — 후속 코드 둘 다 처리 가능
+            with open(path, 'r', encoding='utf-8-sig', newline='') as f:
+                reader = csv.reader(f)
+                header = next(reader)
+                data_rows = [tuple(r) for r in reader]
+        else:
+            raise CommandError(f"지원하지 않는 확장자: {suffix} (.xlsx 또는 .csv 필요)")
+
+        if list(header) != EXPECTED_COLUMNS:
             raise CommandError(
                 f"컬럼 불일치.\n  기대: {EXPECTED_COLUMNS}\n  실제: {header}"
             )
 
         # --dump-csv: 같은 폴더에 .csv 형태로도 dump (VSCode에서 바로 열림 + git diff용)
         # utf-8-sig: Excel에서도 한글 안 깨지게 BOM 포함
+        # 입력이 이미 .csv면 self-overwrite 의미 없어 skip
         csv_dump_path = None
-        if opts['dump_csv']:
+        if opts['dump_csv'] and suffix == '.xlsx':
             csv_dump_path = Path(path).with_suffix('.csv')
             with open(csv_dump_path, 'w', encoding='utf-8-sig', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(EXPECTED_COLUMNS)
-                for row in ws.iter_rows(min_row=2, values_only=True):
+                for row in data_rows:
                     if not row[0]:
                         continue
                     writer.writerow(['' if c is None else str(c) for c in row])
@@ -165,8 +184,8 @@ class Command(BaseCommand):
         unmapped_liberal = []  # 교양 카테고리인데 4종 분류가 안 잡힌 (학과코드, 교과목명) 모음 — stdout 경고용
         unmapped_core = []     # 핵심교양인데 4영역 매핑이 안 잡힌 (학과코드, 교과목명) 모음 — category_map.CORE_AREA_BY_NAME 보강 시그널
 
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if not row[0]:  # 학년 비어있는 행 skip (엑셀 trailing 빈줄 등)
+        for row in data_rows:
+            if not row[0]:  # 학년 비어있는 행 skip (엑셀 trailing 빈줄 / csv 빈 line)
                 continue
             (year_open, name, course_code, dept_code, _course_no, credits, _hours,
              professor, section_no, capacity, day, start, end, room, note) = row
@@ -179,7 +198,7 @@ class Command(BaseCommand):
             # 교양 파일이면 liberal_subtype을 category로 박음 (#47 Phase 3 — 학칙 7분류)
             # liberal_subtype 매핑 실패 시 fallback default_category(='일반교양')로 둠 — WARN으로 표면화
             row_category = category
-            if origin == '교양':
+            if origin in LIBERAL_FILE_ORIGINS:
                 if liberal_subtype in LIBERAL_SUBTYPE_TO_CATEGORY:
                     row_category = LIBERAL_SUBTYPE_TO_CATEGORY[liberal_subtype]
             else:
