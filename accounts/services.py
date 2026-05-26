@@ -157,12 +157,28 @@ def generate_verification_code():
     return ''.join(str(secrets.randbelow(10)) for _ in range(6))
 
 
-def send_verification_email(user, purpose='signup'):
+def send_signup_code_email(email, code):
+    """회원가입 인증 코드 메일 발송 (spec 5.1.1).
+
+    PendingSignup row의 생성/갱신은 호출 측(views.signup)이 책임지고, 이 함수는
+    메일 발송만 담당한다. User가 아직 존재하지 않는 단계이므로 email만 받는다.
+    """
+    send_mail(
+        subject='[MJCN] 이메일 인증 코드',
+        message=f'인증 코드: {code}\n\n3분 이내에 입력해주세요.',
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[email],
+        fail_silently=False,
+    )
+
+
+def send_verification_email(user, purpose='password_reset'):
+    """비밀번호 재설정 인증 코드 발송 (spec 5.1.4).
+
+    회원가입 흐름은 send_signup_code_email + PendingSignup으로 분리됨.
+    """
     # DB 변경(기존 코드 무효화 + 새 코드 생성)을 하나의 트랜잭션으로 묶어
     # 중간 실패 시 "기존 코드는 무효화됐는데 새 코드는 없는" 상태 방지.
-    # send_mail은 트랜잭션 밖에서 호출 — 커밋된 후 발송해야 메일 발송 실패 시
-    # DB 롤백으로 기존 유효 코드를 되돌릴 수 있고, 발송만 성공하고 DB 롤백되는
-    # 역전 케이스도 방지.
     with transaction.atomic():
         EmailVerification.objects.filter(
             user=user,
@@ -180,13 +196,8 @@ def send_verification_email(user, purpose='signup'):
             expires_at=expires_at,
         )
 
-    subject_map = {
-        'signup': '[MJCN] 이메일 인증 코드',
-        'password_reset': '[MJCN] 비밀번호 재설정 인증 코드',
-    }
-
     send_mail(
-        subject=subject_map.get(purpose, '[MJCN] 인증 코드'),
+        subject='[MJCN] 비밀번호 재설정 인증 코드',
         message=f'인증 코드: {code}\n\n3분 이내에 입력해주세요.',
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user.email],
@@ -196,7 +207,7 @@ def send_verification_email(user, purpose='signup'):
     return code
 
 
-def verify_code(user, code, purpose='signup', consume=True):
+def verify_code(user, code, purpose='password_reset', consume=True):
     # 동시성 방어: 같은 코드로 동시에 두 요청이 들어올 때
     # is_used 체크와 업데이트 사이의 race condition 방지.
     # consume=False: 코드 유효성만 확인하고 소모하지 않음 (verify→confirm

@@ -1,7 +1,10 @@
+from datetime import timedelta
 from smtplib import SMTPException
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework import status, viewsets, serializers
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -16,7 +19,7 @@ from drf_spectacular.utils import extend_schema, OpenApiResponse
 from .authentication import blacklist_current_access_token
 from .throttles import VerifyEmailPerEmailThrottle, PasswordResetPerEmailThrottle
 
-from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark
+from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark, PendingSignup
 from .schemas import (
     DetailResponseSerializer,
     KakaoLoginResponseSerializer,
@@ -33,7 +36,8 @@ from .serializers import (
     BookmarkCreateSerializer, BookmarkListSerializer,
 )
 from .services import (
-    send_verification_email, verify_code,
+    send_verification_email, send_signup_code_email, verify_code,
+    generate_verification_code,
     KakaoOAuthError, exchange_kakao_token, fetch_kakao_user, extract_kakao_profile,
 )
 
@@ -53,22 +57,37 @@ User = get_user_model()
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def signup(request):
+    """회원가입 (spec 5.1.1).
+
+    이 시점에는 User row를 만들지 않는다. PendingSignup에 (email, password_hash,
+    code, code_expires_at)를 upsert로 저장하고 인증 코드 메일만 발송. User INSERT는
+    verify_email에서 인증 코드 검증을 통과한 시점에 일어난다.
+    """
     serializer = SignupSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
+    email = serializer.validated_data['email']
+    password_hash = make_password(serializer.validated_data['password'])
+    code = generate_verification_code()
+    code_expires_at = timezone.now() + timedelta(minutes=3)
+
+    # 동시 가입 시도는 update_or_create가 row 덮어쓰기로 흡수.
+    # 같은 이메일로 두 번째 signup 호출 시 기존 row의 password_hash·code·expires
+    # 가 새 값으로 교체되어 이전 코드는 자동 무효화된다 (spec 5.1.1).
+    PendingSignup.objects.update_or_create(
+        email=email,
+        defaults={
+            'password_hash': password_hash,
+            'code': code,
+            'code_expires_at': code_expires_at,
+            'attempts': 0,
+        },
+    )
+
     try:
-        # User 생성과 이메일 발송을 하나의 트랜잭션으로 묶어
-        # SMTP 실패 시 User도 롤백하여 "계정은 생성됐는데 인증 코드는 못 받은" 상태 방지
-        with transaction.atomic():
-            user = serializer.save()
-            send_verification_email(user, purpose='signup')
-    except IntegrityError:
-        # validate_email 통과 후 save() 시점 사이의 동시 가입 경쟁 조건 방어
-        return Response(
-            {'email': ['이미 사용 중인 이메일입니다.']},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        send_signup_code_email(email, code)
     except SMTPException:
+        # PendingSignup row는 남겨두어 사용자가 resend로 복구 가능 (spec 9.4).
         return Response(
             {'detail': '인증 코드 발송에 실패했습니다. 잠시 후 다시 시도해주세요.'},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -88,30 +107,54 @@ def signup(request):
 @permission_classes([AllowAny])
 @throttle_classes([AnonRateThrottle, VerifyEmailPerEmailThrottle])
 def verify_email(request):
+    """이메일 인증 (spec 5.1.1).
+
+    PendingSignup의 code·expires를 검증하고 통과 시 트랜잭션 안에서
+    User row 생성 + PendingSignup row 삭제 + JWT 발급.
+    """
     serializer = VerifyEmailSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
     email = serializer.validated_data['email'].strip().lower()
     code = serializer.validated_data['code']
 
-    # 계정 enumeration 방지 + 이미 인증된 계정 재인증 차단:
-    # 존재하지 않는 계정, 이미 인증된 계정, 잘못된 코드를 모두 동일 오류로 응답
-    user = User.objects.filter(email__iexact=email).first()
-    if not user or user.is_email_verified:
-        return Response(
-            {'detail': '인증 코드가 일치하지 않습니다.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    invalid_msg = '인증 코드가 일치하지 않습니다.'
+    expired_msg = '인증 코드가 만료되었습니다. 다시 요청해주세요.'
 
-    _, error = verify_code(user, code, purpose='signup')
-    if error:
-        return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+    # 이미 인증 완료된 User가 있으면 enumeration 방지를 위해 동일 오류 반환.
+    if User.objects.filter(email__iexact=email).exists():
+        return Response({'detail': invalid_msg}, status=status.HTTP_400_BAD_REQUEST)
 
-    user.is_email_verified = True
-    user.save(update_fields=['is_email_verified'])
+    try:
+        with transaction.atomic():
+            pending = (
+                PendingSignup.objects
+                .select_for_update()
+                .filter(email=email)
+                .first()
+            )
+            if not pending or pending.code != code:
+                # 실패 시도 카운팅 (brute force 보조 방어).
+                if pending:
+                    pending.attempts = pending.attempts + 1
+                    pending.save(update_fields=['attempts'])
+                return Response({'detail': invalid_msg}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 인증 완료 시 JWT 토큰 발급 → 프론트가 세션 유지하여
-    # 온보딩 중 앱 종료 후 재접속 시 이어서 진행 가능
+            if timezone.now() > pending.code_expires_at:
+                return Response({'detail': expired_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+            # password_hash는 이미 make_password 결과이므로 password 컬럼에
+            # 직접 주입한다 (set_password를 다시 부르지 않음).
+            user = User.objects.create(
+                email=pending.email,
+                password=pending.password_hash,
+                is_email_verified=True,
+            )
+            pending.delete()
+    except IntegrityError:
+        # User.email unique 위반: 동시 verify 시도 race. 동일 오류로 응답.
+        return Response({'detail': invalid_msg}, status=status.HTTP_400_BAD_REQUEST)
+
     refresh = RefreshToken.for_user(user)
     return Response({
         'detail': '이메일 인증이 완료되었습니다.',
@@ -127,15 +170,24 @@ def verify_email(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def resend_verification(request):
+    """회원가입 인증 코드 재발송 (spec 5.1.1).
+
+    PendingSignup의 code·code_expires_at·attempts를 갱신하고 새 메일 발송.
+    미가입(PendingSignup 없음)·이미 인증 완료(User 존재)·SMTP 실패 모두 동일
+    응답으로 계정 존재 여부 노출 방지.
+    """
     serializer = ResendVerificationSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    # 미가입/이미 인증 완료/SMTP 실패 모두 동일 응답 (계정 존재 여부 노출 방지)
     email = serializer.validated_data['email'].strip().lower()
-    user = User.objects.filter(email__iexact=email).first()
-    if user and not user.is_email_verified:
+    pending = PendingSignup.objects.filter(email=email).first()
+    if pending and not User.objects.filter(email__iexact=email).exists():
+        pending.code = generate_verification_code()
+        pending.code_expires_at = timezone.now() + timedelta(minutes=3)
+        pending.attempts = 0
+        pending.save(update_fields=['code', 'code_expires_at', 'attempts', 'updated_at'])
         try:
-            send_verification_email(user, purpose='signup')
+            send_signup_code_email(email, pending.code)
         except SMTPException:
             pass
     return Response({'detail': '인증 코드가 발송되었습니다.'})
