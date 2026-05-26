@@ -241,6 +241,9 @@ OPENAI_REQUEST_TIMEOUT = int(os.getenv('OPENAI_REQUEST_TIMEOUT', '30'))
 OPENAI_MAX_RETRIES = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
 # VLM 전처리(spec 9.1.6): 한 공지당 VLM에 보낼 이미지 최대 장수
 OPENAI_VLM_MAX_IMAGES = int(os.getenv('OPENAI_VLM_MAX_IMAGES', '5'))
+# chat 컨텍스트 윈도우 (spec 5.2): 멀티턴 대화에 포함할 최근 메시지 개수
+# 토큰 비용·응답 품질의 균형. settings로 환경별 조절 가능.
+OPENAI_CHAT_CONTEXT_MESSAGES = int(os.getenv('OPENAI_CHAT_CONTEXT_MESSAGES', '10'))
 
 # 카카오 OAuth (spec 5.1.3 / 6.1)
 #

@@ -1,17 +1,26 @@
-"""chat 앱 — 채팅방 CRUD 테스트 (spec 6.5).
+"""chat 앱 테스트 (spec 6.5).
 
-PR 1 범위: 채팅방 생성/목록/상세/삭제. 메시지·AI·첨부는 후속 PR.
+PR 1 범위: 채팅방 CRUD.
+PR 2 범위: 메시지 전송 + AI 응답 + 첫 메시지 title/category 자동 생성.
 """
 
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
+
+from notices.ai.client import AIClientError
 
 from .models import ChatAttachment, ChatMessage, ChatRoom
 
 User = get_user_model()
 
 ROOMS_URL = '/api/v1/chat/rooms/'
+
+
+def messages_url(room_id: int) -> str:
+    return f'{ROOMS_URL}{room_id}/messages/'
 
 
 def make_user(email='a@mju.ac.kr'):
@@ -127,3 +136,114 @@ class ChatRoomDestroyTests(TestCase):
         res = self.client.delete(f'{ROOMS_URL}{other.id}/')
         self.assertEqual(res.status_code, 404)
         self.assertTrue(ChatRoom.objects.filter(id=other.id).exists())
+
+
+class SendMessageTests(TestCase):
+    """POST /rooms/<id>/messages/ — 메시지 전송 + AI 응답 (spec 5.2.3)."""
+
+    def setUp(self):
+        self.user_a = make_user('a@mju.ac.kr')
+        self.user_b = make_user('b@mju.ac.kr')
+        self.room = ChatRoom.objects.create(user=self.user_a)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user_a)
+
+    @patch('chat.views.generate_assistant_reply', return_value='AI 응답입니다.')
+    @patch('chat.views.classify_and_title', return_value=('수강신청 문의', '수강·졸업'))
+    def test_first_message_creates_title_and_category(self, mock_classify, mock_reply):
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '수강신청 언제 시작해?'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        # 응답은 assistant 메시지
+        self.assertEqual(res.data['role'], 'assistant')
+        self.assertEqual(res.data['content'], 'AI 응답입니다.')
+
+        # 분류 호출 1회, 응답 생성 1회
+        mock_classify.assert_called_once_with('수강신청 언제 시작해?')
+        self.assertEqual(mock_reply.call_count, 1)
+
+        # ChatRoom 갱신 확인
+        self.room.refresh_from_db()
+        self.assertEqual(self.room.title, '수강신청 문의')
+        self.assertEqual(self.room.category, '수강·졸업')
+        self.assertEqual(self.room.last_message_preview, 'AI 응답입니다.')
+
+        # 메시지 2개 (user + assistant)
+        msgs = list(self.room.messages.order_by('created_at'))
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual((msgs[0].role, msgs[0].content), ('user', '수강신청 언제 시작해?'))
+        self.assertEqual((msgs[1].role, msgs[1].content), ('assistant', 'AI 응답입니다.'))
+
+    @patch('chat.views.generate_assistant_reply', return_value='두 번째 응답')
+    @patch('chat.views.classify_and_title', return_value=('새 제목', '기타'))
+    def test_second_message_does_not_overwrite_title(self, mock_classify, mock_reply):
+        # 첫 메시지 후 title 이미 채워진 상태
+        self.room.title = '이미 정해진 제목'
+        self.room.category = '공모전'
+        self.room.save(update_fields=['title', 'category'])
+        ChatMessage.objects.create(room=self.room, role='user', content='첫 질문')
+        ChatMessage.objects.create(room=self.room, role='assistant', content='첫 응답')
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '추가 질문'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        # 두 번째 이후 메시지는 classify 호출 안 함
+        mock_classify.assert_not_called()
+        self.room.refresh_from_db()
+        self.assertEqual(self.room.title, '이미 정해진 제목')
+        self.assertEqual(self.room.category, '공모전')
+
+    @patch('chat.views.generate_assistant_reply', return_value='응답')
+    @patch('chat.views.classify_and_title', return_value=('t', '기타'))
+    @override_settings(OPENAI_CHAT_CONTEXT_MESSAGES=3)
+    def test_context_window_passes_only_last_n_messages(self, mock_classify, mock_reply):
+        # 기존 메시지 5개 + 새 user 메시지 1개 = 6개. context=3이면 마지막 3개만 전달.
+        for i in range(5):
+            ChatMessage.objects.create(
+                room=self.room, role='user' if i % 2 == 0 else 'assistant', content=f'old-{i}'
+            )
+        # 첫 메시지가 이미 있으니 classify 호출 안 됨 (room.messages 1개 이상 존재)
+        res = self.client.post(messages_url(self.room.id), {'content': '새 질문'}, format='json')
+        self.assertEqual(res.status_code, 201)
+        mock_classify.assert_not_called()
+        # generate_assistant_reply에 전달된 history = 3개 (가장 최근 3개: old-4, old-3, 또는 새 user)
+        history_arg = mock_reply.call_args.args[0]
+        self.assertEqual(len(history_arg), 3)
+        # 가장 마지막 메시지는 방금 INSERT한 user 메시지
+        self.assertEqual(history_arg[-1].content, '새 질문')
+        self.assertEqual(history_arg[-1].role, 'user')
+
+    @patch('chat.views.classify_and_title', side_effect=AIClientError('boom'))
+    def test_ai_failure_rolls_back_and_returns_503(self, mock_classify):
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '첫 질문'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 503)
+        # 트랜잭션 롤백 → user 메시지도 저장 안 됨
+        self.assertEqual(self.room.messages.count(), 0)
+        self.room.refresh_from_db()
+        self.assertEqual(self.room.title, '')
+
+    def test_other_users_room_returns_404(self):
+        other = ChatRoom.objects.create(user=self.user_b)
+        res = self.client.post(messages_url(other.id), {'content': 'hi'}, format='json')
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(other.messages.count(), 0)
+
+    def test_unauthenticated_returns_401(self):
+        anon = APIClient()
+        res = anon.post(messages_url(self.room.id), {'content': 'hi'}, format='json')
+        self.assertEqual(res.status_code, 401)
+
+    def test_empty_content_returns_400(self):
+        res = self.client.post(messages_url(self.room.id), {'content': ''}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.room.messages.count(), 0)
