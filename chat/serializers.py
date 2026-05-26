@@ -1,11 +1,56 @@
+import os
+
 from rest_framework import serializers
 
 from .models import ChatAttachment, ChatMessage, ChatRoom
 
 
+# spec 5.2.4 — 첨부파일 허용 확장자·크기 제한
+ATTACHMENT_EXTENSIONS = {
+    # image
+    '.jpg': ChatAttachment.FILE_TYPE_IMAGE,
+    '.jpeg': ChatAttachment.FILE_TYPE_IMAGE,
+    '.png': ChatAttachment.FILE_TYPE_IMAGE,
+    # video
+    '.mp4': ChatAttachment.FILE_TYPE_VIDEO,
+    # document
+    '.pdf': ChatAttachment.FILE_TYPE_DOCUMENT,
+    '.docx': ChatAttachment.FILE_TYPE_DOCUMENT,
+}
+ATTACHMENT_MAX_SIZE = 10 * 1024 * 1024  # 10MB
+
+
+def classify_attachment(filename: str) -> str | None:
+    """확장자 → file_type. 허용되지 않은 확장자는 None."""
+    _, ext = os.path.splitext(filename or '')
+    return ATTACHMENT_EXTENSIONS.get(ext.lower())
+
+
 class ChatMessageCreateSerializer(serializers.Serializer):
-    """메시지 전송 요청 body (spec 6.5 POST /rooms/<id>/messages/)."""
+    """메시지 전송 요청 body (spec 6.5 POST /rooms/<id>/messages/).
+
+    JSON 또는 multipart/form-data 둘 다 지원. multipart의 경우 `attachments`
+    필드에 여러 파일을 동시 업로드 가능 (spec 5.2.4).
+    """
     content = serializers.CharField(min_length=1, max_length=4000)
+    attachments = serializers.ListField(
+        child=serializers.FileField(),
+        required=False,
+        default=list,
+        max_length=10,  # 동시 첨부 상한 (UX·서버 부하 가드)
+    )
+
+    def validate_attachments(self, files):
+        for f in files:
+            if classify_attachment(f.name) is None:
+                raise serializers.ValidationError(
+                    f'지원하지 않는 파일 형식입니다: {f.name} (jpg/png/mp4/pdf/docx만 가능)'
+                )
+            if f.size > ATTACHMENT_MAX_SIZE:
+                raise serializers.ValidationError(
+                    f'파일 크기가 10MB를 초과합니다: {f.name}'
+                )
+        return files
 
 
 class ChatAttachmentSerializer(serializers.ModelSerializer):

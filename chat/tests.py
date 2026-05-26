@@ -2,11 +2,13 @@
 
 PR 1 범위: 채팅방 CRUD.
 PR 2 범위: 메시지 전송 + AI 응답 + 첫 메시지 title/category 자동 생성.
+PR 3 범위: 첨부파일 업로드 (multipart) + validation.
 """
 
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -247,3 +249,112 @@ class SendMessageTests(TestCase):
         res = self.client.post(messages_url(self.room.id), {'content': ''}, format='json')
         self.assertEqual(res.status_code, 400)
         self.assertEqual(self.room.messages.count(), 0)
+
+
+class SendMessageAttachmentTests(TestCase):
+    """multipart 첨부파일 업로드 (spec 5.2.4)."""
+
+    def setUp(self):
+        self.user = make_user()
+        # 첨부파일 테스트는 첫 메시지가 아닌 케이스로 단순화 (분류 mock 안 해도 됨)
+        self.room = ChatRoom.objects.create(user=self.user)
+        ChatMessage.objects.create(room=self.room, role='user', content='첫 질문')
+        ChatMessage.objects.create(room=self.room, role='assistant', content='첫 응답')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    @patch('chat.views.generate_assistant_reply', return_value='첨부 확인했습니다.')
+    def test_image_attachment_saved(self, mock_reply):
+        image = SimpleUploadedFile('photo.png', b'\x89PNG\r\n\x1a\nfake', content_type='image/png')
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '이 사진 봐줘', 'attachments': [image]},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, 201)
+        user_msg = self.room.messages.filter(role='user').last()
+        self.assertEqual(user_msg.attachments.count(), 1)
+        attach = user_msg.attachments.first()
+        self.assertEqual(attach.file_type, 'image')
+        self.assertEqual(attach.original_name, 'photo.png')
+
+    @patch('chat.views.generate_assistant_reply', return_value='OK')
+    def test_document_attachment_saved(self, mock_reply):
+        pdf = SimpleUploadedFile('report.pdf', b'%PDF-1.4 fake', content_type='application/pdf')
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '이 문서 요약', 'attachments': [pdf]},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, 201)
+        attach = self.room.messages.filter(role='user').last().attachments.first()
+        self.assertEqual(attach.file_type, 'document')
+
+    @patch('chat.views.generate_assistant_reply', return_value='OK')
+    def test_multiple_attachments(self, mock_reply):
+        img = SimpleUploadedFile('a.jpg', b'fake', content_type='image/jpeg')
+        pdf = SimpleUploadedFile('b.pdf', b'fake', content_type='application/pdf')
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '둘 다 봐줘', 'attachments': [img, pdf]},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, 201)
+        attachments = self.room.messages.filter(role='user').last().attachments.all()
+        self.assertEqual(attachments.count(), 2)
+        self.assertEqual(
+            {a.file_type for a in attachments},
+            {'image', 'document'},
+        )
+
+    def test_disallowed_extension_returns_400(self):
+        exe = SimpleUploadedFile('bad.exe', b'MZ\x90\x00 fake', content_type='application/x-msdownload')
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': 'exe 보냄', 'attachments': [exe]},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, 400)
+        # 메시지·첨부 둘 다 저장 안 됨 (validation은 view 진입 전)
+        self.assertEqual(ChatAttachment.objects.count(), 0)
+        # 기존 메시지 2건은 그대로
+        self.assertEqual(self.room.messages.count(), 2)
+
+    def test_oversize_file_returns_400(self):
+        big = SimpleUploadedFile(
+            'big.png',
+            b'x' * (10 * 1024 * 1024 + 1),
+            content_type='image/png',
+        )
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '큰 파일', 'attachments': [big]},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(ChatAttachment.objects.count(), 0)
+
+    @patch('chat.views.generate_assistant_reply', return_value='OK')
+    def test_no_attachments_field_works_like_json(self, mock_reply):
+        # multipart인데 attachments 안 보내도 텍스트 흐름 그대로
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '첨부 없음'},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(ChatAttachment.objects.count(), 0)
+
+    @patch('chat.views.generate_assistant_reply', side_effect=AIClientError('boom'))
+    def test_ai_failure_rolls_back_attachments(self, mock_reply):
+        img = SimpleUploadedFile('a.jpg', b'fake', content_type='image/jpeg')
+        before_msgs = self.room.messages.count()
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': 'hi', 'attachments': [img]},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, 503)
+        # user 메시지·첨부 모두 롤백
+        self.assertEqual(self.room.messages.count(), before_msgs)
+        self.assertEqual(ChatAttachment.objects.count(), 0)
