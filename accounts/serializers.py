@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark
+from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark, PendingSignup
 
 User = get_user_model()
 
@@ -20,7 +20,9 @@ class SignupSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         # 이메일 정규화: 대소문자 구분 없이 저장/비교하여
-        # 'Abc@mju.ac.kr'과 'abc@mju.ac.kr'을 동일 계정으로 처리
+        # 'Abc@mju.ac.kr'과 'abc@mju.ac.kr'을 동일 계정으로 처리.
+        # 이미 인증 완료된 User만 차단 — PendingSignup이 있는 경우는
+        # views.signup에서 update_or_create로 자연스럽게 갱신 처리한다.
         normalized = value.strip().lower()
         if User.objects.filter(email__iexact=normalized).exists():
             raise serializers.ValidationError('이미 사용 중인 이메일입니다.')
@@ -50,9 +52,8 @@ class SignupSerializer(serializers.Serializer):
             raise serializers.ValidationError({'password': list(e.messages)})
         return data
 
-    def create(self, validated_data):
-        validated_data.pop('password_confirm')
-        return User.objects.create_user(**validated_data)
+    # NOTE: 이전과 달리 SignupSerializer.create()는 User를 만들지 않는다.
+    # PendingSignup row 생성은 views.signup이 직접 처리 (User INSERT는 verify 시점).
 
 
 class VerifyEmailSerializer(serializers.Serializer):

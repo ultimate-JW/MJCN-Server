@@ -161,7 +161,7 @@ class CurrentCourse(models.Model):
 class EmailVerification(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_verifications')
     code = models.CharField(max_length=8, verbose_name='인증 코드')
-    purpose = models.CharField(max_length=20, default='signup', verbose_name='용도')
+    purpose = models.CharField(max_length=20, default='password_reset', verbose_name='용도')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='생성 시각')
     expires_at = models.DateTimeField(verbose_name='만료 시각')
     is_used = models.BooleanField(default=False, verbose_name='사용 여부')
@@ -172,6 +172,28 @@ class EmailVerification(models.Model):
 
     def __str__(self):
         return f'{self.user.email} - {self.code}'
+
+
+class PendingSignup(models.Model):
+    """이메일 가입 임시 보관 (spec 4.1 / 5.1.1).
+
+    회원가입 시 이메일 인증 코드 검증을 통과하기 전까지만 사용. 인증 통과 시점에
+    User row를 만들면서 동시에 삭제된다. User FK가 없는 자족적 테이블.
+    """
+    email = models.EmailField(unique=True, verbose_name='이메일')
+    password_hash = models.CharField(max_length=128, verbose_name='비밀번호 해시')
+    code = models.CharField(max_length=8, verbose_name='인증 코드')
+    code_expires_at = models.DateTimeField(verbose_name='코드 만료 시각')
+    attempts = models.PositiveSmallIntegerField(default=0, verbose_name='실패 시도 횟수')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='최초 생성 시각')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='최근 갱신 시각')
+
+    class Meta:
+        verbose_name = '가입 임시 보관'
+        verbose_name_plural = '가입 임시 보관'
+
+    def __str__(self):
+        return f'{self.email} - {self.code}'
 
 
 class Bookmark(models.Model):
