@@ -1,4 +1,31 @@
 from django.db import models
+from django.utils.functional import cached_property
+
+
+# 시간표 추천(#97 5.3.6) 충돌 검사용 bitmap 상수.
+# 5요일 × 26 slot(09:00~22:00, 30분 단위). day별 32비트 분리(26+여유 6)로 비트 정렬 깔끔.
+TIMETABLE_DAY_IDX = {'월': 0, '화': 1, '수': 2, '목': 3, '금': 4}
+TIMETABLE_SLOT_BITS_PER_DAY = 32
+TIMETABLE_SLOTS = 26  # 09:00 시작 26 slot → 22:00
+
+
+def _slot_floor(t) -> int:
+    """시간 t를 09:00 기준 30분 슬롯 인덱스로 floor (start_time용)."""
+    return (t.hour - 9) * 2 + (1 if t.minute >= 30 else 0)
+
+
+def _slot_ceil(t) -> int:
+    """시간 t를 09:00 기준 30분 슬롯 인덱스로 ceil (end_time용, exclusive).
+
+    end_time이 슬롯 경계와 안 맞으면 한 슬롯 더 차지(보수적). 예: 11:50 → slot 6 (11:30~12:00 점유).
+    """
+    base = (t.hour - 9) * 2
+    if t.minute > 30:
+        return base + 2
+    if t.minute > 0:
+        return base + 1
+    return base
+
 
 # 강의 기본 정보(코드, 이름, 학점 등등)
 class Course(models.Model):
@@ -100,6 +127,26 @@ class CourseOffering(models.Model):
 
     def __str__(self):
         return f"[{self.section_no}] {self.course.name} ({self.year}-{self.semester})"
+
+    @cached_property
+    def time_bitmap(self) -> int:
+        """시간표 추천(#97 5.3.6) 충돌 검사용 5요일 × 26 slot bitmap.
+
+        bit index: day_idx * TIMETABLE_SLOT_BITS_PER_DAY + slot_idx.
+        충돌 검사: (a.time_bitmap & b.time_bitmap) != 0
+        09:00 이전 / 22:00 이후 시간은 범위 clamp (실데이터에 거의 없음).
+        토/일 또는 미지원 요일은 skip.
+        """
+        bits = 0
+        for sch in self.schedules.all():
+            day = TIMETABLE_DAY_IDX.get(sch.day_of_week)
+            if day is None:
+                continue
+            start = max(_slot_floor(sch.start_time), 0)
+            end = min(_slot_ceil(sch.end_time), TIMETABLE_SLOTS)
+            for s in range(start, end):
+                bits |= 1 << (day * TIMETABLE_SLOT_BITS_PER_DAY + s)
+        return bits
 
 
 # 선수 과목 관계 저장

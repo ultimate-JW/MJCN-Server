@@ -15,6 +15,7 @@ urlpatterns = [
     path('api/v1/information/', include('information.urls')),
     path('api/v1/notifications/', include('notifications.urls')),
     path('api/v1/chat/', include('chat.urls')),
+    path('api/v1/timetables/', include('timetables.urls')),
     # API 문서
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),

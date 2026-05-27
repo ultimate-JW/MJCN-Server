@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'notices',
     'information',
     'chat',
+    'timetables',
 ]
 
 MIDDLEWARE = [
