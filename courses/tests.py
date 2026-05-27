@@ -868,13 +868,25 @@ class ParseYearOpenTests(SimpleTestCase):
 class ClassifyLiberalSubtypeTests(SimpleTestCase):
     """classify_liberal_subtype — 학과코드 prefix + 교과목명 → 교양 4종 분류."""
 
-    def test_prefix_교필_은_공통교양(self):
-        # 학칙 §6 표시기호: 교필 = 공통교양 (이름은 "교양필수"지만 학교 의미는 공통)
+    def test_prefix_교필_영역매핑_시_공통교양(self):
+        # 학칙 §6 표시기호: 교필 = 공통교양. 단 §4.2 영역 매핑 통과 필요 (#80).
         self.assertEqual(classify_liberal_subtype('교필', '채플'), '공통교양')
 
-    def test_prefix_교선_은_핵심교양(self):
-        # 학칙 §6 표시기호: 교선 = 핵심교양
-        self.assertEqual(classify_liberal_subtype('교선', '동양철학사'), '핵심교양')
+    def test_prefix_교필_영역미매핑_시_일반교양_fallback(self):
+        # 교필인데 §4.2 영역(기독교/사고와표현/언어/진로와디지털리터러시) 매핑 못 잡으면
+        # 학칙 표 외 신규 과목 — 일반교양으로 강등 (#80).
+        self.assertEqual(classify_liberal_subtype('교필', '미등록교필과목'), '일반교양')
+
+    def test_prefix_교선_영역매핑_시_핵심교양(self):
+        # 학칙 §6 표시기호: 교선 = 핵심교양. 단 §4.3 영역 매핑 통과 필요 (#80).
+        self.assertEqual(classify_liberal_subtype('교선', '철학과 인간'), '핵심교양')
+
+    def test_prefix_교선_영역미매핑_시_일반교양_fallback(self):
+        # 교선인데 §4.3 영역(역사와철학/사회와공동체/문화와예술/과학기술과정보) 매핑 못 잡으면
+        # 학칙 표 외 신규 과목 — 일반교양으로 강등 (#80).
+        # 실제 사례: 4차산업혁명의이해 / 창업입문 / SW프로그래밍입문 등.
+        self.assertEqual(classify_liberal_subtype('교선', '4차산업혁명의이해'), '일반교양')
+        self.assertEqual(classify_liberal_subtype('교선', '창업입문'), '일반교양')
 
     def test_prefix_기자_는_학문기초교양(self):
         # 자연계 학문기초 — 미적분/물리/통계 등

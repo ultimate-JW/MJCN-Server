@@ -201,6 +201,12 @@ class Command(BaseCommand):
             if origin in LIBERAL_FILE_ORIGINS:
                 if liberal_subtype in LIBERAL_SUBTYPE_TO_CATEGORY:
                     row_category = LIBERAL_SUBTYPE_TO_CATEGORY[liberal_subtype]
+                else:
+                    # category=일반교양 fallback 시 liberal_subtype도 일반교양으로 동기화 (#80)
+                    # 교양 파일에 들어왔지만 prefix 룰에 안 잡힌 행(기문/기건/기사/교직/군* 등)을
+                    # 일반교양으로 일괄 라벨링. 학점 카운트가 (category, liberal_subtype) 튜플 키 기반이라
+                    # liberal_subtype=None이면 일반교양 GR row와 매칭 못 함.
+                    liberal_subtype = '일반교양'
             else:
                 # 전공 파일에서 학칙 §5.1 전공필수 8과목 매칭 시 category 보강 (#47)
                 # 학과코드 prefix가 해당 전공 인정 범위(컴공/컴정/반아)일 때만 전공필수로 정정.
