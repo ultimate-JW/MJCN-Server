@@ -8,6 +8,10 @@ from courses.models import (
     CourseSchedule,
     TIMETABLE_SLOT_BITS_PER_DAY,
 )
+from timetables.services.combining import (
+    generate_combinations,
+    group_offerings_by_course,
+)
 from timetables.services.filtering import (
     expand_to_offerings,
     filter_offerings_by_prefs,
@@ -279,3 +283,100 @@ class PipelineFilterTests(TestCase):
         prefs = {'no_morning': True, 'banned_days': ['금']}
         result = filter_offerings_by_prefs([good, bad_morning, bad_banned], prefs)
         self.assertEqual([o.id for o in result], [good.id])
+
+
+# STEP 5 (DFS 조합 생성) 검증
+class CombinationGenerationTests(TestCase):
+    def test_빈_후보_빈_결과(self):
+        self.assertEqual(list(generate_combinations([], max_credits=18)), [])
+
+    def test_단일_후보_한_조합(self):
+        c = _make_course(course_code='G001', credits=3)
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(10, 0), time(11, 0))
+        result = list(generate_combinations([o], max_credits=18))
+        self.assertEqual(result, [(o,)])
+
+    def test_충돌없는_2개_3개_non_empty_조합(self):
+        """2개 후보 → DFS가 {a}, {b}, {a,b} 세 non-empty 조합 yield."""
+        c1 = _make_course(course_code='G010', credits=3)
+        c2 = _make_course(course_code='G011', credits=3)
+        o1 = _make_offering(c1, section_no='G10')
+        o2 = _make_offering(c2, section_no='G11')
+        _add_schedule(o1, '월', time(10, 0), time(11, 0))
+        _add_schedule(o2, '화', time(10, 0), time(11, 0))
+        combos = list(generate_combinations([o1, o2], max_credits=18))
+        sets = {frozenset(c) for c in combos}
+        self.assertEqual(sets, {
+            frozenset({o1}),
+            frozenset({o2}),
+            frozenset({o1, o2}),
+        })
+
+    def test_충돌_2개_각각만_조합(self):
+        c1 = _make_course(course_code='G020', credits=3)
+        c2 = _make_course(course_code='G021', credits=3)
+        o1 = _make_offering(c1, section_no='G20')
+        o2 = _make_offering(c2, section_no='G21')
+        _add_schedule(o1, '월', time(10, 0), time(11, 0))
+        _add_schedule(o2, '월', time(10, 30), time(11, 30))   # 겹침
+        combos = list(generate_combinations([o1, o2], max_credits=18))
+        sets = {frozenset(c) for c in combos}
+        # {o1, o2} 조합은 절대 X
+        self.assertNotIn(frozenset({o1, o2}), sets)
+        self.assertEqual(sets, {frozenset({o1}), frozenset({o2})})
+
+    def test_같은_course_두_분반_OR_차단(self):
+        """같은 Course 분반 2개는 어떤 조합에도 동시 등장 X."""
+        c = _make_course(course_code='G030', credits=3)
+        o_a = _make_offering(c, section_no='G30A')
+        o_b = _make_offering(c, section_no='G30B')
+        _add_schedule(o_a, '월', time(10, 0), time(11, 0))
+        _add_schedule(o_b, '화', time(10, 0), time(11, 0))   # 시간 안 겹쳐도 같은 course
+        combos = list(generate_combinations([o_a, o_b], max_credits=18))
+        for combo in combos:
+            self.assertFalse(
+                {o_a, o_b}.issubset(set(combo)),
+                msg=f'같은 course 분반 둘 동시 선택됨: {combo}',
+            )
+        # {o_a}, {o_b} 둘 다 가능
+        sets = {frozenset(c) for c in combos}
+        self.assertEqual(sets, {frozenset({o_a}), frozenset({o_b})})
+
+    def test_max_credits_가지치기(self):
+        """4과목(각 3학점) 후보, max=9 → 4과목 조합 절대 X."""
+        offerings = []
+        for i in range(4):
+            c = _make_course(course_code=f'G04{i}', credits=3)
+            o = _make_offering(c, section_no=f'G04{i}')
+            _add_schedule(o, '월', time(9 + i, 0), time(9 + i, 50))
+            offerings.append(o)
+        combos = list(generate_combinations(offerings, max_credits=9))
+        # 최대 3과목 = 9학점까지만
+        max_size = max(len(c) for c in combos)
+        self.assertEqual(max_size, 3)
+        # 모든 조합 학점 합 ≤ 9
+        for combo in combos:
+            self.assertLessEqual(sum(o.course.credits for o in combo), 9)
+
+    def test_min_credits_미달_조합도_yield(self):
+        """min_credits soft (DFS는 안 거름, 점수 단계에서 패널티) — #97 결정."""
+        c = _make_course(course_code='G050', credits=3)
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(10, 0), time(11, 0))
+        combos = list(generate_combinations([o], max_credits=18))
+        # 3학점짜리 단일 조합이 그대로 yield됨 (min 무관)
+        self.assertEqual(combos, [(o,)])
+
+    def test_group_offerings_by_course_묶음(self):
+        c1 = _make_course(course_code='G060')
+        c2 = _make_course(course_code='G061')
+        a1 = _make_offering(c1, section_no='G60A')
+        a2 = _make_offering(c1, section_no='G60B')
+        b1 = _make_offering(c2, section_no='G61A')
+        groups = group_offerings_by_course([a1, a2, b1])
+        self.assertEqual(len(groups), 2)
+        # 같은 course의 분반은 한 그룹
+        for g in groups:
+            ids = {o.course_id for o in g}
+            self.assertEqual(len(ids), 1)
