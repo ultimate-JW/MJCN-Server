@@ -605,3 +605,164 @@ class ChatToolCallingTests(TestCase):
         second = mock_client.chat.completions.create.call_args_list[1]
         tool_msgs = [m for m in second.kwargs['messages'] if m['role'] == 'tool']
         self.assertTrue(any('error' in m['content'] for m in tool_msgs))
+
+
+# ─── Step 3 (#102) — Notice / Information 검색 RAG ─────────────────────
+
+from datetime import date as _date  # noqa: E402
+
+from django.utils import timezone as _tz  # noqa: E402
+
+from chat.tools import _tokenize_query, dispatch_tool_call  # noqa: E402
+from information.models import Information as _Information  # noqa: E402
+from notices.models import Notice as _Notice  # noqa: E402
+
+
+class TokenizeQueryTests(TestCase):
+    def test_basic_split(self):
+        self.assertEqual(
+            sorted(_tokenize_query('장학금 신청, 일정')),
+            sorted(['장학금', '신청', '일정']),
+        )
+
+    def test_short_tokens_dropped(self):
+        # 1자 토큰은 제외
+        self.assertEqual(_tokenize_query('a 장학'), ['장학'])
+
+    def test_empty_query(self):
+        self.assertEqual(_tokenize_query(''), [])
+        self.assertEqual(_tokenize_query('  ,. '), [])
+
+
+class SearchNoticesDispatcherTests(TestCase):
+    def setUp(self):
+        self.now = _tz.now()
+        _Notice.objects.create(
+            source='scholarship',
+            url='https://example.com/n1',
+            title='2026 국가장학금 신청 안내',
+            content='장학금 신청 일정 안내',
+            published_at=self.now,
+            tags=['장학금', '국가장학금'],
+        )
+        _Notice.objects.create(
+            source='academic',
+            url='https://example.com/n2',
+            title='수강신청 일정 안내',
+            content='수강신청 일정',
+            published_at=self.now,
+            tags=['수강신청', '학사'],
+        )
+        _Notice.objects.create(
+            source='general',
+            url='https://example.com/n3',
+            title='도서관 휴관 안내',
+            content='도서관 휴관',
+            published_at=self.now,
+            tags=['도서관'],
+        )
+
+    def test_keyword_matches_title_and_tags(self):
+        out = dispatch_tool_call(None, 'search_notices', {'query': '장학금'})
+        self.assertEqual(out['count'], 1)
+        self.assertEqual(out['results'][0]['title'], '2026 국가장학금 신청 안내')
+        self.assertEqual(out['results'][0]['url'], 'https://example.com/n1')
+
+    def test_multi_token_query(self):
+        out = dispatch_tool_call(None, 'search_notices', {'query': '수강신청 일정'})
+        self.assertGreaterEqual(out['count'], 1)
+        self.assertEqual(out['results'][0]['title'], '수강신청 일정 안내')
+
+    def test_empty_query_graceful(self):
+        out = dispatch_tool_call(None, 'search_notices', {'query': ''})
+        self.assertEqual(out['count'], 0)
+        self.assertEqual(out['results'], [])
+
+    def test_no_match_returns_empty(self):
+        out = dispatch_tool_call(None, 'search_notices', {'query': '존재하지않는키워드ABC'})
+        self.assertEqual(out['count'], 0)
+
+
+class SearchInformationDispatcherTests(TestCase):
+    def setUp(self):
+        from datetime import timedelta
+        today = _date.today()
+        _Information.objects.create(
+            source='wevity',
+            source_id='test-i1',
+            url='https://example.com/i1',
+            title='2026 디자인 공모전',
+            categories=['공모전', '디자인'],
+            end_date=today + timedelta(days=10),
+        )
+        _Information.objects.create(
+            source='wevity',
+            source_id='test-i2',
+            url='https://example.com/i2',
+            title='지나간 공모전',
+            categories=['공모전'],
+            end_date=today - timedelta(days=5),
+        )
+        _Information.objects.create(
+            source='wevity',
+            source_id='test-i3',
+            url='https://example.com/i3',
+            title='개발 부트캠프 안내',
+            categories=['부트캠프', 'IT'],
+            end_date=None,
+        )
+
+    def test_keyword_matches_categories(self):
+        out = dispatch_tool_call(None, 'search_information', {'query': '디자인 공모전'})
+        titles = [r['title'] for r in out['results']]
+        self.assertIn('2026 디자인 공모전', titles)
+        self.assertNotIn('지나간 공모전', titles)
+
+    def test_expired_excluded(self):
+        out = dispatch_tool_call(None, 'search_information', {'query': '공모전'})
+        titles = [r['title'] for r in out['results']]
+        self.assertNotIn('지나간 공모전', titles)
+
+    def test_no_end_date_included(self):
+        out = dispatch_tool_call(None, 'search_information', {'query': '부트캠프'})
+        self.assertEqual(out['count'], 1)
+        self.assertEqual(out['results'][0]['title'], '개발 부트캠프 안내')
+
+
+class ChatSearchToolIntegrationTests(TestCase):
+    """search_notices tool이 chat 흐름에서 정상 호출되는지 통합."""
+
+    def setUp(self):
+        self.user = make_user('a@mju.ac.kr')
+        self.room = ChatRoom.objects.create(user=self.user)
+        ChatMessage.objects.create(room=self.room, role='user', content='prev')
+        ChatMessage.objects.create(room=self.room, role='assistant', content='prev_a')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    @patch('chat.tools._search_notices', return_value={
+        'count': 1,
+        'query': '장학금',
+        'note': 'mock',
+        'results': [{'title': '국가장학금 신청', 'url': 'x', 'source': 'scholarship'}],
+    })
+    @patch('chat.services.get_client')
+    def test_chat_invokes_search_notices(self, mock_get_client, mock_search):
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response(
+                'search_notices', arguments='{"query": "장학금"}',
+            ),
+            _mock_text_response('국가장학금 안내드릴게요'),
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '장학금 신청 시기 알려줘'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        mock_search.assert_called_once()
+        second = mock_client.chat.completions.create.call_args_list[1]
+        tool_msgs = [m for m in second.kwargs['messages'] if m['role'] == 'tool']
+        self.assertTrue(any('국가장학금' in m['content'] for m in tool_msgs))
