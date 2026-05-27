@@ -823,3 +823,27 @@ class ResponseFormatGuideTests(TestCase):
         self.assertEqual(sys_msg['role'], 'system')
         self.assertIn('마크다운', sys_msg['content'])
         self.assertIn('금지', sys_msg['content'])
+
+
+# ─── #108: 검색 tool 의도 분류 (교내 vs 교외) ──────────────────────────
+
+class SearchToolIntentRoutingTests(TestCase):
+    """tool description + CHAT_SYSTEM에 교내/교외 의도 분류 가이드 검증."""
+
+    def test_tool_descriptions_disambiguate_intent(self):
+        from chat.tools import TOOLS_SCHEMA
+        by_name = {t['function']['name']: t['function'] for t in TOOLS_SCHEMA}
+
+        notices_desc = by_name['search_notices']['description']
+        info_desc = by_name['search_information']['description']
+
+        # search_notices: 교내·명지대 자체임을 명시
+        self.assertIn('교내', notices_desc)
+        # search_information: 교외/외부 + 교내 의도 시 search_notices 사용 명시
+        self.assertIn('교외', info_desc)
+        self.assertIn('search_notices', info_desc)
+
+    def test_system_prompt_includes_intent_guide(self):
+        from chat.prompts import CHAT_SYSTEM
+        for marker in ['교내', '교외', 'search_notices', 'search_information']:
+            self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 "{marker}" 가이드 누락')
