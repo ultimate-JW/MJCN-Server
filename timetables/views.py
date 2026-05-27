@@ -4,13 +4,18 @@
 - GET  /timetables/preference/ — 사용자 prefs 조회 (get_or_create)
 - PUT  /timetables/preference/ — 갱신
 """
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .codes import Note
 from .models import UserPreference
-from .serializers import TimetableResponseSerializer, UserPreferenceSerializer
+from .serializers import (
+    TimetableRecommendRequestSerializer,
+    TimetableResponseSerializer,
+    UserPreferenceSerializer,
+)
 from .services.pipeline import recommend_timetables
 
 
@@ -23,6 +28,10 @@ class TimetableRecommendView(APIView):
       max_credits, min_credits  — UserPreference field-level override (#97 결정 5)
     """
 
+    @extend_schema(
+        request=TimetableRecommendRequestSerializer,
+        responses={200: TimetableResponseSerializer, 400: TimetableResponseSerializer},
+    )
     def post(self, request):
         payload = request.data or {}
         year = payload.get('year')
