@@ -1,5 +1,6 @@
 from datetime import time
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from courses.models import (
@@ -8,6 +9,15 @@ from courses.models import (
     CourseSchedule,
     TIMETABLE_SLOT_BITS_PER_DAY,
 )
+from timetables.models import UserPreference
+from timetables.services.pipeline import (
+    PREFERENCE_FIELDS,
+    get_or_create_preference,
+    merge_prefs,
+    recommend_timetables,
+)
+
+User = get_user_model()
 from timetables.services.combining import (
     generate_combinations,
     group_offerings_by_course,
@@ -75,6 +85,23 @@ def _add_schedule(offering, day, start, end):
         start_time=start,
         end_time=end,
     )
+
+
+def _make_user(email='student@mju.ac.kr', **overrides):
+    defaults = dict(
+        password='testpass123',
+        name='홍길동',
+        grade=2,
+        semester=2,
+        admission_year=2024,
+        graduation_year=2027,
+        graduation_month=8,
+        major='컴퓨터공학전공',
+        is_email_verified=True,
+        is_onboarding_completed=True,
+    )
+    defaults.update(overrides)
+    return User.objects.create_user(email=email, **defaults)
 
 
 # CourseOffering.time_bitmap (#97 5.3.6) 정확성 + combination-level helper 검증
@@ -649,3 +676,79 @@ class DiversityTests(TestCase):
         result = select_diverse_top(combos, n=3)
         # 두 조합 다 disjoint이라 둘 다 선택, 첫째 = 100
         self.assertEqual(result[0][0], 100)
+
+
+# 파이프라인 오케스트레이터 (7-step 연결 + merge_prefs + get_or_create + fallback note) 검증
+class PipelineTests(TestCase):
+    def test_merge_prefs_payload_override(self):
+        user = _make_user(email='m1@mju.ac.kr')
+        pref = UserPreference.objects.create(
+            user=user, max_credits=18, min_credits=15,
+            prefer_off_days=['금'], no_morning=False,
+        )
+        # payload에 max_credits만 → 나머지는 DB값 유지
+        merged = merge_prefs({'max_credits': 21}, pref)
+        self.assertEqual(merged['max_credits'], 21)        # override
+        self.assertEqual(merged['min_credits'], 15)        # DB 유지
+        self.assertEqual(merged['prefer_off_days'], ['금'])  # DB 유지
+        self.assertEqual(merged['no_morning'], False)      # DB 유지
+
+    def test_merge_prefs_빈배열_명시_override(self):
+        user = _make_user(email='m2@mju.ac.kr')
+        pref = UserPreference.objects.create(user=user, prefer_off_days=['금'])
+        # payload에 빈 배열 → 명시적 비활성 override
+        merged = merge_prefs({'prefer_off_days': []}, pref)
+        self.assertEqual(merged['prefer_off_days'], [])
+
+    def test_merge_prefs_false_명시_override(self):
+        user = _make_user(email='m3@mju.ac.kr')
+        pref = UserPreference.objects.create(user=user, no_morning=True)
+        merged = merge_prefs({'no_morning': False}, pref)
+        self.assertEqual(merged['no_morning'], False)
+
+    def test_get_or_create_preference_lazy_생성(self):
+        user = _make_user(email='m4@mju.ac.kr')
+        # 사전 row 없음
+        self.assertFalse(UserPreference.objects.filter(user=user).exists())
+        pref = get_or_create_preference(user)
+        # 생성 + default 값
+        self.assertTrue(UserPreference.objects.filter(user=user).exists())
+        self.assertEqual(pref.max_credits, 18)
+        self.assertEqual(pref.min_credits, 15)
+        self.assertEqual(pref.prefer_off_days, [])
+        self.assertFalse(pref.no_morning)
+
+    def test_recommend_timetables_빈_후보_insufficient(self):
+        """Course 자체 없음 → STEP 1·2에서 빈 결과 → INSUFFICIENT_CANDIDATES."""
+        user = _make_user(email='m5@mju.ac.kr')
+        result = recommend_timetables(user, year=2026, semester=1, payload={})
+        self.assertEqual(result['plans'], [])
+        self.assertEqual(result['note'], 'insufficient_candidates')
+
+    def test_recommend_timetables_smoke_응답_구조(self):
+        """최소 fixture로 1+ plan 반환 + 응답 키 구조 검증."""
+        user = _make_user(email='m6@mju.ac.kr')
+        # 3 Course × 3 학점 = 9, 시간 안 겹침
+        for i in range(3):
+            c = _make_course(course_code=f'P00{i}', credits=3)
+            o = _make_offering(c, section_no=f'P00{i}')
+            _add_schedule(o, ['월', '화', '수'][i], time(10, 0), time(11, 0))
+        result = recommend_timetables(
+            user, year=2026, semester=1,
+            payload={'min_credits': 0},   # 학점 미달 패널티 회피
+        )
+        self.assertIn('plans', result)
+        self.assertIn('note', result)
+        if result['plans']:
+            plan = result['plans'][0]
+            for key in ('score', 'total_credits', 'credits_by_category', 'offerings', 'reason_codes'):
+                self.assertIn(key, plan)
+            # offerings는 CourseOffering 인스턴스 리스트
+            self.assertTrue(all(isinstance(o, CourseOffering) for o in plan['offerings']))
+
+    def test_PREFERENCE_FIELDS_7개(self):
+        """결정 3 — 7필드 유지 가드레일."""
+        self.assertEqual(len(PREFERENCE_FIELDS), 7)
+        self.assertIn('prefer_off_days', PREFERENCE_FIELDS)
+        self.assertIn('max_credits', PREFERENCE_FIELDS)
+        self.assertIn('lunch_break', PREFERENCE_FIELDS)
