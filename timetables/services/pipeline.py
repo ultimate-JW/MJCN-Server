@@ -10,6 +10,8 @@ note 발급:
 - insufficient_candidates: 각 STEP에서 후보 0 → 빈 plans 반환
 - low_diversity_pool: 다양성 통과 plans 1~2개 (TOP_N 미달)
 """
+from collections import defaultdict
+
 from courses.services import _build_short_categories, recommend_next_semester_courses
 
 from timetables.codes import Note
@@ -24,8 +26,14 @@ from timetables.services.scoring import score_combination
 
 
 # 내부 튜닝 상수 (#25 안 B 정책 — 외부 노출 X)
-CANDIDATE_POOL_SIZE = 20   # STEP 2 점수 상위 K
-TOP_N = 3                  # STEP 7 반환 plan 수 (#97 결정 9 — 시연 톤)
+CANDIDATE_POOL_SIZE = 20        # STEP 2 점수 상위 K
+TOP_N = 3                       # STEP 7 반환 plan 수 (#97 결정 9 — 시연 톤)
+
+# explosion 방지 가지치기 (시드 검증으로 실측 추가, 2026-05-27):
+# - 한 course 분반이 평균 9개 (공통교양 영어1 등 다분반) → 분기 폭 줄이기
+# - 분반 캡 5 + raw 누적 캡 5000 으로 응답시간 1초 이내 안정화
+MAX_SECTIONS_PER_COURSE = 5     # STEP 3.5 — 한 Course당 분반 최대 N개
+MAX_RAW_COMBOS = 5000           # STEP 5 — 누적 조합 cap (안전망)
 
 PREFERENCE_FIELDS = (
     'prefer_off_days', 'banned_days',
@@ -82,14 +90,25 @@ def recommend_timetables(user, year: int, semester: int, payload: dict) -> dict:
     if not offerings:
         return {'plans': [], 'note': Note.INSUFFICIENT_CANDIDATES}
 
+    # STEP 3.5: 분반 캡 — 한 Course당 분반 N개로 제한 (explosion 방지)
+    by_course = defaultdict(list)
+    for o in offerings:
+        if len(by_course[o.course_id]) < MAX_SECTIONS_PER_COURSE:
+            by_course[o.course_id].append(o)
+    offerings = [o for grp in by_course.values() for o in grp]
+
     # STEP 4: prefs hard filter
     filtered = filter_offerings_by_prefs(offerings, prefs)
     if not filtered:
         return {'plans': [], 'note': Note.INSUFFICIENT_CANDIDATES}
 
-    # STEP 5: DFS 조합 생성
+    # STEP 5: DFS 조합 생성 (MAX_RAW_COMBOS로 누적 cap — generator 일찍 중단)
     max_credits = prefs.get('max_credits', 18)
-    raw_combos = list(generate_combinations(filtered, max_credits=max_credits))
+    raw_combos = []
+    for combo in generate_combinations(filtered, max_credits=max_credits):
+        raw_combos.append(combo)
+        if len(raw_combos) >= MAX_RAW_COMBOS:
+            break
     if not raw_combos:
         return {'plans': [], 'note': Note.INSUFFICIENT_CANDIDATES}
 
