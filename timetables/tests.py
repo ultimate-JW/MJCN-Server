@@ -12,10 +12,23 @@ from timetables.services.combining import (
     generate_combinations,
     group_offerings_by_course,
 )
+from timetables.codes import Reason
 from timetables.services.filtering import (
     expand_to_offerings,
     filter_offerings_by_prefs,
     passes_prefs_hard_filter,
+)
+from timetables.services.scoring import (
+    BONUS_BACKLOG_COVER,
+    BONUS_LUNCH_BREAK,
+    BONUS_NO_MORNING,
+    BONUS_OFF_DAY,
+    PENALTY_CREDIT_LOW,
+    days_without_class,
+    has_evening,
+    has_lunch_break,
+    has_morning,
+    score_combination,
 )
 from timetables.utils.conflict import (
     has_any_conflict,
@@ -380,3 +393,146 @@ class CombinationGenerationTests(TestCase):
         for g in groups:
             ids = {o.course_id for o in g}
             self.assertEqual(len(ids), 1)
+
+
+# STEP 6 (combination 점수 + reason_codes 발급) 검증
+class CombinationScoringTests(TestCase):
+    def _combo_one(self, *, code='S001', credits=3, day='월', start=time(10, 0), end=time(11, 0),
+                   category='전공필수', tags=None):
+        c = _make_course(course_code=code, credits=credits, category=category, tags=tags or [])
+        o = _make_offering(c, section_no=code[:6])
+        _add_schedule(o, day, start, end)
+        return o
+
+    def test_빈_prefs_과목점수합만(self):
+        o = self._combo_one(code='S001')
+        score, reasons, meta = score_combination(
+            (o,), course_scores={o.course_id: 50}, prefs={},
+        )
+        # 과목 점수 50 + 1교시 없음(10시 시작) 가산 + min_credits 미달 패널티 (3 < 15)
+        # 1교시 없음 -> +10 NO_MORNING + reason
+        # 18시 이후 없음 -> +5 NO_EVENING + reason
+        # credits 3 < min 15 -> -15 + CREDITS_BELOW_TARGET
+        self.assertEqual(score, 50 + 10 + 5 - 15)
+        codes = [r['code'] for r in reasons]
+        self.assertIn(Reason.NO_MORNING_SATISFIED, codes)
+        self.assertIn(Reason.NO_EVENING_SATISFIED, codes)
+        self.assertIn(Reason.CREDITS_BELOW_TARGET, codes)
+        self.assertEqual(meta['credits'], 3)
+
+    def test_prefer_off_days_매칭_가산(self):
+        # 월수 강의 → 화목금 공강. prefer_off_days=['금'] 매칭.
+        o = self._combo_one(code='S010', day='월')
+        prefs = {'prefer_off_days': ['금'], 'no_morning': True, 'no_evening': True, 'min_credits': 0}
+        score, reasons, _ = score_combination(
+            (o,), {o.course_id: 0}, prefs,
+        )
+        # 금 공강 가산 +15, no_morning/no_evening 명시되어 점수 가산 없음 (reason만)
+        self.assertEqual(score, BONUS_OFF_DAY)
+        codes = [r['code'] for r in reasons]
+        self.assertIn(Reason.OFF_DAY_SATISFIED, codes)
+        # 충족 요일 meta 확인
+        off_day_meta = next(r for r in reasons if r['code'] == Reason.OFF_DAY_SATISFIED)['meta']
+        self.assertEqual(off_day_meta['days'], ['금'])
+
+    def test_no_morning_미명시_결과_좋으면_가산(self):
+        """사용자가 no_morning 안 켰어도 결과적으로 1교시 없으면 안내성 가산."""
+        o = self._combo_one(code='S020', start=time(10, 0))   # 1교시 아님
+        prefs = {'min_credits': 0}   # no_morning 미명시
+        score, reasons, _ = score_combination((o,), {o.course_id: 0}, prefs)
+        # +BONUS_NO_MORNING +BONUS_NO_EVENING
+        self.assertEqual(score, BONUS_NO_MORNING + 5)
+        self.assertIn(Reason.NO_MORNING_SATISFIED, [r['code'] for r in reasons])
+
+    def test_no_morning_명시시_가산X_reason만(self):
+        o = self._combo_one(code='S021', start=time(10, 0))
+        prefs = {'no_morning': True, 'min_credits': 0}
+        score, reasons, _ = score_combination((o,), {o.course_id: 0}, prefs)
+        # 명시했으니 가산 X, reason만 (no_evening은 미명시라 가산됨)
+        self.assertEqual(score, 5)  # no_evening 가산만
+        self.assertIn(Reason.NO_MORNING_SATISFIED, [r['code'] for r in reasons])
+
+    def test_lunch_break_명시_충족시_가산(self):
+        # 월 09:00-10:00 강의 → 12-14시 빈 → lunch_break 충족
+        o = self._combo_one(code='S030', start=time(9, 0), end=time(10, 0))
+        prefs = {'lunch_break': True, 'min_credits': 0}
+        score, reasons, _ = score_combination((o,), {o.course_id: 0}, prefs)
+        codes = [r['code'] for r in reasons]
+        self.assertIn(Reason.LUNCH_BREAK_SATISFIED, codes)
+        self.assertGreaterEqual(score, BONUS_LUNCH_BREAK)   # 다른 가산 더해질 수 있음
+
+    def test_short_categories_cover_가산(self):
+        o1 = self._combo_one(code='S040', category='전공필수')
+        o2 = self._combo_one(code='S041', category='공통교양', day='화')
+        short = {'전공필수', '공통교양'}
+        score, reasons, _ = score_combination(
+            (o1, o2), {o1.course_id: 0, o2.course_id: 0},
+            prefs={'min_credits': 0}, short_categories=short,
+        )
+        codes = [r['code'] for r in reasons]
+        self.assertIn(Reason.COVERS_SHORT_CATEGORIES, codes)
+        cover_meta = next(r for r in reasons if r['code'] == Reason.COVERS_SHORT_CATEGORIES)['meta']
+        self.assertEqual(set(cover_meta['categories']), short)
+        self.assertGreaterEqual(score, BONUS_BACKLOG_COVER)
+
+    def test_short_categories_부분_cover시_가산_X(self):
+        o = self._combo_one(code='S050', category='전공필수')
+        short = {'전공필수', '공통교양'}   # 공통교양 안 들음 → 부분 cover
+        score, reasons, _ = score_combination(
+            (o,), {o.course_id: 0}, prefs={'min_credits': 0}, short_categories=short,
+        )
+        codes = [r['code'] for r in reasons]
+        self.assertNotIn(Reason.COVERS_SHORT_CATEGORIES, codes)
+
+    def test_credits_범위_안_reason_가산X(self):
+        # 15학점 = min, max=18 → 범위 안 (가산 없음, reason만)
+        os = [self._combo_one(code=f'S06{i}', credits=3, day='월', start=time(9 + i * 2, 0),
+                              end=time(9 + i * 2 + 1, 0)) for i in range(5)]
+        prefs = {'min_credits': 15, 'max_credits': 18}
+        scores = {o.course_id: 0 for o in os}
+        score, reasons, meta = score_combination(tuple(os), scores, prefs)
+        codes = [r['code'] for r in reasons]
+        self.assertIn(Reason.CREDITS_IN_TARGET_RANGE, codes)
+        self.assertNotIn(Reason.CREDITS_BELOW_TARGET, codes)
+        self.assertEqual(meta['credits'], 15)
+
+    def test_credits_미달_penalty(self):
+        o = self._combo_one(code='S070', credits=3)
+        prefs = {'min_credits': 15, 'max_credits': 18}
+        score, reasons, _ = score_combination((o,), {o.course_id: 100}, prefs)
+        # 100 + NO_MORNING + NO_EVENING - PENALTY_CREDIT_LOW
+        self.assertEqual(score, 100 + 10 + 5 - PENALTY_CREDIT_LOW)
+        self.assertIn(Reason.CREDITS_BELOW_TARGET, [r['code'] for r in reasons])
+
+    def test_interest_매칭_reason(self):
+        o = self._combo_one(code='S080', tags=['보안', 'AI'])
+        prefs = {'min_credits': 0}
+        score, reasons, _ = score_combination(
+            (o,), {o.course_id: 0}, prefs,
+            user_interest_categories={'보안', '데이터분석'},
+        )
+        codes = [r['code'] for r in reasons]
+        self.assertIn(Reason.MATCHES_INTEREST_AREAS, codes)
+        meta = next(r for r in reasons if r['code'] == Reason.MATCHES_INTEREST_AREAS)['meta']
+        self.assertEqual(meta['count'], 1)
+        self.assertEqual(meta['areas'], ['보안'])
+
+    def test_has_lunch_break_helper_충족(self):
+        """월 09:00-10:00 강의 후 12-14 전부 비어있음 → True."""
+        o = self._combo_one(code='S090', start=time(9, 0), end=time(10, 0))
+        self.assertTrue(has_lunch_break(o.time_bitmap))
+
+    def test_has_lunch_break_helper_미충족(self):
+        """월 12-14시 가득 차면 False."""
+        o = self._combo_one(code='S091', start=time(12, 0), end=time(14, 0))
+        self.assertFalse(has_lunch_break(o.time_bitmap))
+
+    def test_has_morning_has_evening_helper(self):
+        morning = self._combo_one(code='S100', start=time(9, 0), end=time(10, 0))
+        evening = self._combo_one(code='S101', day='화', start=time(18, 0), end=time(19, 50))
+        midday = self._combo_one(code='S102', day='수', start=time(14, 0), end=time(15, 0))
+        self.assertTrue(has_morning(morning.time_bitmap))
+        self.assertFalse(has_morning(midday.time_bitmap))
+        self.assertTrue(has_evening(evening.time_bitmap))
+        self.assertFalse(has_evening(midday.time_bitmap))
+        self.assertIn('금', days_without_class(morning.time_bitmap))
