@@ -54,12 +54,20 @@ def classify_and_title(first_user_message: str) -> tuple[str, str]:
     return title, category
 
 
-def generate_assistant_reply(history: Iterable[ChatMessage]) -> str:
-    """대화 히스토리(시간 순) → assistant 응답 텍스트.
+def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
+    """대화 히스토리(시간 순) + 사용자 컨텍스트 → assistant 응답 텍스트 (spec 5.2).
 
     호출 측이 컨텍스트 윈도우(최근 N개)를 잘라서 넘기는 책임을 진다.
+
+    user는 system prompt 앞에 한 줄 prefix로 들어가 AI가 매번 사용자 신상을
+    재확인하지 않아도 답변을 개인화할 수 있게 한다. 온보딩 미완료여서 정보가
+    부족한 user는 prefix가 자동 축소된다.
     """
-    api_messages = [{'role': 'system', 'content': prompts.CHAT_SYSTEM}]
+    system_parts = [prompts.CHAT_SYSTEM]
+    user_context = prompts.build_user_context(user)
+    if user_context:
+        system_parts.append(user_context)
+    api_messages = [{'role': 'system', 'content': '\n\n'.join(system_parts)}]
     for m in history:
         api_messages.append({'role': m.role, 'content': m.content})
 

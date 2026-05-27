@@ -164,7 +164,7 @@ class ChatRoomViewSet(
             )
             recent.reverse()  # 호출 시점에 시간 순으로
 
-            assistant_text = generate_assistant_reply(recent)
+            assistant_text = generate_assistant_reply(self.request.user, recent)
 
             assistant_msg = ChatMessage.objects.create(
                 room=room,
