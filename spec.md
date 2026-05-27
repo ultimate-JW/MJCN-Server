@@ -1273,7 +1273,7 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 - 응답 필드
   - `graduation_progress_percent` (`IntegerField`, 0 ~ 100)
 
-#### 5.3.6 시간표 조합 추천 (#76)
+#### 5.3.6 시간표 조합 추천 (#97)
 
 - **입력**: 사용자 수강이력 + 전공 + 학년/학기 + 관심사 + `target_year` / `target_semester` + 시간표 선호 노브(아래)
 - **고려사항**: 5.3.1 추천 점수 재활용 + 시간 충돌 회피 + 사용자 시간표 선호 + 다양성
@@ -1428,7 +1428,7 @@ combination_score = sum(course_score for course in combo)  # 5.3.1 점수 재활
 - **서버 (정형 데이터 기반)**: 충돌 검사 / 학점 / 조합 생성 / 필터 / 점수 계산
 - **LLM (OpenAI)**: `reason_codes` → 자연어 변환 / 관심사 해석 / 사용자 질의응답 / 학기 미지정 시 되묻기
 
-##### MVP 범위 (#76)
+##### MVP 범위 (#97)
 
 - 위 7-step 파이프라인 / UserPreference 7필드 / 충돌 bitmap / Jaccard dedup / `POST /timetables/recommend/` / `GET·PUT /timetables/preference/`
 - **V2 분리**: `SavedTimetable` (저장 기능), branch-and-bound 추가 가지치기, 카테고리별 후보 캡, LLM 자연어 통합
