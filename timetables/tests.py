@@ -18,6 +18,11 @@ from timetables.services.filtering import (
     filter_offerings_by_prefs,
     passes_prefs_hard_filter,
 )
+from timetables.services.diversity import (
+    JACCARD_THRESHOLD,
+    jaccard,
+    select_diverse_top,
+)
 from timetables.services.scoring import (
     BONUS_BACKLOG_COVER,
     BONUS_LUNCH_BREAK,
@@ -536,3 +541,111 @@ class CombinationScoringTests(TestCase):
         self.assertTrue(has_evening(evening.time_bitmap))
         self.assertFalse(has_evening(midday.time_bitmap))
         self.assertIn('금', days_without_class(morning.time_bitmap))
+
+
+# STEP 7 (Jaccard 다양성 dedup) 검증
+class DiversityTests(TestCase):
+    def test_jaccard_빈_빈(self):
+        self.assertEqual(jaccard(set(), set()), 0.0)
+
+    def test_jaccard_동일_집합(self):
+        self.assertEqual(jaccard({1, 2, 3}, {1, 2, 3}), 1.0)
+
+    def test_jaccard_disjoint(self):
+        self.assertEqual(jaccard({1, 2}, {3, 4}), 0.0)
+
+    def test_jaccard_부분_겹침(self):
+        # |A∩B|=2, |A∪B|=4 → 0.5
+        self.assertEqual(jaccard({1, 2, 3}, {2, 3, 4}), 0.5)
+
+    def test_jaccard_6과목_1과목만_다름_위협_초과(self):
+        a = set(range(1, 7))     # {1..6}
+        b = {1, 2, 3, 4, 5, 7}   # 5개 동일, 1개 다름
+        # |A∩B|=5, |A∪B|=7 → 5/7 ≈ 0.714 (임계값 0.7 이상)
+        self.assertAlmostEqual(jaccard(a, b), 5/7, places=4)
+        self.assertGreaterEqual(jaccard(a, b), JACCARD_THRESHOLD)
+
+    def test_select_diverse_top_빈_입력(self):
+        self.assertEqual(select_diverse_top([]), [])
+
+    def test_select_diverse_top_단일(self):
+        c = _make_course(course_code='D001')
+        o = _make_offering(c, section_no='D001')
+        result = select_diverse_top([(100, (o,))])
+        self.assertEqual(result, [(100, (o,))])
+
+    def test_select_diverse_top_모두_다른_조합_3개_선택(self):
+        offerings = []
+        for i in range(9):
+            c = _make_course(course_code=f'D01{i}')
+            o = _make_offering(c, section_no=f'D01{i}')
+            offerings.append(o)
+        # 3 조합, 서로 겹침 없음 (각 3개씩)
+        combos = [
+            (100, (offerings[0], offerings[1], offerings[2])),
+            (90,  (offerings[3], offerings[4], offerings[5])),
+            (80,  (offerings[6], offerings[7], offerings[8])),
+        ]
+        result = select_diverse_top(combos, n=3)
+        self.assertEqual(len(result), 3)
+        self.assertEqual([r[0] for r in result], [100, 90, 80])
+
+    def test_select_diverse_top_5_6_동일_중복_제외(self):
+        # 6개 offering, A=처음6 vs B=처음5+다른1 → jaccard=5/7≈0.714 ≥ 0.7
+        offerings = []
+        for i in range(7):
+            c = _make_course(course_code=f'D02{i}')
+            o = _make_offering(c, section_no=f'D02{i}')
+            offerings.append(o)
+        combos = [
+            (100, tuple(offerings[:6])),                       # A
+            (90,  tuple(list(offerings[:5]) + [offerings[6]])),# B — A와 유사도 0.714
+            (80,  tuple(offerings[1:7])),                      # C — A와 유사도 5/7=0.714, B와 4/8=0.5
+        ]
+        result = select_diverse_top(combos, n=3)
+        # A 선택, B 제외 (유사도 0.714 ≥ 0.7), C는 A와 0.714 ≥ 0.7 → 제외
+        # 결과: A 하나만
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0], 100)
+
+    def test_select_diverse_top_2_4_다름_둘_다_선택(self):
+        # |A∩B|=2, |A∪B|=4 → 0.5 < 0.7 → 별개
+        offerings = []
+        for i in range(4):
+            c = _make_course(course_code=f'D03{i}')
+            o = _make_offering(c, section_no=f'D03{i}')
+            offerings.append(o)
+        combos = [
+            (100, (offerings[0], offerings[1], offerings[2])),
+            (90,  (offerings[1], offerings[2], offerings[3])),   # 2개 공통
+        ]
+        result = select_diverse_top(combos, n=3)
+        self.assertEqual(len(result), 2)
+        self.assertEqual([r[0] for r in result], [100, 90])
+
+    def test_select_diverse_top_n_제한(self):
+        offerings = []
+        for i in range(6):
+            c = _make_course(course_code=f'D04{i}')
+            o = _make_offering(c, section_no=f'D04{i}')
+            offerings.append(o)
+        combos = [
+            (100, (offerings[0],)),
+            (90,  (offerings[1],)),
+            (80,  (offerings[2],)),
+            (70,  (offerings[3],)),
+        ]
+        result = select_diverse_top(combos, n=2)
+        self.assertEqual(len(result), 2)
+        self.assertEqual([r[0] for r in result], [100, 90])
+
+    def test_select_diverse_top_점수_DESC_정렬_가정_우선_채택(self):
+        """caller가 정렬해서 넘긴 순서대로 처리됨 — 1번 항상 채택."""
+        c1 = _make_course(course_code='D050')
+        c2 = _make_course(course_code='D051')
+        o1 = _make_offering(c1, section_no='D050')
+        o2 = _make_offering(c2, section_no='D051')
+        combos = [(100, (o1,)), (90, (o2,))]
+        result = select_diverse_top(combos, n=3)
+        # 두 조합 다 disjoint이라 둘 다 선택, 첫째 = 100
+        self.assertEqual(result[0][0], 100)
