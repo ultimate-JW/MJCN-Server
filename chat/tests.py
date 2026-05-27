@@ -446,3 +446,162 @@ class SendMessageWithUserContextTests(TestCase):
         self.assertIn('홍길동', system_msg['content'])
         self.assertIn('컴퓨터공학', system_msg['content'])
         self.assertIn('3학년 1학기', system_msg['content'])
+
+
+# ─── Step 2 (#100) — function calling 통합 ─────────────────────────────
+
+from types import SimpleNamespace  # noqa: E402
+
+
+def _mock_text_response(content: str):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))]
+    )
+
+
+def _mock_tool_call_response(name: str, arguments: str = '{}', call_id: str = 'call_1'):
+    """OpenAI 응답 — tool_calls 1건 포함."""
+    fn = SimpleNamespace(arguments=arguments)
+    fn.name = name  # SimpleNamespace 생성자에서 name이 Mock의 reserved와 충돌해 직접 set
+    call = SimpleNamespace(id=call_id, type='function', function=fn)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='', tool_calls=[call]))]
+    )
+
+
+class ChatToolCallingTests(TestCase):
+    """Step 2 — function calling으로 courses 데이터 통합."""
+
+    def setUp(self):
+        self.user = make_user('a@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.save()
+        self.room = ChatRoom.objects.create(user=self.user)
+        ChatMessage.objects.create(room=self.room, role='user', content='prev')
+        ChatMessage.objects.create(room=self.room, role='assistant', content='prev_a')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    @patch('chat.services.get_client')
+    def test_normal_question_does_not_call_tools(self, mock_get_client):
+        # tool_calls=None 응답 → 일반 자연어 응답만
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.return_value = _mock_text_response('일반 답변')
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '잘 지내?'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['content'], '일반 답변')
+        # tools 인자는 들어가지만 호출은 1회 (한 번에 답변)
+        self.assertEqual(mock_client.chat.completions.create.call_count, 1)
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertIn('tools', call_kwargs)
+
+    @patch('chat.tools.recommend_next_semester_courses', return_value=[])
+    @patch('chat.services.get_client')
+    def test_tool_call_executes_dispatcher_and_resolves(
+        self, mock_get_client, mock_recommend,
+    ):
+        # 1차 응답: tool_calls (get_next_semester_courses 호출)
+        # 2차 응답: tool 결과 받은 후 최종 자연어
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response(
+                'get_next_semester_courses',
+                arguments='{"target_year": 2026, "target_semester": 1}',
+            ),
+            _mock_text_response('추천: 운영체제, 데이터통신…'),
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '2026-1학기 시간표 짜줘'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['content'], '추천: 운영체제, 데이터통신…')
+
+        # dispatcher가 정확한 인자로 호출됐는지
+        mock_recommend.assert_called_once()
+        call_kwargs = mock_recommend.call_args.kwargs
+        self.assertEqual(call_kwargs.get('target_year'), 2026)
+        self.assertEqual(call_kwargs.get('target_semester'), 1)
+
+        # OpenAI 호출 2회 (tool call 1 + 최종 응답 1)
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+
+        # 두 번째 호출 messages에 tool 결과 들어 있어야 함
+        second_call = mock_client.chat.completions.create.call_args_list[1]
+        msgs = second_call.kwargs['messages']
+        roles = [m['role'] for m in msgs]
+        self.assertIn('tool', roles)
+
+    @patch('chat.tools.calc_graduation_progress', return_value=42)
+    @patch('chat.services.get_client')
+    def test_graduation_progress_tool(self, mock_get_client, mock_progress):
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response('get_graduation_progress'),
+            _mock_text_response('졸업까지 42% 진행됐어'),
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '졸업까지 얼마나 남았어?'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        mock_progress.assert_called_once_with(self.user)
+        # 두 번째 호출의 tool message 본문에 42가 들어 있어야 함
+        second = mock_client.chat.completions.create.call_args_list[1]
+        tool_msgs = [m for m in second.kwargs['messages'] if m['role'] == 'tool']
+        self.assertTrue(any('42' in m['content'] for m in tool_msgs))
+
+    @patch('chat.tools.recommend_next_semester_courses', return_value=[])
+    @patch('chat.services.get_client')
+    def test_tool_call_loop_cap(self, mock_get_client, mock_recommend):
+        # AI가 계속 tool만 부르는 악성 시나리오 — _MAX_TOOL_ROUNDS 초과 시
+        # 마지막에 tools 없는 호출로 강제 종료
+        mock_client = mock_get_client.return_value
+        loop_resp = _mock_tool_call_response('get_next_semester_courses')
+        final_resp = _mock_text_response('강제 종료 응답')
+        # 3회 loop + 1회 final = 4회
+        mock_client.chat.completions.create.side_effect = [
+            loop_resp, loop_resp, loop_resp, final_resp,
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '시간표 짜줘'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['content'], '강제 종료 응답')
+        # 마지막 호출은 tools 인자 없어야 함 (자연어 강제)
+        last = mock_client.chat.completions.create.call_args_list[-1]
+        self.assertNotIn('tools', last.kwargs)
+
+    @patch('chat.tools.recommend_next_semester_courses',
+           side_effect=RuntimeError('boom'))
+    @patch('chat.services.get_client')
+    def test_dispatcher_error_does_not_crash_chat(self, mock_get_client, mock_recommend):
+        # dispatch 내부에서 예외가 나도 chat은 503 대신 정상 응답으로 끝나야 함
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response('get_next_semester_courses'),
+            _mock_text_response('현재 추천을 못 줘서 미안'),
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '시간표 짜줘'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        # tool 결과에 error 키가 들어가 AI가 보고 사용자에게 안내
+        second = mock_client.chat.completions.create.call_args_list[1]
+        tool_msgs = [m for m in second.kwargs['messages'] if m['role'] == 'tool']
+        self.assertTrue(any('error' in m['content'] for m in tool_msgs))
