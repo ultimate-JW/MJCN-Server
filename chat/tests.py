@@ -783,9 +783,20 @@ class ResponseFormatGuideTests(TestCase):
     def test_system_prompt_includes_notices_card_style(self):
         """notices/ai BUILD_CARDS_SYSTEM 톤앤매너 차용 검증."""
         from chat.prompts import CHAT_SYSTEM
-        # 음슴체·이모지·명사형 제목 가이드 포함
-        for marker in ['음슴체', '이모지', '명사형']:
+        # 이모지·명사형 제목 가이드 포함 (음슴체는 #106에서 존댓말로 교체)
+        for marker in ['이모지', '명사형']:
             self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 "{marker}" 가이드 누락')
+
+    def test_system_prompt_enforces_polite_tone(self):
+        """#106 — 사용자에게 말하는 문장은 무조건 존댓말."""
+        from chat.prompts import CHAT_SYSTEM
+        self.assertIn('존댓말', CHAT_SYSTEM)
+        self.assertIn('반말', CHAT_SYSTEM)  # 반말 금지 명시 표식
+        # 예시 블록에 존댓말 표지가 있어야 함 (반말 종결어미가 아닌 ~요/~습니다 형태)
+        self.assertIn('정리해드릴게요', CHAT_SYSTEM)
+        # 예시에서 반말 표현이 사라졌는지 spot check
+        self.assertNotIn('정리해줬어', CHAT_SYSTEM)
+        self.assertNotIn('찾아볼까?', CHAT_SYSTEM)
 
     @patch('chat.services.get_client')
     def test_format_guide_reaches_openai(self, mock_get_client):
