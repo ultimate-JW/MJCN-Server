@@ -1273,6 +1273,166 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
 - 응답 필드
   - `graduation_progress_percent` (`IntegerField`, 0 ~ 100)
 
+#### 5.3.6 시간표 조합 추천 (#97)
+
+- **입력**: 사용자 수강이력 + 전공 + 학년/학기 + 관심사 + `target_year` / `target_semester` + 시간표 선호 노브(아래)
+- **고려사항**: 5.3.1 추천 점수 재활용 + 시간 충돌 회피 + 사용자 시간표 선호 + 다양성
+- **출력**: 시간 충돌 없는 실제 수강 시간표 조합 **top-3** (다양성 dedup 적용)
+- **구현 위치**: 별도 `timetables/` 앱 신설. `UserPreference` 모델 신설. `CourseOffering.time_bitmap` cached_property 추가.
+
+##### 처리 흐름 — 7-step 파이프라인
+
+1. **과목 후보 필터** (hard: 이수 완료 / 선수 미충족 / 미개설) — 5.3.1 hard filter 재활용
+2. **점수 상위 K=20 과목으로 prune** (5.3.1 `calculate_recommendation_score` 사용)
+3. **분반 확장** — `Course` → `CourseOffering` (분반 단위 후보, 같은 과목 다른 분반은 서로 다른 후보)
+4. **사용자 prefs hard filter** — `no_morning` / `no_evening` / `banned_days` / `max_credits`
+5. **조합 생성** — DFS + bitmap 충돌 검사 + 학점 가지치기 + 같은 과목 분반 OR 선택
+6. **조합 단위 점수** — 과목 점수 합 + prefs 가산점 + 부족 카테고리 cover 가산
+7. **다양성 dedup + top-3** — Jaccard 유사도 ≥ 0.7이면 중복 취급 제외, 상위 3개 반환
+
+##### 데이터 모델
+
+###### `UserPreference` (timetables 앱 신설, OneToOne with User)
+
+| 필드 | 타입 | 기본값 | 적용 방식 |
+|------|------|--------|----------|
+| `prefer_off_days` | JSONField (list[str]) | `[]` | Soft — 선호 요일이 실제 공강이면 가산점 |
+| `banned_days` | JSONField (list[str]) | `[]` | Hard — 해당 요일에 수업 있는 분반 제외 |
+| `no_morning` | Bool | `false` | Hard — `start_time < 10:00` 분반 제외 (1교시 09:00 시작 제외) |
+| `no_evening` | Bool | `false` | Hard — `start_time >= 18:00` 분반 제외 |
+| `lunch_break` | Bool | `false` | Soft — 12:00~14:00 사이 연속 2 slot(=1시간) 이상 공강이면 가산점 |
+| `max_credits` | Int | `18` | Hard 상한 (DFS 가지치기) |
+| `min_credits` | Int | `15` | Soft 하한 (미달 조합 점수 패널티) |
+
+미설정 사용자는 추천 요청 시 `get_or_create`로 default 값 row 생성.
+
+###### `CourseOffering.time_bitmap` (courses 앱, cached_property)
+
+- 5요일(월~금) × 26 slot(09:00~22:00, 30분 단위) bitmap
+- bit index: `day_idx(0~4) * 32 + slot_idx(0~25)` (day별 32비트 분리, 26+여유 6)
+- 점유 정의: "겹치는 모든 30분 slot 점유" (보수적, 75/90분 강의 안전 처리)
+- 충돌 검사: `(a.time_bitmap & b.time_bitmap) != 0`
+
+##### API 시그니처
+
+```
+POST /timetables/recommend/
+```
+
+###### Body 파라미터 (모두 옵셔널, payload field-level merge with UserPreference)
+
+| 노브 | 타입 | UserPreference fallback | 설명 |
+|------|------|---|------|
+| `year` | int | (없음) | 추천 대상 학년도 |
+| `semester` | int | (없음) | 추천 대상 학기 (1/2) |
+| `prefer_off_days` | list[str] | DB값 | 공강 선호 요일 |
+| `banned_days` | list[str] | DB값 | 수업 금지 요일 |
+| `no_morning` | bool | DB값 | 1교시 제외 |
+| `no_evening` | bool | DB값 | 18시 이후 제외 |
+| `lunch_break` | bool | DB값 | 점심시간 공강 선호 |
+| `max_credits` | int | DB값(18) | 학기 학점 상한 |
+| `min_credits` | int | DB값(15) | 학기 학점 하한 |
+
+**Payload override 규칙**:
+- 키 없음 → UserPreference DB값 유지
+- 키 있음 (빈 배열 / false 포함) → 명시적 override
+
+**학기 미지정 시**: 자동 추론하지 않고 응답 최상위 `note: "MISSING_YEAR_SEMESTER"` + HTTP 400. 자연어 되묻기는 AI/chat 레이어 책임.
+
+##### 충돌 검사 (bitmap)
+
+분반 추가 시 누적 bitmap에 OR. 다음 분반 검사 시 누적과 AND — 0이 아니면 충돌. DFS 백트래킹 시 직전 분반 bitmap만 XOR로 제거.
+
+##### 다양성 dedup (Jaccard greedy)
+
+두 시간표의 과목 집합 Jaccard 유사도 ≥ 0.7이면 중복. 6과목 시간표 기준 "1과목만 다른 시간표는 중복 취급, 2과목 이상 다르면 별개". 임계값 0.7은 초안, 시드 돌려보고 튜닝.
+
+##### 조합 단위 점수
+
+```
+combination_score = sum(course_score for course in combo)  # 5.3.1 점수 재활용
+                  + prefs 가산점 (입력 항목만 활성, if prefs.x: 분기)
+                  + 부족 카테고리 cover 가산 (BONUS_BACKLOG_COVER)
+                  - min_credits 미달 패널티
+```
+
+내부 튜닝 상수(`BONUS_OFF_DAY=15` / `BONUS_LUNCH_BREAK=8` 등)는 코드에 유지, 외부 노출 X (#25 안 B 정책 일관).
+
+##### Fallback / 머신 코드
+
+응답 최상위 `note` (옵셔널):
+
+| code | 발생 조건 | HTTP |
+|------|----------|------|
+| `MISSING_YEAR_SEMESTER` | year/semester 미지정 | 400 |
+| `insufficient_candidates` | K=20 못 채움 (시드 부족) | 200 |
+| `low_diversity_pool` | 다양성 통과 plan 3개 미만 (반환 개수만 줄임) | 200 |
+
+각 plan별 `reason_codes` (객체 배열, 자연어 변환 hook):
+
+| code | meta | 의미 |
+|------|------|------|
+| `covers_required_major` | `{count}` | 부족한 전공필수 모두 포함 |
+| `covers_short_categories` | `{categories}` | 부족 카테고리 전부 cover |
+| `includes_backlog_required` | `{count}` | 권장학년 지난 필수과목 포함 |
+| `off_day_satisfied` | `{days}` | `prefer_off_days` 충족 |
+| `no_morning_satisfied` | — | 1교시 없음 |
+| `no_evening_satisfied` | — | 18시 이후 없음 |
+| `lunch_break_satisfied` | — | 12~14시 연속 1시간 공강 |
+| `credits_in_target_range` | `{credits}` | `min/max_credits` 범위 안 |
+| `matches_interest_areas` | `{count, areas}` | 관심사 매칭 N개 |
+| `credits_below_target` | `{credits, min}` | `min_credits` 미달이지만 후보 유지 |
+
+##### 응답 스키마
+
+```json
+{
+  "plans": [
+    {
+      "score": 285,
+      "total_credits": 18,
+      "credits_by_category": {
+        "전공필수": 6, "전공선택": 6, "공통교양": 3, "학문기초교양": 3
+      },
+      "offerings": [
+        {
+          "id": 42,
+          "course_code": "컴공301",
+          "course_name": "운영체제",
+          "category": "전공필수",
+          "credit": 3,
+          "section_no": "01",
+          "professor": "...",
+          "schedules": [
+            {"day": "월", "start_time": "10:00", "end_time": "11:50", "room": "Y5125"},
+            {"day": "수", "start_time": "10:00", "end_time": "11:50", "room": "Y5125"}
+          ]
+        }
+      ],
+      "reason_codes": [
+        {"code": "covers_required_major", "meta": {"count": 2}},
+        {"code": "off_day_satisfied", "meta": {"days": ["fri"]}}
+      ]
+    }
+  ],
+  "note": null
+}
+```
+
+- `offerings` 정렬: 요일 ASC → 시작시간 ASC (프론트 grid 렌더 친화)
+- `credits_by_category` — 0학점 카테고리는 키 생략 (응답 슬림)
+- `note` — fallback 없을 시 `null`
+
+##### LLM 역할 한정
+
+- **서버 (정형 데이터 기반)**: 충돌 검사 / 학점 / 조합 생성 / 필터 / 점수 계산
+- **LLM (OpenAI)**: `reason_codes` → 자연어 변환 / 관심사 해석 / 사용자 질의응답 / 학기 미지정 시 되묻기
+
+##### MVP 범위 (#97)
+
+- 위 7-step 파이프라인 / UserPreference 7필드 / 충돌 bitmap / Jaccard dedup / `POST /timetables/recommend/` / `GET·PUT /timetables/preference/`
+- **V2 분리**: `SavedTimetable` (저장 기능), branch-and-bound 추가 가지치기, 카테고리별 후보 캡, LLM 자연어 통합
+
 ### 5.4 통합 정보 제공 - 공지사항 (notices)
 
 > **크롤링 출처 정책**: 명지대학교 자체 공지 게시판만 수집한다. 외부 사이트(링커리어/씽굿/위비티 등)는 후속 작업으로 보류.
