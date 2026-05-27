@@ -780,6 +780,13 @@ class ResponseFormatGuideTests(TestCase):
         for marker in ['markdown', '평문', 'URL']:
             self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 "{marker}" 표식 누락')
 
+    def test_system_prompt_includes_notices_card_style(self):
+        """notices/ai BUILD_CARDS_SYSTEM 톤앤매너 차용 검증."""
+        from chat.prompts import CHAT_SYSTEM
+        # 음슴체·이모지·명사형 제목 가이드 포함
+        for marker in ['음슴체', '이모지', '명사형']:
+            self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 "{marker}" 가이드 누락')
+
     @patch('chat.services.get_client')
     def test_format_guide_reaches_openai(self, mock_get_client):
         # 실 메시지 전송 시 system 메시지에 포맷 가이드가 그대로 전달되는지
