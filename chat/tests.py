@@ -3,6 +3,7 @@
 PR 1 범위: 채팅방 CRUD.
 PR 2 범위: 메시지 전송 + AI 응답 + 첫 메시지 title/category 자동 생성.
 PR 3 범위: 첨부파일 업로드 (multipart) + validation.
+Step 1 (#98): chat AI에 사용자 프로필 컨텍스트 주입.
 """
 
 from unittest.mock import patch
@@ -12,9 +13,11 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from accounts.models import InterestArea
 from notices.ai.client import AIClientError
 
 from .models import ChatAttachment, ChatMessage, ChatRoom
+from .prompts import build_user_context
 
 User = get_user_model()
 
@@ -215,7 +218,8 @@ class SendMessageTests(TestCase):
         self.assertEqual(res.status_code, 201)
         mock_classify.assert_not_called()
         # generate_assistant_reply에 전달된 history = 3개 (가장 최근 3개: old-4, old-3, 또는 새 user)
-        history_arg = mock_reply.call_args.args[0]
+        # generate_assistant_reply(user, history) — 두 번째 인자가 history
+        history_arg = mock_reply.call_args.args[1]
         self.assertEqual(len(history_arg), 3)
         # 가장 마지막 메시지는 방금 INSERT한 user 메시지
         self.assertEqual(history_arg[-1].content, '새 질문')
@@ -358,3 +362,87 @@ class SendMessageAttachmentTests(TestCase):
         # user 메시지·첨부 모두 롤백
         self.assertEqual(self.room.messages.count(), before_msgs)
         self.assertEqual(ChatAttachment.objects.count(), 0)
+
+
+class BuildUserContextTests(TestCase):
+    """build_user_context 단위 테스트 (Step 1 / #98)."""
+
+    def test_none_user_returns_empty(self):
+        self.assertEqual(build_user_context(None), '')
+
+    def test_blank_user_returns_empty(self):
+        user = User.objects.create_user(email='x@mju.ac.kr', password='Test1234@')
+        # name/major/grade 모두 비어있는 상태 (온보딩 전)
+        self.assertEqual(build_user_context(user), '')
+
+    def test_full_profile(self):
+        user = User.objects.create_user(email='y@mju.ac.kr', password='Test1234@')
+        user.name = '홍길동'
+        user.major = '컴퓨터공학'
+        user.grade = 3
+        user.semester = 1
+        user.admission_year = 2024
+        user.save()
+        InterestArea.objects.create(user=user, category='IT/개발')
+        InterestArea.objects.create(user=user, category='디자인')
+
+        ctx = build_user_context(user)
+        self.assertIn('[사용자 정보]', ctx)
+        self.assertIn('홍길동', ctx)
+        self.assertIn('컴퓨터공학', ctx)
+        self.assertIn('3학년 1학기', ctx)
+        self.assertIn('2024학번', ctx)
+        self.assertIn('IT/개발', ctx)
+        self.assertIn('디자인', ctx)
+
+    def test_partial_profile_omits_missing(self):
+        user = User.objects.create_user(email='z@mju.ac.kr', password='Test1234@')
+        user.major = '컴퓨터공학'
+        user.save()
+        ctx = build_user_context(user)
+        self.assertIn('컴퓨터공학', ctx)
+        # name 입력 안 했으므로 "이름:" prefix는 없어야 함
+        self.assertNotIn('이름:', ctx)
+        self.assertNotIn('학년', ctx)
+
+
+class SendMessageWithUserContextTests(TestCase):
+    """POST messages 시 system prompt에 user prefix가 들어가는지 검증 (Step 1)."""
+
+    def setUp(self):
+        self.user = make_user('a@mju.ac.kr')
+        self.user.name = '홍길동'
+        self.user.major = '컴퓨터공학'
+        self.user.grade = 3
+        self.user.semester = 1
+        self.user.save()
+        self.room = ChatRoom.objects.create(user=self.user)
+        ChatMessage.objects.create(room=self.room, role='user', content='이전 질문')
+        ChatMessage.objects.create(room=self.room, role='assistant', content='이전 응답')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    @patch('chat.services.get_client')
+    def test_user_profile_injected_into_system_prompt(self, mock_get_client):
+        # OpenAI 호출 자체를 mock — services 레이어까지 통과해 system prompt 확인
+        mock_client = mock_get_client.return_value
+        mock_response = mock_client.chat.completions.create.return_value
+        mock_response.choices[0].message.content = '응답'
+
+        self.client.post(
+            messages_url(self.room.id),
+            {'content': '시간표 짜줘'},
+            format='json',
+        )
+
+        # 호출된 messages 인자 검사
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs['messages']
+        system_msg = messages[0]
+        self.assertEqual(system_msg['role'], 'system')
+        # CHAT_SYSTEM + user context가 합쳐져 있어야 함
+        self.assertIn('띵똥이', system_msg['content'])  # CHAT_SYSTEM 표식
+        self.assertIn('[사용자 정보]', system_msg['content'])
+        self.assertIn('홍길동', system_msg['content'])
+        self.assertIn('컴퓨터공학', system_msg['content'])
+        self.assertIn('3학년 1학기', system_msg['content'])
