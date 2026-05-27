@@ -2,6 +2,7 @@ from datetime import time
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from rest_framework.test import APITestCase
 
 from courses.models import (
     Course,
@@ -752,3 +753,127 @@ class PipelineTests(TestCase):
         self.assertIn('prefer_off_days', PREFERENCE_FIELDS)
         self.assertIn('max_credits', PREFERENCE_FIELDS)
         self.assertIn('lunch_break', PREFERENCE_FIELDS)
+
+
+# POST /timetables/recommend/ + UserPreference CRUD 통합
+class TimetableRecommendAPITests(APITestCase):
+    url = '/api/v1/timetables/recommend/'
+
+    def setUp(self):
+        self.user = _make_user(email='api1@mju.ac.kr')
+
+    def test_인증_없음_401(self):
+        res = self.client.post(self.url, {}, format='json')
+        self.assertEqual(res.status_code, 401)
+
+    def test_year_semester_누락_400_MISSING_YEAR_SEMESTER(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(self.url, {}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['note'], 'MISSING_YEAR_SEMESTER')
+        self.assertEqual(res.data['plans'], [])
+
+    def test_year만_있음_semester_누락_400(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(self.url, {'year': 2026}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['note'], 'MISSING_YEAR_SEMESTER')
+
+    def test_정상_요청_빈_후보_insufficient_candidates(self):
+        """Course 없음 → 200 + plans=[] + note=insufficient_candidates."""
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(self.url, {'year': 2026, 'semester': 1}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['plans'], [])
+        self.assertEqual(res.data['note'], 'insufficient_candidates')
+
+    def test_smoke_정상_응답_구조(self):
+        # 3 Course × 3학점 = 9, 시간 안 겹침
+        for i in range(3):
+            c = _make_course(course_code=f'API{i:03d}', credits=3)
+            o = _make_offering(c, section_no=f'API{i:03d}')
+            _add_schedule(o, ['월', '화', '수'][i], time(10, 0), time(11, 0))
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(
+            self.url,
+            {'year': 2026, 'semester': 1, 'min_credits': 0},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('plans', res.data)
+        self.assertIn('note', res.data)
+        if res.data['plans']:
+            plan = res.data['plans'][0]
+            for key in ('score', 'total_credits', 'credits_by_category', 'offerings', 'reason_codes'):
+                self.assertIn(key, plan)
+            for off in plan['offerings']:
+                for key in ('id', 'course_code', 'course_name', 'category', 'credit', 'section_no', 'schedules'):
+                    self.assertIn(key, off)
+
+    def test_payload_override_max_credits_적용(self):
+        """payload max_credits=6 → 4과목 × 3학점 후보여도 결과는 2과목 이하."""
+        for i in range(4):
+            c = _make_course(course_code=f'OV{i:03d}', credits=3)
+            o = _make_offering(c, section_no=f'OV{i:03d}')
+            _add_schedule(o, ['월', '화', '수', '목'][i], time(10, 0), time(11, 0))
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(
+            self.url,
+            {'year': 2026, 'semester': 1, 'max_credits': 6, 'min_credits': 0},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        for plan in res.data['plans']:
+            self.assertLessEqual(plan['total_credits'], 6)
+
+
+class UserPreferenceViewTests(APITestCase):
+    url = '/api/v1/timetables/preference/'
+
+    def setUp(self):
+        self.user = _make_user(email='pref@mju.ac.kr')
+
+    def test_GET_인증_없음_401(self):
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 401)
+
+    def test_GET_첫_조회_default_값_lazy_생성(self):
+        """row 없을 때도 GET이 default 값으로 만들어 반환."""
+        self.assertFalse(UserPreference.objects.filter(user=self.user).exists())
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['max_credits'], 18)
+        self.assertEqual(res.data['min_credits'], 15)
+        self.assertEqual(res.data['prefer_off_days'], [])
+        self.assertEqual(res.data['no_morning'], False)
+        # row 생성 확인
+        self.assertTrue(UserPreference.objects.filter(user=self.user).exists())
+
+    def test_PUT_필드_갱신(self):
+        self.client.force_authenticate(user=self.user)
+        body = {
+            'prefer_off_days': ['금'], 'banned_days': [],
+            'no_morning': True, 'no_evening': False, 'lunch_break': True,
+            'max_credits': 21, 'min_credits': 18,
+        }
+        res = self.client.put(self.url, body, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['max_credits'], 21)
+        self.assertEqual(res.data['prefer_off_days'], ['금'])
+
+        # GET으로 재확인
+        get_res = self.client.get(self.url)
+        self.assertEqual(get_res.data['max_credits'], 21)
+        self.assertEqual(get_res.data['no_morning'], True)
+
+    def test_PATCH_부분_갱신(self):
+        self.client.force_authenticate(user=self.user)
+        # 먼저 lazy create
+        self.client.get(self.url)
+        # PATCH로 한 필드만
+        res = self.client.patch(self.url, {'max_credits': 12}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['max_credits'], 12)
+        # 다른 필드는 default 유지
+        self.assertEqual(res.data['min_credits'], 15)
