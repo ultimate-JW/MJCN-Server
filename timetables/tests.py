@@ -8,6 +8,11 @@ from courses.models import (
     CourseSchedule,
     TIMETABLE_SLOT_BITS_PER_DAY,
 )
+from timetables.services.filtering import (
+    expand_to_offerings,
+    filter_offerings_by_prefs,
+    passes_prefs_hard_filter,
+)
 from timetables.utils.conflict import (
     has_any_conflict,
     is_compatible,
@@ -31,11 +36,11 @@ def _make_course(**overrides):
     return Course.objects.create(**defaults)
 
 
-def _make_offering(course, section_no='01'):
+def _make_offering(course, section_no='01', year=2026, semester=1):
     return CourseOffering.objects.create(
         course=course,
-        year=2026,
-        semester=1,
+        year=year,
+        semester=semester,
         section_no=section_no,
     )
 
@@ -186,3 +191,91 @@ class ConflictDetectionTests(TestCase):
         _add_schedule(o, '월', time(10, 0), time(11, 0))
         # 정상 schedule만 반영됨
         self.assertNotEqual(o.time_bitmap, 0)
+
+
+# STEP 3 (분반 확장) + STEP 4 (prefs hard filter) 검증
+class PipelineFilterTests(TestCase):
+    def test_expand_to_offerings_여러_분반(self):
+        c = _make_course(course_code='F001')
+        o1 = _make_offering(c, section_no='01')
+        o2 = _make_offering(c, section_no='02')
+        result = expand_to_offerings([c], 2026, 1)
+        self.assertEqual({o.id for o in result}, {o1.id, o2.id})
+
+    def test_expand_to_offerings_학기_불일치_제외(self):
+        c = _make_course(course_code='F002')
+        target = _make_offering(c, section_no='01', year=2026, semester=1)
+        _make_offering(c, section_no='02', year=2026, semester=2)   # 다른 학기
+        _make_offering(c, section_no='03', year=2025, semester=1)   # 다른 연도
+        result = expand_to_offerings([c], 2026, 1)
+        self.assertEqual([o.id for o in result], [target.id])
+
+    def test_expand_to_offerings_빈_입력(self):
+        self.assertEqual(expand_to_offerings([], 2026, 1), [])
+
+    def test_prefs_기본값_모두_통과(self):
+        c = _make_course(course_code='F010')
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(9, 0), time(10, 50))   # 1교시 시작
+        # 모든 prefs default(false) → 통과
+        self.assertTrue(passes_prefs_hard_filter(o, {}))
+
+    def test_no_morning_1교시_제외(self):
+        c = _make_course(course_code='F011')
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(9, 0), time(10, 0))   # 09:00 시작 = 1교시
+        self.assertFalse(passes_prefs_hard_filter(o, {'no_morning': True}))
+
+    def test_no_morning_10시_시작은_통과(self):
+        """경계: 10:00 정각 시작은 1교시 아님 → 통과."""
+        c = _make_course(course_code='F012')
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(10, 0), time(11, 0))
+        self.assertTrue(passes_prefs_hard_filter(o, {'no_morning': True}))
+
+    def test_no_evening_18시_시작_제외(self):
+        c = _make_course(course_code='F013')
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(18, 0), time(19, 50))
+        self.assertFalse(passes_prefs_hard_filter(o, {'no_evening': True}))
+
+    def test_no_evening_17시30분_시작은_통과(self):
+        """경계: 17:30 시작은 야간 아님 → 통과."""
+        c = _make_course(course_code='F014')
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(17, 30), time(19, 20))
+        self.assertTrue(passes_prefs_hard_filter(o, {'no_evening': True}))
+
+    def test_banned_days_요일_매칭_제외(self):
+        c = _make_course(course_code='F015')
+        o = _make_offering(c)
+        _add_schedule(o, '금', time(10, 0), time(11, 50))
+        self.assertFalse(passes_prefs_hard_filter(o, {'banned_days': ['금']}))
+
+    def test_banned_days_요일_미매칭_통과(self):
+        c = _make_course(course_code='F016')
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(10, 0), time(11, 50))
+        self.assertTrue(passes_prefs_hard_filter(o, {'banned_days': ['금']}))
+
+    def test_복합_prefs_하나라도_위반시_제외(self):
+        """월수 10-11시 강의 + no_morning false + banned=['수'] → 수 요일 매칭으로 제외."""
+        c = _make_course(course_code='F017')
+        o = _make_offering(c)
+        _add_schedule(o, '월', time(10, 0), time(11, 0))
+        _add_schedule(o, '수', time(10, 0), time(11, 0))
+        self.assertFalse(passes_prefs_hard_filter(o, {'banned_days': ['수']}))
+
+    def test_filter_offerings_by_prefs_배치(self):
+        c1 = _make_course(course_code='F020')
+        c2 = _make_course(course_code='F021')
+        c3 = _make_course(course_code='F022')
+        good = _make_offering(c1, section_no='F100')
+        bad_morning = _make_offering(c2, section_no='F101')
+        bad_banned = _make_offering(c3, section_no='F102')
+        _add_schedule(good, '월', time(10, 0), time(11, 0))
+        _add_schedule(bad_morning, '월', time(9, 0), time(10, 0))    # 1교시
+        _add_schedule(bad_banned, '금', time(10, 0), time(11, 0))    # banned 요일
+        prefs = {'no_morning': True, 'banned_days': ['금']}
+        result = filter_offerings_by_prefs([good, bad_morning, bad_banned], prefs)
+        self.assertEqual([o.id for o in result], [good.id])
