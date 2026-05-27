@@ -57,7 +57,20 @@
       "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe manage.py test courses 2>&1 | Select-Object -Last 25)",
       "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe manage.py test courses accounts 2>&1 | Select-Object -Last 10)",
       "Bash(awk -F',' 'NR>1 {print $3}' \"seed_data/course_offerings/2026_1_교양.csv\")",
-      "Bash(awk -F'|' '{print $3}' _pending_rows.txt)"
+      "Bash(awk -F'|' '{print $3}' _pending_rows.txt)",
+      "Bash(git branch *)",
+      "Bash(git stash *)",
+      "Bash(git pull *)",
+      "Bash(git rm *)",
+      "Bash(.venv/Scripts/pip.exe list *)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\activate; python manage.py test 2>&1 | Select-Object -Last 80)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\activate; python manage.py makemigrations --check --dry-run; Write-Output \"---EXIT_CHECK=$LASTEXITCODE---\"; python manage.py migrate --plan)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\activate; Get-Content tmp_check_4_1_4_2.py | python manage.py shell)",
+      "PowerShell($env:PYTHONIOENCODING = 'utf-8'; .\\\\.venv\\\\Scripts\\\\activate; python tmp_check_4_1_4_2.py)",
+      "PowerShell($env:PYTHONIOENCODING = 'utf-8'; .\\\\.venv\\\\Scripts\\\\activate; python manage.py spectacular --file tmp_schema.yaml 2>&1 | Select-Object -Last 20)",
+      "Bash(grep -E \"\\(urls\\\\.py|spec\\\\.md\\)$\")",
+      "Bash(grep \"urls.py$\")",
+      "Bash(curl *)"
     ]
   }
 }

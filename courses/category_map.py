@@ -25,9 +25,8 @@ LIBERAL_FOUNDATION_NAMES = {
 
 
 # 학과코드 prefix → 4종 분류 (학칙 별표4·5, graduation_requirements.md §6 표시기호)
+# 교필/교선은 영역 매핑 통과해야 그 카테고리 인정 — 별도 분기에서 처리 (classify_liberal_subtype).
 PREFIX_TO_SUBTYPE = {
-    '교필': '공통교양',      # 학칙 §6: "교필" = 공통교양 (교양필수 아님)
-    '교선': '핵심교양',      # 학칙 §6: "교선" = 핵심교양 (교양선택 아님)
     '기자': '학문기초교양',  # 자연·이공 기초 — 미적분/물리/공학수학/통계 등
     '기컴': '학문기초교양',  # 컴퓨터 기초 — C언어/파이썬/엑셀 등
     '기종': '학문기초교양',  # 종교/철학 기초 — 학칙 표 모호 추정 (보강 필요)
@@ -146,15 +145,26 @@ def classify_liberal_subtype(subject_code, course_name):
     """학과코드 + 교과목명 → 4종 분류 또는 None.
 
     None을 반환하면 Course.liberal_subtype은 비어 있어야 한다
-    (전공/군사 등 4종 분류 대상 외, 또는 매핑 룰 미정).
+    (전공/군사 등 4종 분류 대상 외).
+
+    교필/교선은 영역(§4.2/§4.3) 매핑 통과해야 공통/핵심교양으로 인정.
+    영역 매핑 실패 시 일반교양 fallback (#80 — 학칙 표 외 신규 과목 처리).
     """
     name = (course_name or '').strip()
     if name in LIBERAL_FOUNDATION_NAMES:
-        return '학문기초교양'  # by_name 매칭 — 학칙 §3.3 필수 7과목
+        return '학문기초교양'  # by_name 매칭 — 학칙 §3.3 필수 5과목 (prefix 무관)
 
     prefix = (subject_code or '').strip()
     if prefix in PREFIX_EXCLUDED:
         return None  # 전공·군사 등 명시 제외 — by_prefix 평가 skip
+
+    # 교필: §4.2 공통교양 영역 매핑 통과해야 공통교양, 미매핑이면 일반교양 fallback
+    if prefix == '교필':
+        return '공통교양' if classify_common_area(name) else '일반교양'
+
+    # 교선: §4.3 핵심교양 영역 매핑 통과해야 핵심교양, 미매핑이면 일반교양 fallback
+    if prefix == '교선':
+        return '핵심교양' if classify_core_area(name) else '일반교양'
 
     if prefix in PREFIX_TO_SUBTYPE:
         return PREFIX_TO_SUBTYPE[prefix]
