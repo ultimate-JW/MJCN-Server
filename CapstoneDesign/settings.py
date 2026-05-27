@@ -125,12 +125,35 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STORAGES = {
-    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
-    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
-}
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# Storage 분기 (chat 첨부 등 사용자 업로드 미디어).
+#
+# USE_S3=True (운영): django-storages의 S3Boto3Storage 사용. AWS 자격증명·버킷명
+# 환경변수 필수. 버킷은 private이고 django-storages가 응답 시점에 presigned URL
+# 생성 (AWS_QUERYSTRING_AUTH=True 기본).
+#
+# USE_S3=False (로컬 default): FileSystemStorage + MEDIA_ROOT. AWS 자격증명
+# 없이도 개발 가능. PR 1~3 동작 그대로.
+USE_S3 = os.getenv('USE_S3', 'False').lower() in ('true', '1')
+
+if USE_S3:
+    AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID', '')
+    AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY', '')
+    AWS_STORAGE_BUCKET_NAME = os.getenv('AWS_STORAGE_BUCKET_NAME', '')
+    AWS_S3_REGION_NAME = os.getenv('AWS_S3_REGION_NAME', 'ap-northeast-2')
+    AWS_S3_FILE_OVERWRITE = False  # 동명 파일 자동 rename (Django default와 일치)
+    AWS_DEFAULT_ACL = None  # 버킷 정책 기준 (ACL 명시 제거 — 최신 S3 기본)
+    STORAGES = {
+        'default': {'BACKEND': 'storages.backends.s3.S3Storage'},
+        'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+    }
+else:
+    STORAGES = {
+        'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+        'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+    }
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
