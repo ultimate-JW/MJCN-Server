@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'information',
     'chat',
     'timetables',
+    'themes',
 ]
 
 MIDDLEWARE = [
@@ -251,6 +252,7 @@ SPECTACULAR_SETTINGS = {
     # 자동 'CategoryA77Enum' 같이 충돌 해결됨. 명시적으로 의미 있는 이름 부여.
     'ENUM_NAME_OVERRIDES': {
         'ChatRoomCategoryEnum': 'chat.models.CHAT_CATEGORIES',
+        'ThemeCategoryEnum': 'themes.models.Theme.CATEGORY_CHOICES',
     },
 }
 

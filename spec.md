@@ -2694,6 +2694,7 @@ Notice.extracted_content에 추출 텍스트 저장
 - [X] notifications 앱: 알림 모델 + 조회/읽음처리 API (PR #42)
 - [X] 공지·정보 자동 fanout 트리거 — 매칭 사용자에게 인앱 알림 생성 (PR #49)
 - [X] FCM 푸시 송신: `send_pending_pushes` 명령 + 매일 06:35 KST cron 등록 (PR #53)
+- [X] themes 앱: Theme/ThemeItem 모델 + 조회 API (`/api/v1/themes/`) + `seed_themes` 멱등 시드 (#117)
 - [ ] 맞춤 추천 알림 스케줄링 (마감일 전날 등) — Out of Scope, 후속 PR
 - [ ] API 통합 테스트 + Swagger 문서 검증 — 부분 완료, 통합 테스트 미실시
 - [X] 운영 환경 설정 (PostgreSQL, 환경변수 등) — PR #55 (DB 분기) + 2026-05-25 운영 cron 등록
