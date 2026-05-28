@@ -465,3 +465,96 @@ class CourseHistoryCategoryChoicesTests(TestCase):
         res = self.client.post(self.url, self._payload('교양필수'), format='json')
         self.assertEqual(res.status_code, 400)
         self.assertIn('category', res.data)
+
+
+# ─── #135: prune_pending_signups cron ────────────────────────────────
+
+class PrunePendingSignupsTests(TestCase):
+    """24시간 이상 활동 없는 PendingSignup row 삭제 회귀 (#135).
+
+    spec 5.1.1 후속 cron — 인증 미완료 dead row 청소.
+    updated_at(auto_now) 기준 — resend 활동 시 자동 갱신되므로 활동 없는 row만 청소.
+    """
+
+    def _make_pending(self, email, updated_hours_ago=0):
+        # PendingSignup.updated_at은 auto_now라 직접 박을 수 없어 update() 우회
+        from accounts.models import PendingSignup
+        from django.utils import timezone
+        from datetime import timedelta
+
+        pending = PendingSignup.objects.create(
+            email=email,
+            password_hash='hash',
+            code='12345678',
+            code_expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        if updated_hours_ago > 0:
+            PendingSignup.objects.filter(pk=pending.pk).update(
+                updated_at=timezone.now() - timedelta(hours=updated_hours_ago),
+            )
+        return pending
+
+    def test_24h_지난_row_삭제됨(self):
+        from accounts.models import PendingSignup
+        from django.core.management import call_command
+        from io import StringIO
+
+        self._make_pending('old@mju.ac.kr', updated_hours_ago=25)
+        self._make_pending('recent@mju.ac.kr', updated_hours_ago=1)
+
+        out = StringIO()
+        call_command('prune_pending_signups', stdout=out)
+        output = out.getvalue()
+
+        self.assertIn('deleted=1', output)
+        self.assertIn('threshold_hours=24', output)
+        self.assertFalse(PendingSignup.objects.filter(email='old@mju.ac.kr').exists())
+        self.assertTrue(PendingSignup.objects.filter(email='recent@mju.ac.kr').exists())
+
+    def test_dry_run은_삭제하지_않음(self):
+        from accounts.models import PendingSignup
+        from django.core.management import call_command
+        from io import StringIO
+
+        self._make_pending('old@mju.ac.kr', updated_hours_ago=48)
+
+        out = StringIO()
+        call_command('prune_pending_signups', '--dry-run', stdout=out)
+        output = out.getvalue()
+
+        self.assertIn('dry-run', output)
+        self.assertIn('target=1', output)
+        # 실제 삭제는 안 됨
+        self.assertTrue(PendingSignup.objects.filter(email='old@mju.ac.kr').exists())
+
+    def test_hours_옵션으로_임계값_조정(self):
+        from accounts.models import PendingSignup
+        from django.core.management import call_command
+        from io import StringIO
+
+        self._make_pending('h6@mju.ac.kr', updated_hours_ago=8)
+        self._make_pending('h30@mju.ac.kr', updated_hours_ago=30)
+
+        # --hours 12 — 12h 이상 지난 것만 삭제
+        out = StringIO()
+        call_command('prune_pending_signups', '--hours', '12', stdout=out)
+        output = out.getvalue()
+
+        self.assertIn('deleted=1', output)
+        self.assertIn('threshold_hours=12', output)
+        self.assertTrue(PendingSignup.objects.filter(email='h6@mju.ac.kr').exists())
+        self.assertFalse(PendingSignup.objects.filter(email='h30@mju.ac.kr').exists())
+
+    def test_대상_0건이면_정상_종료(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        # 모든 row가 활동 시점 직후 — 삭제 대상 없음
+        self._make_pending('a@mju.ac.kr', updated_hours_ago=1)
+        self._make_pending('b@mju.ac.kr', updated_hours_ago=0)
+
+        out = StringIO()
+        call_command('prune_pending_signups', stdout=out)
+        output = out.getvalue()
+
+        self.assertIn('deleted=0', output)
