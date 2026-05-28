@@ -27,6 +27,7 @@ RESEND_URL = '/api/v1/accounts/verify-email/resend/'
 PWD_REQUEST_URL = '/api/v1/accounts/password/reset/'
 PWD_VERIFY_URL = '/api/v1/accounts/password/reset/verify/'
 PWD_CONFIRM_URL = '/api/v1/accounts/password/reset/confirm/'
+LOGIN_URL = '/api/v1/accounts/login/'
 
 VALID_PWD = 'aBcd1234!'
 
@@ -251,3 +252,82 @@ class PasswordResetRegressionTests(TestCase):
 
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password(new_pwd))
+
+
+class NonASCIIEmailRejectionTests(TestCase):
+    """이슈 #79 — 한글/유니코드 섞인 이메일은 spec 5.1.1·5.1.5에 따라 모두 거부.
+
+    7개 이메일 입력 endpoint가 동일하게 400을 반환해야 한다
+    (이전에는 signup만 통과, password/reset은 reject되어 endpoint별 불일치였음 — 결함 D).
+    """
+
+    NON_ASCII_EMAIL = 'abc한글@example.com'
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _assert_email_rejected(self, response):
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('email', response.data)
+
+    def test_signup_rejects_non_ascii_email(self):
+        res = self.client.post(SIGNUP_URL, {
+            'email': self.NON_ASCII_EMAIL,
+            'password': VALID_PWD,
+            'password_confirm': VALID_PWD,
+        }, format='json')
+        self._assert_email_rejected(res)
+
+    def test_verify_email_rejects_non_ascii_email(self):
+        res = self.client.post(VERIFY_URL, {
+            'email': self.NON_ASCII_EMAIL,
+            'code': '12345678',
+        }, format='json')
+        self._assert_email_rejected(res)
+
+    def test_resend_verification_rejects_non_ascii_email(self):
+        res = self.client.post(RESEND_URL, {
+            'email': self.NON_ASCII_EMAIL,
+        }, format='json')
+        self._assert_email_rejected(res)
+
+    def test_login_rejects_non_ascii_email(self):
+        res = self.client.post(LOGIN_URL, {
+            'email': self.NON_ASCII_EMAIL,
+            'password': VALID_PWD,
+        }, format='json')
+        self._assert_email_rejected(res)
+
+    def test_password_reset_request_rejects_non_ascii_email(self):
+        res = self.client.post(PWD_REQUEST_URL, {
+            'email': self.NON_ASCII_EMAIL,
+        }, format='json')
+        self._assert_email_rejected(res)
+
+    def test_password_reset_verify_rejects_non_ascii_email(self):
+        res = self.client.post(PWD_VERIFY_URL, {
+            'email': self.NON_ASCII_EMAIL,
+            'code': '12345678',
+        }, format='json')
+        self._assert_email_rejected(res)
+
+    def test_password_reset_confirm_rejects_non_ascii_email(self):
+        res = self.client.post(PWD_CONFIRM_URL, {
+            'email': self.NON_ASCII_EMAIL,
+            'code': '12345678',
+            'new_password': VALID_PWD,
+        }, format='json')
+        self._assert_email_rejected(res)
+
+    def test_signup_and_reset_consistent_on_same_non_ascii_input(self):
+        # 이슈 #79 결함 D — 같은 입력에 두 endpoint가 같은 결정 내려야 함
+        signup_res = self.client.post(SIGNUP_URL, {
+            'email': self.NON_ASCII_EMAIL,
+            'password': VALID_PWD,
+            'password_confirm': VALID_PWD,
+        }, format='json')
+        reset_res = self.client.post(PWD_REQUEST_URL, {
+            'email': self.NON_ASCII_EMAIL,
+        }, format='json')
+        self.assertEqual(signup_res.status_code, 400)
+        self.assertEqual(reset_res.status_code, 400)

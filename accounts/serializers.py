@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
+from .fields import ASCIIEmailField
 from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark, PendingSignup
 
 User = get_user_model()
@@ -14,7 +15,7 @@ User = get_user_model()
 # ─── 인증 ───
 
 class SignupSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = ASCIIEmailField()
     password = serializers.CharField(write_only=True)
     password_confirm = serializers.CharField(write_only=True)
 
@@ -57,16 +58,16 @@ class SignupSerializer(serializers.Serializer):
 
 
 class VerifyEmailSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = ASCIIEmailField()
     code = serializers.CharField(max_length=8)
 
 
 class ResendVerificationSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = ASCIIEmailField()
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = ASCIIEmailField()
     password = serializers.CharField(write_only=True)
 
 
@@ -75,16 +76,16 @@ class KakaoLoginSerializer(serializers.Serializer):
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = ASCIIEmailField()
 
 
 class PasswordResetVerifySerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = ASCIIEmailField()
     code = serializers.CharField(max_length=8)
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = ASCIIEmailField()
     code = serializers.CharField(max_length=8)
     new_password = serializers.CharField(write_only=True)
 

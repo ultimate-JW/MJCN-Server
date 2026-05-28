@@ -801,6 +801,7 @@ PendingSignup row는 `code_expires_at` 경과 후에도 자동 삭제되지 않�
 
 **이메일**
 - 이메일 형식 준수 (example@domain.com)
+- ASCII 문자만 허용 — 한글·유니코드 local-part는 거부 (#79)
 - 대소문자 구분 없이 정규화 저장 (`Abc@mju.ac.kr` → `abc@mju.ac.kr`)
 - 중복 이메일 가입 불가 (대소문자 무관)
 
@@ -962,6 +963,7 @@ PendingSignup row는 `code_expires_at` 경과 후에도 자동 삭제되지 않�
 
 **이메일**
 - 이메일 형식 준수 (example@domain.com)
+- ASCII 문자만 허용 — 한글·유니코드 local-part는 거부 (#79)
 - 미가입 이메일 진행 불가
 
 **인증 코드**
