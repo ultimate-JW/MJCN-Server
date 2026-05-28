@@ -1040,7 +1040,9 @@ PendingSignup row는 `code_expires_at` 경과 후에도 자동 삭제되지 않�
 - **학년 무관 처리 (#36)**: `Course.year_open == 0` 인 과목은 추천 점수에서 학년 비교 분기
   (==, <, >) 모두 skip — 어떤 학년 학생에게도 중립 노출. 카테고리/관심사/선수 가감산은 정상.
 - **출력**
-  - 과목명, 과목번호, 이수구분별 카테고리, 시간, 강의실, 교수명 포함
+  - 과목 정보: 과목명, 과목번호, 이수구분 카테고리, 학점
+  - 분반 정보(offerings 배열): 강좌번호, 교수, 시간/강의실 (분반별 독립 — Course 평탄화 X, #111)
+  - target 학기에 매칭되는 분반만 포함. 미래 학기 등 분반 미존재 시 `offerings: []`
 
 #### 추천 시스템 설계 방향
 
@@ -1105,7 +1107,9 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 - **출력**: 졸업까지 남은 학기별 추천 과목 리스트
   - 학기마다 학칙 7 카테고리 키 분리 (#47 Phase 3): `major_required` / `major_elective` / `liberal_common` / `liberal_core` / `liberal_foundation` / `liberal_general` / `free_elective`
   - 빈 카테고리도 키 유지 (`[]`)
-  - 과목정보 포함 내용: 과목명·과목번호·시간·강의실·교수명
+  - 과목 정보: 과목명, 과목번호, 학점
+  - 분반 정보(offerings 배열): 강좌번호, 교수, 시간/강의실 (분반별 독립, #111)
+  - 학기별 (year, semester) 매칭 분반만 포함. 미래 학기 등 분반 미존재 시 `offerings: []`
 
 ##### 추천 노브 (API body 파라미터, 모두 옵셔널)
 
@@ -1155,7 +1159,7 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
       "semesters": [
         {
           "year": 2027, "semester": 1,
-          "major_required":     [{"course_code": "...", "name": "...", "credits": 3, "professor": "...", "schedules": [...]}],
+          "major_required":     [{"course_code": "...", "name": "...", "credits": 3, "offerings": [{"id": 1, "section_no": "01", "professor": "...", "schedules": [...]}]}],
           "major_elective":     [],
           "liberal_common":     [],
           "liberal_core":       [],

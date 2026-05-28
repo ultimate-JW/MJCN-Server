@@ -718,8 +718,11 @@ class NextSemesterRecommendAPITests(APITestCase):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
         item = res.data[0]
-        for key in ('score', 'course_code', 'name', 'category', 'credits', 'professor', 'schedules'):
+        # offerings 안에 section_no/professor/schedules — Course 레벨에는 노출 X (#111)
+        for key in ('score', 'course_code', 'name', 'category', 'credits', 'offerings'):
             self.assertIn(key, item)
+        self.assertNotIn('professor', item)
+        self.assertNotIn('schedules', item)
 
     def test_score_내림차순_정렬(self):
         self.client.force_authenticate(user=self.user)
@@ -833,6 +836,69 @@ class NextSemesterRecommendAPITests(APITestCase):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url, {'semester': '5'})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # ----- 분반(Offering) 단위 응답 그룹화 (#111) -----
+
+    def test_offerings_분반별로_분리됨(self):
+        """한 Course에 분반 N개면 응답 offerings 배열도 N건 — schedules 평탄화 X"""
+        # base(CSE1001)에 2026-1 분반 2개 + 각각 schedule 1개
+        off_a = CourseOffering.objects.create(
+            course=self.base, year=2026, semester=1,
+            section_no='01', professor='김교수',
+        )
+        off_b = CourseOffering.objects.create(
+            course=self.base, year=2026, semester=1,
+            section_no='02', professor='이교수',
+        )
+        CourseSchedule.objects.create(
+            course=self.base, offering=off_a, day_of_week='월',
+            start_time=time(9, 0), end_time=time(10, 30),
+            building='M', room='301',
+        )
+        CourseSchedule.objects.create(
+            course=self.base, offering=off_b, day_of_week='화',
+            start_time=time(13, 0), end_time=time(14, 30),
+            building='M', room='302',
+        )
+
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'year': 2026, 'semester': 1})
+
+        item = next(i for i in res.data if i['course_code'] == 'CSE1001')
+        offerings = item['offerings']
+        self.assertEqual(len(offerings), 2)
+        section_nos = {o['section_no'] for o in offerings}
+        self.assertEqual(section_nos, {'01', '02'})
+        # 분반별로 schedules가 독립 — 평탄화되지 않음 (#111 결함 G)
+        for o in offerings:
+            self.assertEqual(len(o['schedules']), 1)
+
+    def test_offerings_타_학기_분반은_제외(self):
+        """target term이 아닌 분반은 응답 offerings에 포함되지 않음"""
+        CourseOffering.objects.create(
+            course=self.base, year=2026, semester=1,
+            section_no='01', professor='김교수',
+        )
+        CourseOffering.objects.create(
+            course=self.base, year=2025, semester=2,
+            section_no='99', professor='박교수',
+        )
+
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'year': 2026, 'semester': 1})
+
+        item = next(i for i in res.data if i['course_code'] == 'CSE1001')
+        section_nos = {o['section_no'] for o in item['offerings']}
+        self.assertEqual(section_nos, {'01'})  # 2025-2 분반은 제외
+
+    def test_offering_없는_Course는_빈_offerings(self):
+        """legacy 시드(Offering 없음) Course는 offerings 빈 배열로 응답"""
+        # setUp의 elective(CSE3001)는 offering 없음 → 통과하되 offerings 빈 배열
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+
+        item = next(i for i in res.data if i['course_code'] == 'CSE3001')
+        self.assertEqual(item['offerings'], [])
 
 
 # ===== parse_year_open 단위 테스트 (#36) =====

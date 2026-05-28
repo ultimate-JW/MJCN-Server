@@ -14,7 +14,7 @@ View / dashboard / chat 등 여러 곳에서 재사용 가능한 도메인 로�
 
 from datetime import date
 
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 
 from .required_courses import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
 from .models import (
@@ -445,14 +445,21 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
         year=target_year, semester=target_semester,
     ).values_list('course_id', flat=True)
 
-    # prefetch_related로 선수과목 + 시간표 N+1 쿼리 방지 (view에서 schedules 직렬화)
+    # prefetch_related로 선수과목 + target 학기 분반·시간표 N+1 회피 (#111).
+    # offerings는 target_year/target_semester 매칭분만 prefetch — view가 그대로 직렬화.
+    term_offerings_qs = CourseOffering.objects.filter(
+        year=target_year, semester=target_semester,
+    ).prefetch_related('schedules')
     candidates = list(
         Course.objects
         .exclude(course_code__in=excluded_codes)
         .exclude(name__in=excluded_names)
         .filter(Q(pk__in=matching_qs) | ~Q(pk__in=has_offering_qs))
         .distinct()
-        .prefetch_related('prerequisites', 'schedules')
+        .prefetch_related(
+            'prerequisites',
+            Prefetch('offerings', queryset=term_offerings_qs),
+        )
     )
 
     # 졸업요건 부족 카테고리 (점수 +15용)
@@ -659,7 +666,7 @@ def _build_curriculum_context(user, *, include_summer, include_winter):
         )
         .exclude(course_code__in=excluded_codes)
         .exclude(name__in=excluded_names)
-        .prefetch_related('schedules', 'prerequisites')
+        .prefetch_related('offerings__schedules', 'prerequisites')
     )
 
     # 졸업요건 잔여학점 — 키는 (category, liberal_subtype, core_area) 트리플 (#47 Phase 2).
