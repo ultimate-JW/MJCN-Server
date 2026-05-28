@@ -718,8 +718,11 @@ class NextSemesterRecommendAPITests(APITestCase):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
         item = res.data[0]
-        for key in ('score', 'course_code', 'name', 'category', 'credits', 'professor', 'schedules'):
+        # offerings 안에 section_no/professor/schedules — Course 레벨에는 노출 X (#111)
+        for key in ('score', 'course_code', 'name', 'category', 'credits', 'offerings'):
             self.assertIn(key, item)
+        self.assertNotIn('professor', item)
+        self.assertNotIn('schedules', item)
 
     def test_score_내림차순_정렬(self):
         self.client.force_authenticate(user=self.user)
@@ -833,6 +836,69 @@ class NextSemesterRecommendAPITests(APITestCase):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url, {'semester': '5'})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # ----- 분반(Offering) 단위 응답 그룹화 (#111) -----
+
+    def test_offerings_분반별로_분리됨(self):
+        """한 Course에 분반 N개면 응답 offerings 배열도 N건 — schedules 평탄화 X"""
+        # base(CSE1001)에 2026-1 분반 2개 + 각각 schedule 1개
+        off_a = CourseOffering.objects.create(
+            course=self.base, year=2026, semester=1,
+            section_no='01', professor='김교수',
+        )
+        off_b = CourseOffering.objects.create(
+            course=self.base, year=2026, semester=1,
+            section_no='02', professor='이교수',
+        )
+        CourseSchedule.objects.create(
+            course=self.base, offering=off_a, day_of_week='월',
+            start_time=time(9, 0), end_time=time(10, 30),
+            building='M', room='301',
+        )
+        CourseSchedule.objects.create(
+            course=self.base, offering=off_b, day_of_week='화',
+            start_time=time(13, 0), end_time=time(14, 30),
+            building='M', room='302',
+        )
+
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'year': 2026, 'semester': 1})
+
+        item = next(i for i in res.data if i['course_code'] == 'CSE1001')
+        offerings = item['offerings']
+        self.assertEqual(len(offerings), 2)
+        section_nos = {o['section_no'] for o in offerings}
+        self.assertEqual(section_nos, {'01', '02'})
+        # 분반별로 schedules가 독립 — 평탄화되지 않음 (#111 결함 G)
+        for o in offerings:
+            self.assertEqual(len(o['schedules']), 1)
+
+    def test_offerings_타_학기_분반은_제외(self):
+        """target term이 아닌 분반은 응답 offerings에 포함되지 않음"""
+        CourseOffering.objects.create(
+            course=self.base, year=2026, semester=1,
+            section_no='01', professor='김교수',
+        )
+        CourseOffering.objects.create(
+            course=self.base, year=2025, semester=2,
+            section_no='99', professor='박교수',
+        )
+
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'year': 2026, 'semester': 1})
+
+        item = next(i for i in res.data if i['course_code'] == 'CSE1001')
+        section_nos = {o['section_no'] for o in item['offerings']}
+        self.assertEqual(section_nos, {'01'})  # 2025-2 분반은 제외
+
+    def test_offering_없는_Course는_빈_offerings(self):
+        """legacy 시드(Offering 없음) Course는 offerings 빈 배열로 응답"""
+        # setUp의 elective(CSE3001)는 offering 없음 → 통과하되 offerings 빈 배열
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+
+        item = next(i for i in res.data if i['course_code'] == 'CSE3001')
+        self.assertEqual(item['offerings'], [])
 
 
 # ===== parse_year_open 단위 테스트 (#36) =====
@@ -1297,6 +1363,70 @@ class CurriculumRecommendAPITests(APITestCase):
                 for item in sem.get(key, []):
                     self.assertIn('core_area', item)
                     self.assertIsNone(item['core_area'])
+
+    # ── #112 전공선택 쿼터 (학기당 최소 6학점) ──
+
+    def test_전공선택_short_시_plan에_최소_1건_노출_112(self):
+        """#112 결함 J — 전공선택 잔여 > 0인데 plan에 0건 나오는 갭 해소.
+
+        setUp: 전공선택 8학점 필요, 후보 CSE3005(1학기) + CSE3006(2학기) 각 3학점.
+        쿼터 적용 시 학기마다 매칭 분반 1건씩 강제 추천 → plan 전체에서 ≥ 1건.
+        """
+        res = self._post()
+        plans = res.data['plans']
+        self.assertGreater(len(plans), 0)
+        for plan in plans:
+            codes = set()
+            for sem in plan['semesters']:
+                for c in sem.get('major_elective', []):
+                    codes.add(c['course_code'])
+            self.assertGreater(
+                len(codes), 0,
+                msg=f"plan {plan['plan_number']}: 전공선택 0건 (결함 J 재발)",
+            )
+
+    def test_전공선택_잔여_3학점이면_quota도_3학점으로_clamp_112(self):
+        """전공선택 required 3학점만이면 target = min(6, 3) = 3 → 한 학기 3학점 채우고 끝"""
+        GraduationRequirement.objects.filter(category='전공선택').delete()
+        GraduationRequirement.objects.create(
+            department='데이터테크놀로지전공', admission_year=2024,
+            category='전공선택', required_credits=3, total_required=25,
+        )
+        res = self._post(num_plans=1)
+        plan = res.data['plans'][0]
+        elective_credits = [
+            sum(c['credits'] for c in sem.get('major_elective', []))
+            for sem in plan['semesters']
+        ]
+        # 첫 학기에 quota로 3학점 들어가야 함. 그 다음 학기는 잔여 0이라 quota X
+        # (score 경쟁만 — 점수 낮으면 안 들어오는 게 정상)
+        self.assertIn(3, elective_credits, msg=f'elective_credits={elective_credits}')
+        # 누적은 quota target과 일치 (3학점) — score 경쟁으로 추가 들어와도 무방하니 >=3
+        self.assertGreaterEqual(sum(elective_credits), 3)
+
+    def test_전공선택_완료시_quota_skip_other_categories_정상_112(self):
+        """전공선택 잔여 0이면 quota phase skip — 다른 부족 카테고리 추천에 영향 없음"""
+        # 전공선택 required 8학점 이미 이수
+        for code, name, credits in [('OLD3001', '과거전선1', 4), ('OLD3002', '과거전선2', 4)]:
+            CourseHistory.objects.create(
+                user=self.user, course_name=name, course_code=code,
+                year=2024, semester=1, grade_received='A',
+                category='전공선택', credits=credits,
+            )
+        res = self._post(num_plans=1)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        plan = res.data['plans'][0]
+        # 부족 남은 전공필수(12) / 공통교양(6) / 일반교양(4)이 정상 채워져야 함
+        total_required = sum(
+            sum(c['credits'] for c in sem.get('major_required', []))
+            for sem in plan['semesters']
+        )
+        total_common = sum(
+            sum(c['credits'] for c in sem.get('liberal_common', []))
+            for sem in plan['semesters']
+        )
+        self.assertGreater(total_required, 0)
+        self.assertGreater(total_common, 0)
 
 
 # 졸업까지 진척도(%) API 테스트는 dashboard 앱으로 이전됨

@@ -111,13 +111,23 @@ class CompletionStatusSerializer(serializers.Serializer):
     total_remaining = serializers.IntegerField()
 
 
+class RecommendedOfferingSerializer(serializers.Serializer):
+    """분반 1개 — 추천 응답 안 schedules는 이 분반의 시간/강의실만 (#111).
+
+    Course에 직접 붙은 schedules 평탄화를 피하고 분반(Offering) 단위로 그룹화.
+    """
+    id = serializers.IntegerField()
+    section_no = serializers.CharField()
+    professor = serializers.CharField()
+    schedules = CourseScheduleSerializer(many=True)
+
+
 class RecommendedCourseSerializer(serializers.Serializer):
     course_code = serializers.CharField()
     name = serializers.CharField()
     category = serializers.CharField()
     credits = serializers.IntegerField()
-    professor = serializers.CharField()
-    schedules = CourseScheduleSerializer(many=True)
+    offerings = RecommendedOfferingSerializer(many=True)
     # 핵심교양 4영역 / 공통교양 4영역 식별자 (#47 Phase 2, #113).
     # 비교양 카테고리는 null — 프론트가 영역별 진척도 매칭에 사용.
     core_area = serializers.CharField(allow_null=True)
@@ -128,14 +138,14 @@ class NextSemesterRecommendationSerializer(serializers.Serializer):
 
     View에서 many=True로 호출되어 점수 내림차순 정렬된 리스트를 직렬화한다.
     `score`는 디버깅·튜닝 시 우선순위 검증용으로 함께 노출한다.
+    offerings는 target_year/target_semester 매칭 분반만 (#111).
     """
     score = serializers.IntegerField()
     course_code = serializers.CharField()
     name = serializers.CharField()
     category = serializers.CharField()
     credits = serializers.IntegerField()
-    professor = serializers.CharField()
-    schedules = CourseScheduleSerializer(many=True)
+    offerings = RecommendedOfferingSerializer(many=True)
     # 핵심교양 4영역 / 공통교양 4영역 식별자 (#47 Phase 2, #113).
     core_area = serializers.CharField(allow_null=True)
 
