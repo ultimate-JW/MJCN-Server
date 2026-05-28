@@ -253,6 +253,9 @@ SPECTACULAR_SETTINGS = {
     'ENUM_NAME_OVERRIDES': {
         'ChatRoomCategoryEnum': 'chat.models.CHAT_CATEGORIES',
         'ThemeCategoryEnum': 'themes.models.Theme.CATEGORY_CHOICES',
+        # PR #129 머지로 CourseHistory.category가 Course.CATEGORY_CHOICES를 공유 →
+        # 두 모델이 같은 component 'CourseCategoryEnum' 가리키도록 명시 (#133).
+        'CourseCategoryEnum': 'courses.models.Course.CATEGORY_CHOICES',
     },
 }
 
