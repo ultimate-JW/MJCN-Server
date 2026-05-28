@@ -37,6 +37,7 @@ def classify_and_title(first_user_message: str) -> tuple[str, str]:
                 {'role': 'user', 'content': first_user_message},
             ],
             response_format={'type': 'json_object'},
+            timeout=settings.OPENAI_REQUEST_TIMEOUT,
         )
     except Exception as e:
         raise AIClientError(f'OpenAI 호출 실패 (classify_and_title): {e}') from e
@@ -90,6 +91,7 @@ def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
                 model=settings.OPENAI_MODEL,
                 messages=api_messages,
                 tools=TOOLS_SCHEMA,
+                timeout=settings.OPENAI_REQUEST_TIMEOUT,
             )
         except Exception as e:
             raise AIClientError(f'OpenAI 호출 실패 (generate_assistant_reply): {e}') from e
@@ -121,6 +123,7 @@ def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
         response = client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=api_messages,
+            timeout=settings.OPENAI_REQUEST_TIMEOUT,
         )
     except Exception as e:
         raise AIClientError(f'OpenAI 호출 실패 (final answer): {e}') from e
