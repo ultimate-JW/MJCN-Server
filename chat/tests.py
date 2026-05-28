@@ -225,18 +225,24 @@ class SendMessageTests(TestCase):
         self.assertEqual(history_arg[-1].content, '새 질문')
         self.assertEqual(history_arg[-1].role, 'user')
 
+    @patch('chat.views.generate_assistant_reply', return_value='AI 응답')
     @patch('chat.views.classify_and_title', side_effect=AIClientError('boom'))
-    def test_ai_failure_rolls_back_and_returns_503(self, mock_classify):
+    def test_classify_failure_falls_back_and_continues(self, mock_classify, mock_reply):
+        # #141 — classify_and_title 실패해도 fallback(title='' / category='기타') 후
+        # 응답 생성까지 진행. user 메시지는 살아남음.
         res = self.client.post(
             messages_url(self.room.id),
             {'content': '첫 질문'},
             format='json',
         )
-        self.assertEqual(res.status_code, 503)
-        # 트랜잭션 롤백 → user 메시지도 저장 안 됨
-        self.assertEqual(self.room.messages.count(), 0)
+        self.assertEqual(res.status_code, 201)
+        # user + assistant 둘 다 저장됨
+        self.assertEqual(self.room.messages.filter(role='user').count(), 1)
+        self.assertEqual(self.room.messages.filter(role='assistant').count(), 1)
         self.room.refresh_from_db()
+        # title은 빈 채로 (fallback), category는 '기타'로 fallback
         self.assertEqual(self.room.title, '')
+        self.assertEqual(self.room.category, '기타')
 
     def test_other_users_room_returns_404(self):
         other = ChatRoom.objects.create(user=self.user_b)
@@ -350,7 +356,9 @@ class SendMessageAttachmentTests(TestCase):
         self.assertEqual(ChatAttachment.objects.count(), 0)
 
     @patch('chat.views.generate_assistant_reply', side_effect=AIClientError('boom'))
-    def test_ai_failure_rolls_back_attachments(self, mock_reply):
+    def test_ai_reply_failure_keeps_user_message_and_attachments(self, mock_reply):
+        # #141 — generate_assistant_reply 실패 시 user 메시지·첨부는 살아남음.
+        # 503 응답으로 사용자에게 재전송 안내, 단 컨텍스트 일관성 유지.
         img = SimpleUploadedFile('a.jpg', b'fake', content_type='image/jpeg')
         before_msgs = self.room.messages.count()
         res = self.client.post(
@@ -359,9 +367,14 @@ class SendMessageAttachmentTests(TestCase):
             format='multipart',
         )
         self.assertEqual(res.status_code, 503)
-        # user 메시지·첨부 모두 롤백
-        self.assertEqual(self.room.messages.count(), before_msgs)
-        self.assertEqual(ChatAttachment.objects.count(), 0)
+        # user 메시지 + 첨부 살아남음 (setUp 메시지 + 새 user 메시지 = before_msgs + 1)
+        self.assertEqual(self.room.messages.count(), before_msgs + 1)
+        latest = self.room.messages.order_by('-created_at').first()
+        self.assertEqual(latest.role, 'user')
+        self.assertEqual(latest.content, 'hi')
+        self.assertEqual(latest.attachments.count(), 1)
+        # 이번 시도에서 assistant 메시지는 새로 추가되지 않음
+        # (setUp에서 만든 assistant 1개는 그대로)
 
 
 class BuildUserContextTests(TestCase):
