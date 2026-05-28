@@ -673,10 +673,11 @@ class SearchNoticesDispatcherTests(TestCase):
         self.assertGreaterEqual(out['count'], 1)
         self.assertEqual(out['results'][0]['title'], '수강신청 일정 안내')
 
-    def test_empty_query_graceful(self):
+    def test_empty_query_returns_recent_fallback(self):
+        # #131 — 빈 query는 의도(intent) 질문으로 간주, 최신 N건 fallback (이전: 0건)
         out = dispatch_tool_call(None, 'search_notices', {'query': ''})
-        self.assertEqual(out['count'], 0)
-        self.assertEqual(out['results'], [])
+        self.assertGreater(out['count'], 0)
+        self.assertIn('의도 질문', out.get('note', ''))
 
     def test_no_match_returns_empty(self):
         out = dispatch_tool_call(None, 'search_notices', {'query': '존재하지않는키워드ABC'})
@@ -847,3 +848,106 @@ class SearchToolIntentRoutingTests(TestCase):
         from chat.prompts import CHAT_SYSTEM
         for marker in ['교내', '교외', 'search_notices', 'search_information']:
             self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 "{marker}" 가이드 누락')
+
+
+# ─── #131: 의도 질문(키워드 없는 최신 공지) fallback ─────────────────
+
+class IntentQueryFallbackTests(TestCase):
+    """stopword만 들어와 토큰이 비는 의도 질문 — 0건 대신 최신 N건 fallback (#131).
+
+    "새로 뜬 공지 있어?" 같은 질문이 운영에서 0건으로 떨어지던 결함 해소.
+    """
+
+    def setUp(self):
+        from datetime import date, timedelta
+        from django.utils import timezone
+        from notices.models import Notice
+        from information.models import Information
+
+        # 최근 공지 3개 (title에 '공지' 단어 없음 — 학교 게시판 실제 패턴 흉내)
+        now = timezone.now()
+        Notice.objects.create(
+            source='academic',
+            url='https://www.mju.ac.kr/bbs/notice/1',
+            title='[학사] 2026학년도 1학기 종강일 안내',
+            content='...',
+            published_at=now - timedelta(days=1),
+        )
+        Notice.objects.create(
+            source='scholarship',
+            url='https://www.mju.ac.kr/bbs/notice/2',
+            title='[장학] 2026 국가장학금 신청 안내',
+            content='장학금 신청 기간 안내',
+            published_at=now - timedelta(days=2),
+        )
+        Notice.objects.create(
+            source='event',
+            url='https://www.mju.ac.kr/bbs/notice/3',
+            title='[행사] 봄 축제 개최 안내',
+            content='...',
+            published_at=now - timedelta(days=3),
+        )
+
+        # 마감 미경과 정보 2건
+        today = date.today()
+        Information.objects.create(
+            source='wevity', source_id='1001',
+            url='https://wevity.com/info/1',
+            title='UX 디자인 공모전',
+            description='...',
+            categories=['공모전'],
+            end_date=today + timedelta(days=10),
+            is_active=True,
+        )
+        Information.objects.create(
+            source='wevity', source_id='1002',
+            url='https://wevity.com/info/2',
+            title='청년 창업 지원사업',
+            description='...',
+            categories=['지원사업'],
+            end_date=today + timedelta(days=5),
+            is_active=True,
+        )
+
+    def test_tokenize_의도_질문은_빈_리스트(self):
+        from chat.tools import _tokenize_query
+        # "새로 뜬 공지 있어?" — 모든 토큰이 stopword
+        self.assertEqual(_tokenize_query('새로 뜬 공지 있어?'), [])
+        self.assertEqual(_tokenize_query('최근 공지 보여줘'), [])
+        self.assertEqual(_tokenize_query('오늘 정보 있어'), [])
+
+    def test_tokenize_의미있는_키워드는_보존(self):
+        from chat.tools import _tokenize_query
+        # stopword 섞여 있어도 의미 있는 단어는 살아남음
+        self.assertEqual(_tokenize_query('장학금 알려줘'), ['장학금'])
+        self.assertIn('수강신청', _tokenize_query('새로 뜬 수강신청 공지'))
+        self.assertEqual(_tokenize_query('장학금'), ['장학금'])
+
+    def test_search_notices_의도_질문이면_최신_N건(self):
+        from chat.tools import _search_notices
+        result = _search_notices({'query': '새로 뜬 공지 있어?'})
+        self.assertEqual(result['count'], 3)
+        # 게시일 내림차순 — 가장 최근 종강일 안내가 첫 결과
+        self.assertEqual(result['results'][0]['title'], '[학사] 2026학년도 1학기 종강일 안내')
+        # note에 fallback 명시 — AI가 이걸 보고 응답 톤을 조정 가능
+        self.assertIn('의도 질문', result.get('note', ''))
+
+    def test_search_notices_키워드_있으면_기존_검색_동작(self):
+        from chat.tools import _search_notices
+        result = _search_notices({'query': '장학금'})
+        self.assertEqual(result['count'], 1)
+        self.assertEqual(result['results'][0]['title'], '[장학] 2026 국가장학금 신청 안내')
+
+    def test_search_information_의도_질문이면_임박_N건(self):
+        from chat.tools import _search_information
+        result = _search_information({'query': '뭐 있어?'})
+        self.assertEqual(result['count'], 2)
+        # 마감 임박순 — 5일 남은 지원사업이 먼저
+        self.assertEqual(result['results'][0]['title'], '청년 창업 지원사업')
+        self.assertIn('의도 질문', result.get('note', ''))
+
+    def test_search_information_키워드_있으면_기존_검색_동작(self):
+        from chat.tools import _search_information
+        result = _search_information({'query': '디자인'})
+        self.assertEqual(result['count'], 1)
+        self.assertEqual(result['results'][0]['title'], 'UX 디자인 공모전')
