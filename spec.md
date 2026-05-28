@@ -1105,7 +1105,8 @@ LLM은 추천 설명 생성 및 관심사 해석 보조 역할로만 활용한�
 - **출력**: 졸업까지 남은 학기별 추천 과목 리스트
   - 학기마다 학칙 7 카테고리 키 분리 (#47 Phase 3): `major_required` / `major_elective` / `liberal_common` / `liberal_core` / `liberal_foundation` / `liberal_general` / `free_elective`
   - 빈 카테고리도 키 유지 (`[]`)
-  - 과목정보 포함 내용: 과목명·과목번호·시간·강의실·교수명
+  - 과목정보 포함 내용: 과목명·과목번호·시간·강의실·교수명·`core_area`
+  - `core_area`: 공통교양 4영역(기독교/사고와 표현/언어/진로와 디지털리터러시) 또는 핵심교양 4영역(역사와 철학/사회와 공동체/문화와 예술/과학기술과 정보). 비교양 카테고리는 `null` (#47 Phase 2, #113)
 
 ##### 추천 노브 (API body 파라미터, 모두 옵셔널)
 
@@ -1155,7 +1156,7 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
       "semesters": [
         {
           "year": 2027, "semester": 1,
-          "major_required":     [{"course_code": "...", "name": "...", "credits": 3, "professor": "...", "schedules": [...]}],
+          "major_required":     [{"course_code": "...", "name": "...", "credits": 3, "professor": "...", "schedules": [...], "core_area": null}],
           "major_elective":     [],
           "liberal_common":     [],
           "liberal_core":       [],

@@ -283,6 +283,7 @@ class NextSemesterRecommendView(APIView):
                 'credits': course.credits,
                 'professor': course.professor,
                 'schedules': list(course.schedules.all()),
+                'core_area': course.core_area,  # 핵심·공통교양 4영역 식별자 (#113)
             }
             for score, course in results
         ]
@@ -346,6 +347,7 @@ def _serialize_course(course):
             }
             for s in course.schedules.all()
         ],
+        'core_area': course.core_area,  # 핵심·공통교양 4영역 식별자 (#113)
     }
 
 
