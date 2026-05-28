@@ -520,6 +520,12 @@ DEFAULT_INTEREST_WEIGHT = 1.0      # 관심사 가중치 (1.0이면 5.3.1과 동
 #   index 0=베이스 / 1=+3(빡센) / 2=-3(여유) / 3=+1 / 4=-1 — 최대 5안까지
 CREDIT_OFFSETS = [0, +3, -3, +1, -1]
 
+# 전공선택 쿼터 — 학기당 최소 6학점 보장 (#112).
+# score-greedy가 전공필수·교양 backlog를 우선 채워서 전공선택이 0건 되는 갭 보완.
+# 전공선택 잔여 < 6이면 잔여만큼만 채움 (overshoot 1회 허용).
+MAJOR_ELECTIVE_QUOTA_CREDITS = 6
+KEY_MAJOR_ELECTIVE = ('전공선택', None, None)  # remaining_by_cat 트리플 키
+
 
 def _next_curriculum_slot(year, sem, *, include_summer, include_winter):
     """현재 학기 슬롯의 다음 학기 슬롯을 반환한다.
@@ -776,20 +782,48 @@ def _build_single_plan(context, *, user, max_credits, category_weights, interest
             -x[0], CATEGORY_PRIORITY.get(x[1].category, 99), x[1].course_code,
         ))
 
-        # 학점 상한까지 채움 — 한 과목씩 시도, 넘치면 skip하고 다음 과목
         sem_courses = []
         sem_credits = 0
+
+        def _commit(course):
+            # 채움 phase 공용 — sem 상태 + plan 누적 + 카테고리 잔여 동기화
+            sem_courses.append(course)
+            plan_used_codes.add(course.course_code)
+            plan_used_names.add(course.name)             # 같은 이름 다른 코드 후속 학기 제외
+            plan_completed_ids.add(course.id)            # 다음 학기 prereq 검사용
+            cat_key = (course.category, course.liberal_subtype, course.core_area)
+            if cat_key in remaining_by_cat:
+                remaining_by_cat[cat_key] = max(0, remaining_by_cat[cat_key] - course.credits)
+
+        # Phase 1 — 전공선택 쿼터 우선 채움 (#112): 학기당 최소 6학점.
+        # score-greedy(Phase 2)가 전공필수·교양 backlog로 18학점 다 먹어버리는 케이스에서
+        # 전공선택이 0건이 되는 갭 보완. 잔여 0이면 short_cats에서 빠져 이 phase skip.
+        major_elective_target = min(
+            MAJOR_ELECTIVE_QUOTA_CREDITS,
+            remaining_by_cat.get(KEY_MAJOR_ELECTIVE, 0),
+        )
+        if major_elective_target > 0:
+            elec_credits = 0
+            for _score, course in scored:
+                if elec_credits >= major_elective_target:
+                    break
+                if course.category != '전공선택':
+                    continue
+                if sem_credits + course.credits > max_credits:
+                    continue
+                _commit(course)
+                sem_credits += course.credits
+                elec_credits += course.credits
+
+        # Phase 2 — 학점 상한까지 score-greedy 채움. 전공선택 쿼터분은 이미 plan_used_codes
+        # 안에 있어 자동 skip.
         for _score, course in scored:
+            if course.course_code in plan_used_codes:
+                continue
             if sem_credits + course.credits > max_credits:
                 continue
-            sem_courses.append(course)
+            _commit(course)
             sem_credits += course.credits
-            plan_used_codes.add(course.course_code)
-            plan_used_names.add(course.name)               # 같은 이름 다른 코드 후속 학기 제외
-            plan_completed_ids.add(course.id)              # 다음 학기 prereq 검사용
-            key = (course.category, course.liberal_subtype, course.core_area)
-            if key in remaining_by_cat:
-                remaining_by_cat[key] = max(0, remaining_by_cat[key] - course.credits)
 
         if sem_courses:
             semesters.append({

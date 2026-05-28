@@ -1310,6 +1310,70 @@ class CurriculumRecommendAPITests(APITestCase):
             for k in self.CAT_KEYS:
                 self.assertIn(k, s)
 
+    # ── #112 전공선택 쿼터 (학기당 최소 6학점) ──
+
+    def test_전공선택_short_시_plan에_최소_1건_노출_112(self):
+        """#112 결함 J — 전공선택 잔여 > 0인데 plan에 0건 나오는 갭 해소.
+
+        setUp: 전공선택 8학점 필요, 후보 CSE3005(1학기) + CSE3006(2학기) 각 3학점.
+        쿼터 적용 시 학기마다 매칭 분반 1건씩 강제 추천 → plan 전체에서 ≥ 1건.
+        """
+        res = self._post()
+        plans = res.data['plans']
+        self.assertGreater(len(plans), 0)
+        for plan in plans:
+            codes = set()
+            for sem in plan['semesters']:
+                for c in sem.get('major_elective', []):
+                    codes.add(c['course_code'])
+            self.assertGreater(
+                len(codes), 0,
+                msg=f"plan {plan['plan_number']}: 전공선택 0건 (결함 J 재발)",
+            )
+
+    def test_전공선택_잔여_3학점이면_quota도_3학점으로_clamp_112(self):
+        """전공선택 required 3학점만이면 target = min(6, 3) = 3 → 한 학기 3학점 채우고 끝"""
+        GraduationRequirement.objects.filter(category='전공선택').delete()
+        GraduationRequirement.objects.create(
+            department='데이터테크놀로지전공', admission_year=2024,
+            category='전공선택', required_credits=3, total_required=25,
+        )
+        res = self._post(num_plans=1)
+        plan = res.data['plans'][0]
+        elective_credits = [
+            sum(c['credits'] for c in sem.get('major_elective', []))
+            for sem in plan['semesters']
+        ]
+        # 첫 학기에 quota로 3학점 들어가야 함. 그 다음 학기는 잔여 0이라 quota X
+        # (score 경쟁만 — 점수 낮으면 안 들어오는 게 정상)
+        self.assertIn(3, elective_credits, msg=f'elective_credits={elective_credits}')
+        # 누적은 quota target과 일치 (3학점) — score 경쟁으로 추가 들어와도 무방하니 >=3
+        self.assertGreaterEqual(sum(elective_credits), 3)
+
+    def test_전공선택_완료시_quota_skip_other_categories_정상_112(self):
+        """전공선택 잔여 0이면 quota phase skip — 다른 부족 카테고리 추천에 영향 없음"""
+        # 전공선택 required 8학점 이미 이수
+        for code, name, credits in [('OLD3001', '과거전선1', 4), ('OLD3002', '과거전선2', 4)]:
+            CourseHistory.objects.create(
+                user=self.user, course_name=name, course_code=code,
+                year=2024, semester=1, grade_received='A',
+                category='전공선택', credits=credits,
+            )
+        res = self._post(num_plans=1)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        plan = res.data['plans'][0]
+        # 부족 남은 전공필수(12) / 공통교양(6) / 일반교양(4)이 정상 채워져야 함
+        total_required = sum(
+            sum(c['credits'] for c in sem.get('major_required', []))
+            for sem in plan['semesters']
+        )
+        total_common = sum(
+            sum(c['credits'] for c in sem.get('liberal_common', []))
+            for sem in plan['semesters']
+        )
+        self.assertGreater(total_required, 0)
+        self.assertGreater(total_common, 0)
+
 
 # 졸업까지 진척도(%) API 테스트는 dashboard 앱으로 이전됨
 # (spec 6.10 — 단독 엔드포인트 제거, dashboard 응답으로 통합).
