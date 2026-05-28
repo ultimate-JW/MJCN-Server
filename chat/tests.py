@@ -951,3 +951,76 @@ class IntentQueryFallbackTests(TestCase):
         result = _search_information({'query': '디자인'})
         self.assertEqual(result['count'], 1)
         self.assertEqual(result['results'][0]['title'], 'UX 디자인 공모전')
+
+
+# ─── #139: retrieve N+1 prefetch ─────────────────────────────────────
+
+class ChatRoomRetrieveQueriesTests(TestCase):
+    """ChatRoom retrieve 응답에 메시지·첨부 N+1 회귀 방어 (#139).
+
+    메시지 수가 늘어도 쿼리 수가 일정함을 검증. get_queryset()의 retrieve 분기에서
+    Prefetch('messages', ChatMessage.prefetch_related('attachments')) 적용으로
+    쿼리 수가 1+1+1로 고정.
+    """
+
+    def setUp(self):
+        self.user = make_user()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.room = ChatRoom.objects.create(
+            user=self.user, title='t', category='일반질문',
+        )
+        self.url = f'/api/v1/chat/rooms/{self.room.pk}/'
+
+    def _add_messages_with_attachments(self, n):
+        for i in range(n):
+            m = ChatMessage.objects.create(
+                room=self.room,
+                role=ChatMessage.ROLE_USER,
+                content=f'msg{i}',
+            )
+            ChatAttachment.objects.create(
+                message=m,
+                file=SimpleUploadedFile(f'f{i}.png', b'x', content_type='image/png'),
+                file_type=ChatAttachment.FILE_TYPE_IMAGE,
+                original_name=f'f{i}.png',
+            )
+
+    def test_retrieve_쿼리_수_메시지_수에_무관(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        # 메시지 3개 시나리오
+        self._add_messages_with_attachments(3)
+        with CaptureQueriesContext(connection) as ctx_small:
+            res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200)
+        n_small = len(ctx_small.captured_queries)
+
+        # 메시지 17개 추가 (총 20개)
+        self._add_messages_with_attachments(17)
+        with CaptureQueriesContext(connection) as ctx_large:
+            res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200)
+        n_large = len(ctx_large.captured_queries)
+
+        self.assertEqual(
+            n_small, n_large,
+            msg=f'N+1 회귀 — 메시지 3개 시 {n_small} 쿼리 vs 20개 시 {n_large} 쿼리',
+        )
+
+    def test_retrieve_응답_모양_변경_없음(self):
+        """prefetch 적용 후에도 메시지·첨부 응답 모양이 동일해야 함"""
+        self._add_messages_with_attachments(2)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200)
+        messages = res.data['messages']
+        self.assertEqual(len(messages), 2)
+        # 메시지 정렬: created_at 오름차순 (먼저 만든 게 먼저)
+        self.assertEqual(messages[0]['content'], 'msg0')
+        self.assertEqual(messages[1]['content'], 'msg1')
+        # 각 메시지에 attachments nested
+        for m in messages:
+            self.assertEqual(len(m['attachments']), 1)
+            for key in ('id', 'file', 'file_type', 'original_name', 'created_at'):
+                self.assertIn(key, m['attachments'][0])
