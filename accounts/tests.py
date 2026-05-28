@@ -331,3 +331,84 @@ class NonASCIIEmailRejectionTests(TestCase):
         }, format='json')
         self.assertEqual(signup_res.status_code, 400)
         self.assertEqual(reset_res.status_code, 400)
+
+
+class CourseHistoryAutoFillResponseTests(TestCase):
+    """#114 — CourseHistory.save() override가 course_code로 Course에서 자동 복사한
+    `liberal_subtype` / `core_area`가 API 응답에 노출되는지 검증.
+
+    DB 자동 채움 동작 자체는 정상이었으나 시리얼라이저 fields에서 두 필드가 빠져
+    응답에 안 보이던 결함 L."""
+
+    url = '/api/v1/accounts/course-history/'
+
+    def setUp(self):
+        from courses.models import Course
+        self.user = User.objects.create_user(
+            email='hist@mju.ac.kr',
+            password=VALID_PWD,
+        )
+        self.user.is_email_verified = True
+        self.user.save(update_fields=['is_email_verified'])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        # 핵심교양 — liberal_subtype + core_area 둘 다 채워짐
+        Course.objects.create(
+            course_code='COR1001', name='서양사', category='핵심교양',
+            college='교양', liberal_subtype='핵심교양', core_area='역사와 철학',
+            credits=3, year_open=1, semester_open=1,
+        )
+        # 학문기초교양 — liberal_subtype만, core_area None
+        Course.objects.create(
+            course_code='FOU1001', name='미적분학1', category='학문기초교양',
+            college='교양', liberal_subtype='학문기초교양',
+            credits=3, year_open=1, semester_open=1,
+        )
+        # 전공필수 — 두 필드 다 None
+        Course.objects.create(
+            course_code='MAJ1001', name='자료구조', category='전공필수',
+            college='ICT융합대학', major='컴퓨터공학전공',
+            credits=3, year_open=2, semester_open=1,
+        )
+
+    def _post(self, course_code, course_name, category, credits=3, year=2024, semester=1):
+        return self.client.post(self.url, {
+            'course_name': course_name,
+            'course_code': course_code,
+            'year': year,
+            'semester': semester,
+            'grade_received': 'A',
+            'category': category,
+            'credits': credits,
+        }, format='json')
+
+    def test_POST_핵심교양_응답에_liberal_subtype과_core_area_노출_114(self):
+        res = self._post('COR1001', '서양사', '핵심교양')
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['liberal_subtype'], '핵심교양')
+        self.assertEqual(res.data['core_area'], '역사와 철학')
+
+    def test_POST_학문기초_응답에_liberal_subtype_노출_core_area_null_114(self):
+        res = self._post('FOU1001', '미적분학1', '학문기초교양')
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['liberal_subtype'], '학문기초교양')
+        self.assertIsNone(res.data['core_area'])
+
+    def test_POST_전공필수_응답에_두_키_모두_null_114(self):
+        res = self._post('MAJ1001', '자료구조', '전공필수')
+        self.assertEqual(res.status_code, 201)
+        self.assertIsNone(res.data['liberal_subtype'])
+        self.assertIsNone(res.data['core_area'])
+
+    def test_GET_list_응답_모든_item에_두_키_존재_114(self):
+        self._post('COR1001', '서양사', '핵심교양', year=2024, semester=1)
+        self._post('MAJ1001', '자료구조', '전공필수', year=2024, semester=2)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200)
+        # StandardPagination 적용 — res.data = {count, next, previous, results}
+        results = res.data['results']
+        self.assertEqual(len(results), 2)
+        for item in results:
+            self.assertIn('liberal_subtype', item)
+            self.assertIn('core_area', item)

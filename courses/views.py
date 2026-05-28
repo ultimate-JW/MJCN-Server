@@ -273,7 +273,7 @@ class NextSemesterRecommendView(APIView):
             target_semester=target_semester,
         )
 
-        # 응답 dict 변환 — Course 객체는 schedules가 prefetch된 상태
+        # 응답 dict 변환 — services가 target term offerings(+schedules) prefetch 완료 (#111).
         items = [
             {
                 'score': score,
@@ -281,8 +281,7 @@ class NextSemesterRecommendView(APIView):
                 'name': course.name,
                 'category': course.category,
                 'credits': course.credits,
-                'professor': course.professor,
-                'schedules': list(course.schedules.all()),
+                'offerings': _offerings_payload(course, target_year, target_semester),
             }
             for score, course in results
         ]
@@ -329,22 +328,39 @@ _CATEGORY_TO_KEY = {
 }
 
 
-def _serialize_course(course):
+def _offerings_payload(course, year, semester):
+    """course의 분반 중 (year, semester) 매칭분만 추출 → 응답 dict (#111).
+
+    services가 이미 prefetch한 course.offerings를 그대로 사용. 미래 학기 등
+    DB에 offering이 없는 경우 빈 배열을 반환 (프론트는 시간 정보 없는 추천으로 처리).
+    """
+    return [
+        {
+            'id': off.id,
+            'section_no': off.section_no,
+            'professor': off.professor,
+            'schedules': [
+                {
+                    'day_of_week': s.day_of_week,
+                    'start_time': s.start_time,
+                    'end_time': s.end_time,
+                    'room': s.room,
+                }
+                for s in off.schedules.all()
+            ],
+        }
+        for off in course.offerings.all()
+        if off.year == year and off.semester == semester
+    ]
+
+
+def _serialize_course(course, year, semester):
     return {
         'course_code': course.course_code,
         'name': course.name,
         'category': course.category,
         'credits': course.credits,
-        'professor': course.professor,
-        'schedules': [
-            {
-                'day_of_week': s.day_of_week,
-                'start_time': s.start_time,
-                'end_time': s.end_time,
-                'room': s.room,
-            }
-            for s in course.schedules.all()
-        ],
+        'offerings': _offerings_payload(course, year, semester),
     }
 
 
@@ -354,14 +370,15 @@ def _split_semester_by_category(semester):
     빈 카테고리도 키 유지 (빈 배열) — 프론트가 키 존재 체크 안 해도 됨.
     매핑에 없는 카테고리(있다면 카테고리 자체 결함)는 응답에서 누락 + 로그 X (silent).
     """
+    year, sem = semester['year'], semester['semester']
     buckets = {key: [] for key in _CATEGORY_TO_KEY.values()}
     for course in semester['courses']:
         key = _CATEGORY_TO_KEY.get(course.category)
         if key:
-            buckets[key].append(_serialize_course(course))
+            buckets[key].append(_serialize_course(course, year, sem))
     return {
-        'year': semester['year'],
-        'semester': semester['semester'],
+        'year': year,
+        'semester': sem,
         **buckets,
     }
 

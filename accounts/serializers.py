@@ -126,8 +126,11 @@ class InterestAreaSerializer(serializers.ModelSerializer):
 class CourseHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = CourseHistory
+        # liberal_subtype / core_area — CourseHistory.save() override가 course_code로
+        # Course에서 자동 복사 (#47 Phase 2). 프론트가 응답으로 확인 가능하도록 노출 (#114).
         fields = ['id', 'course_name', 'course_code', 'year', 'semester',
-                  'grade_received', 'category', 'credits']
+                  'grade_received', 'category', 'credits',
+                  'liberal_subtype', 'core_area']
 
     def validate_credits(self, value):
         if value < 1 or value > 10:
