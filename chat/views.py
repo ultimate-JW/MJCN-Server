@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Prefetch
 from django.http import Http404
 from drf_spectacular.utils import (
     OpenApiParameter,
@@ -63,6 +64,16 @@ class ChatRoomViewSet(
         category = self.request.query_params.get('category')
         if category:
             qs = qs.filter(category=category)
+        if self.action == 'retrieve':
+            # 메시지·첨부 N+1 회피 (#139). list/destroy/create/send_message는 미적용.
+            qs = qs.prefetch_related(
+                Prefetch(
+                    'messages',
+                    queryset=ChatMessage.objects
+                    .order_by('created_at')
+                    .prefetch_related('attachments'),
+                )
+            )
         return qs
 
     def get_serializer_class(self):
