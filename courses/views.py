@@ -341,7 +341,6 @@ def _serialize_course(course):
                 'day_of_week': s.day_of_week,
                 'start_time': s.start_time,
                 'end_time': s.end_time,
-                'building': s.building,
                 'room': s.room,
             }
             for s in course.schedules.all()

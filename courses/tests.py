@@ -721,6 +721,22 @@ class NextSemesterRecommendAPITests(APITestCase):
         for key in ('score', 'course_code', 'name', 'category', 'credits', 'professor', 'schedules'):
             self.assertIn(key, item)
 
+    def test_schedules에_building_키_없음_116(self):
+        """#116 — xlsx에 건물명 정보 없어 building은 응답에서 제거. room만 노출."""
+        CourseSchedule.objects.create(
+            course=self.base, day_of_week='월',
+            start_time=time(9, 0), end_time=time(10, 30),
+            room='Y5407',
+        )
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        item = next(i for i in res.data if i['course_code'] == 'CSE1001')
+        sch = item['schedules'][0]
+        self.assertEqual(sch['room'], 'Y5407')
+        self.assertNotIn('building', sch)
+        for key in ('day_of_week', 'start_time', 'end_time', 'room'):
+            self.assertIn(key, sch)
+
     def test_score_내림차순_정렬(self):
         self.client.force_authenticate(user=self.user)
         res = self.client.get(self.url)
