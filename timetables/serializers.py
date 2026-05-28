@@ -4,7 +4,7 @@
 - TimetableResponseSerializer { plans: [TimetablePlanSerializer], note: str|null }
 - TimetablePlanSerializer    { score, total_credits, credits_by_category, offerings, reason_codes }
 - CourseOfferingSerializer   { id, course_code, course_name, category, credit, section_no, professor, schedules }
-- CourseScheduleSerializer   { day, start_time, end_time, room }
+- TimetableCourseScheduleSerializer { day, start_time, end_time, room }
 
 UserPreference는 별도 CRUD (RetrieveUpdateAPIView).
 """
@@ -44,7 +44,7 @@ class UserPreferenceSerializer(serializers.ModelSerializer):
         read_only_fields = ('updated_at',)
 
 
-class CourseScheduleSerializer(serializers.ModelSerializer):
+class TimetableCourseScheduleSerializer(serializers.ModelSerializer):
     day = serializers.CharField(source='day_of_week')
 
     class Meta:
@@ -57,7 +57,7 @@ class CourseOfferingSerializer(serializers.ModelSerializer):
     course_name = serializers.CharField(source='course.name')
     category = serializers.CharField(source='course.category')
     credit = serializers.IntegerField(source='course.credits')
-    schedules = CourseScheduleSerializer(many=True)
+    schedules = TimetableCourseScheduleSerializer(many=True)
 
     class Meta:
         model = CourseOffering
