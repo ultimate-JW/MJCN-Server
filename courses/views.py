@@ -282,6 +282,7 @@ class NextSemesterRecommendView(APIView):
                 'category': course.category,
                 'credits': course.credits,
                 'offerings': _offerings_payload(course, target_year, target_semester),
+                'core_area': course.core_area,  # 핵심·공통교양 4영역 식별자 (#113)
             }
             for score, course in results
         ]
@@ -362,6 +363,7 @@ def _serialize_course(course, year, semester):
         'category': course.category,
         'credits': course.credits,
         'offerings': _offerings_payload(course, year, semester),
+        'core_area': course.core_area,  # 핵심·공통교양 4영역 식별자 (#113)
     }
 
 

@@ -128,6 +128,9 @@ class RecommendedCourseSerializer(serializers.Serializer):
     category = serializers.CharField()
     credits = serializers.IntegerField()
     offerings = RecommendedOfferingSerializer(many=True)
+    # 핵심교양 4영역 / 공통교양 4영역 식별자 (#47 Phase 2, #113).
+    # 비교양 카테고리는 null — 프론트가 영역별 진척도 매칭에 사용.
+    core_area = serializers.CharField(allow_null=True)
 
 
 class NextSemesterRecommendationSerializer(serializers.Serializer):
@@ -143,6 +146,8 @@ class NextSemesterRecommendationSerializer(serializers.Serializer):
     category = serializers.CharField()
     credits = serializers.IntegerField()
     offerings = RecommendedOfferingSerializer(many=True)
+    # 핵심교양 4영역 / 공통교양 4영역 식별자 (#47 Phase 2, #113).
+    core_area = serializers.CharField(allow_null=True)
 
 
 class SemesterPlanSerializer(serializers.Serializer):

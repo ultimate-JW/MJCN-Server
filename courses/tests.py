@@ -1310,6 +1310,60 @@ class CurriculumRecommendAPITests(APITestCase):
             for k in self.CAT_KEYS:
                 self.assertIn(k, s)
 
+    # ── #113 liberal_core core_area 노출 ──
+
+    def test_liberal_core_응답에_core_area_노출_113(self):
+        """핵심교양 추천 item에 core_area 필드 노출 — 4영역 식별 가능 (#113)"""
+        # 핵심교양 4영역 GR 추가 + 영역별 후보 1개씩
+        for area in ('역사와 철학', '사회와 공동체', '문화와 예술', '과학기술과 정보'):
+            GraduationRequirement.objects.create(
+                department='데이터테크놀로지전공', admission_year=2024,
+                category='핵심교양', liberal_subtype='핵심교양', core_area=area,
+                required_credits=3, total_required=40,
+            )
+        _make_course(course_code='COR1001', name='서양사', category='핵심교양',
+                     liberal_subtype='핵심교양', core_area='역사와 철학',
+                     department='교양', major='교양',
+                     year_open=1, semester_open=1, credits=3)
+        _make_course(course_code='COR1002', name='시민사회', category='핵심교양',
+                     liberal_subtype='핵심교양', core_area='사회와 공동체',
+                     department='교양', major='교양',
+                     year_open=1, semester_open=1, credits=3)
+        _make_course(course_code='COR1003', name='현대미술', category='핵심교양',
+                     liberal_subtype='핵심교양', core_area='문화와 예술',
+                     department='교양', major='교양',
+                     year_open=1, semester_open=2, credits=3)
+        _make_course(course_code='COR1004', name='AI개론', category='핵심교양',
+                     liberal_subtype='핵심교양', core_area='과학기술과 정보',
+                     department='교양', major='교양',
+                     year_open=1, semester_open=2, credits=3)
+
+        res = self._post(num_plans=1)
+        plan = res.data['plans'][0]
+        core_areas_seen = set()
+        for sem in plan['semesters']:
+            for item in sem.get('liberal_core', []):
+                # 모든 liberal_core item에 core_area 키 존재
+                self.assertIn('core_area', item, msg=f'liberal_core item에 core_area 누락: {item}')
+                # 4영역 중 하나여야 함 (null이면 결함)
+                self.assertIn(item['core_area'], {
+                    '역사와 철학', '사회와 공동체', '문화와 예술', '과학기술과 정보',
+                })
+                core_areas_seen.add(item['core_area'])
+        # 최소 한 영역 이상 추천에 잡혀야 정상 동작 (4학기·풍성한 후보 기준)
+        self.assertGreater(len(core_areas_seen), 0)
+
+    def test_비핵심교양_카테고리는_core_area_null_113(self):
+        """전공필수·전공선택·일반교양 등은 core_area=null로 응답 (#113)"""
+        res = self._post(num_plans=1)
+        plan = res.data['plans'][0]
+        non_core_keys = ('major_required', 'major_elective', 'liberal_general', 'free_elective')
+        for sem in plan['semesters']:
+            for key in non_core_keys:
+                for item in sem.get(key, []):
+                    self.assertIn('core_area', item)
+                    self.assertIsNone(item['core_area'])
+
     # ── #112 전공선택 쿼터 (학기당 최소 6학점) ──
 
     def test_전공선택_short_시_plan에_최소_1건_노출_112(self):
