@@ -1,4 +1,4 @@
-"""공지사항 크롤링 명령. 매일 03:00 KST 운영 cron에서 실행 (spec 8.2).
+"""공지사항 크롤링 명령. 매일 06:00 KST 운영 cron에서 실행 (spec 8.2).
 
 사용 예:
     python manage.py crawl_notices              # 등록된 모든 크롤러 실행
