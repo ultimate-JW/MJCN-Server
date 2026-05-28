@@ -12,7 +12,9 @@ from .models import (
 class CourseScheduleSerializer(serializers.ModelSerializer):
     class Meta:
         model = CourseSchedule
-        fields = ['day_of_week', 'start_time', 'end_time', 'building', 'room']
+        # building은 xlsx 원천 데이터에 정보 없어 항상 빈 문자열로 노출되던 결함 H (#116).
+        # 응답에서만 제외 — 모델 필드는 유지(학교가 공식 매핑 제공 시 다시 노출 예정).
+        fields = ['day_of_week', 'start_time', 'end_time', 'room']
 
 
 class CoursePrerequisiteSerializer(serializers.ModelSerializer):

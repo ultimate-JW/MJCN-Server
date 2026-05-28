@@ -595,8 +595,8 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | day_of_week | CharField | 요일(월/화/수/목/금 중 하나) |
 | start_time | TimeField | 시작 시간 |
 | end_time | TimeField | 종료 시간 |
-| building | CharField(blank=True) | 강의실 위치(명진당/창조관/5공학관 등) |
-| room | CharField(blank=True) | 강의실 번호 |
+| building | CharField(blank=True) | 강의실 위치(명진당/창조관/5공학관 등). 현재 xlsx 원천 데이터에 정보 없어 항상 빈 문자열 — **응답에서는 제외** (#116). 모델 필드는 유지(향후 학교 공식 매핑 제공 시 다시 노출). |
+| room | CharField(blank=True) | 강의실 번호 (xlsx 원천 코드 그대로, 예: `Y5407`) |
 
 #### GraduationRequirement (졸업요건)
 
