@@ -1,6 +1,6 @@
 """공지사항 AI 처리 파이프라인 실행 명령 (spec 9.1.1).
 
-매일 03:30 KST 운영 cron에서 크롤링(03:00) 직후 실행.
+매일 06:30 KST 운영 cron에서 크롤링(06:00) 직후 실행.
 
 기본 동작: status가 'success'가 아닌 Notice를 모두 처리.
 본문 변경(content_hash 불일치) 감지는 process_notice 내부에서 처리.
