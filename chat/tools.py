@@ -205,20 +205,62 @@ def serialize_tool_result(result: dict[str, Any]) -> str:
 
 _TOKEN_RE = re.compile(r'[\s,./?!()\[\]{}\-_:;\'"]+')
 
+# "새로 뜬 공지 있어?" 같은 의도(intent) 질문에서 키워드 없이 떠도는 일반어 (#131).
+# title icontains 매칭에 기여 안 하고 의미만 흐리므로 토큰화 단계에서 제거 →
+# 토큰 0개로 떨어지면 search 함수가 최신 N건 fallback으로 분기.
+# 학교 게시판의 카테고리 자체(공지/정보/안내)는 title에 거의 안 들어가서 stopword에 포함.
+_STOPWORDS = frozenset({
+    '공지', '정보', '안내', '관련',
+    '있어', '있나', '있는', '있을', '있다',
+    '뜬', '뜨는', '나온', '나오는', '나왔',
+    '최근', '오늘', '요즘', '이번',
+    '새로', '신규',
+    '알려', '알려줘', '보여', '보여줘', '찾아', '찾아줘', '확인', '검색',
+    '주세요', '줄래',
+    '뭐가', '뭔가', '어떤',
+})
+
 
 def _tokenize_query(query: str) -> list[str]:
-    """쿼리를 공백·구두점으로 단순 분해. 2자 이상만 유지."""
+    """쿼리를 공백·구두점으로 단순 분해. 2자 이상 + stopword 제외만 유지 (#131)."""
     if not query:
         return []
     tokens = [t.strip().lower() for t in _TOKEN_RE.split(query)]
-    return [t for t in tokens if len(t) >= 2]
+    return [t for t in tokens if len(t) >= 2 and t not in _STOPWORDS]
+
+
+def _notice_to_payload(notice: Notice) -> dict[str, Any]:
+    return {
+        'title': notice.title,
+        'url': notice.url,
+        'source': notice.source,
+        'published_at': notice.published_at.isoformat() if notice.published_at else None,
+        'end_date': notice.end_date.isoformat() if notice.end_date else None,
+        'tags': list(notice.tags or []),
+    }
+
+
+def _recent_notices_fallback(query: str) -> dict[str, Any]:
+    """키워드 없는 의도 질문 fallback — 최신 공지 N건 반환 (#131).
+
+    "새로 뜬 공지 있어?" 처럼 stopword만 들어와 토큰이 빈 케이스에서 0건 응답 대신
+    최신 published_at 정렬 N건을 제공. 검색 의도가 모호한 사용자에게도 무언가는 보여줌.
+    """
+    qs = Notice.objects.order_by('-published_at')[:MAX_SEARCH_RESULTS]
+    return {
+        'count': qs.count(),
+        'query': query,
+        'note': '키워드 없는 의도 질문 — 최신 공지 N건 (게시일 내림차순).',
+        'results': [_notice_to_payload(n) for n in qs],
+    }
 
 
 def _search_notices(args: dict[str, Any]) -> dict[str, Any]:
     query = (args.get('query') or '').strip()
     tokens = _tokenize_query(query)
     if not tokens:
-        return {'count': 0, 'results': [], 'note': '쿼리가 비어있음'}
+        # "새로 뜬 공지 있어?" 같이 의미 있는 키워드 없는 의도 질문 — 최신 N건 fallback (#131)
+        return _recent_notices_fallback(query)
 
     # title icontains (전체 토큰 OR) + tags 매칭
     title_q = Q()
@@ -245,17 +287,32 @@ def _search_notices(args: dict[str, Any]) -> dict[str, Any]:
         'count': len(top),
         'query': query,
         'note': '명지대 공지 검색 결과. URL은 원문 링크.',
-        'results': [
-            {
-                'title': n.title,
-                'url': n.url,
-                'source': n.source,
-                'published_at': n.published_at.isoformat() if n.published_at else None,
-                'end_date': n.end_date.isoformat() if n.end_date else None,
-                'tags': list(n.tags or []),
-            }
-            for n in top
-        ],
+        'results': [_notice_to_payload(n) for n in top],
+    }
+
+
+def _information_to_payload(info: Information) -> dict[str, Any]:
+    return {
+        'title': info.title,
+        'url': getattr(info, 'url', '') or '',
+        'categories': list(info.categories or []),
+        'end_date': info.end_date.isoformat() if info.end_date else None,
+    }
+
+
+def _recent_information_fallback(query: str) -> dict[str, Any]:
+    """키워드 없는 의도 질문 fallback — 마감 미경과 임박 N건 반환 (#131)."""
+    today = date.today()
+    qs = (
+        Information.objects
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
+        .order_by('end_date', '-id')[:MAX_SEARCH_RESULTS]
+    )
+    return {
+        'count': qs.count(),
+        'query': query,
+        'note': '키워드 없는 의도 질문 — 마감 미경과 정보 N건 (마감 임박순).',
+        'results': [_information_to_payload(i) for i in qs],
     }
 
 
@@ -263,7 +320,8 @@ def _search_information(args: dict[str, Any]) -> dict[str, Any]:
     query = (args.get('query') or '').strip()
     tokens = _tokenize_query(query)
     if not tokens:
-        return {'count': 0, 'results': [], 'note': '쿼리가 비어있음'}
+        # 의도 질문 — 마감 임박 N건 fallback (#131)
+        return _recent_information_fallback(query)
 
     title_q = Q()
     for t in tokens:
@@ -297,13 +355,5 @@ def _search_information(args: dict[str, Any]) -> dict[str, Any]:
         'count': len(top),
         'query': query,
         'note': '교내외 정보 검색 결과 (마감 미경과만). URL은 원문 링크.',
-        'results': [
-            {
-                'title': i.title,
-                'url': getattr(i, 'url', '') or '',
-                'categories': list(i.categories or []),
-                'end_date': i.end_date.isoformat() if i.end_date else None,
-            }
-            for i in top
-        ],
+        'results': [_information_to_payload(i) for i in top],
     }
