@@ -412,3 +412,56 @@ class CourseHistoryAutoFillResponseTests(TestCase):
         for item in results:
             self.assertIn('liberal_subtype', item)
             self.assertIn('core_area', item)
+
+
+class CourseHistoryCategoryChoicesTests(TestCase):
+    """#115 — CourseHistory.category가 학칙 7분류 외 임의 문자열 거부."""
+
+    url = '/api/v1/accounts/course-history/'
+    VALID_CATEGORIES = (
+        '전공필수', '전공선택', '공통교양', '핵심교양',
+        '학문기초교양', '일반교양', '자유선택',
+    )
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='cat@mju.ac.kr', password=VALID_PWD,
+        )
+        self.user.is_email_verified = True
+        self.user.save(update_fields=['is_email_verified'])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _payload(self, category, course_code='TST001'):
+        return {
+            'course_name': '테스트',
+            'course_code': course_code,
+            'year': 2024,
+            'semester': 1,
+            'grade_received': 'A',
+            'category': category,
+            'credits': 3,
+        }
+
+    def test_임의_문자열_category_거부_115(self):
+        # 결함 M 재현 케이스 — 이전엔 201 통과 + DB에 garbage 박힘
+        res = self.client.post(self.url, self._payload('테스트교양'), format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('category', res.data)
+
+    def test_빈_문자열_category_거부_115(self):
+        res = self.client.post(self.url, self._payload(''), format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('category', res.data)
+
+    def test_학칙_7분류_모두_통과_115(self):
+        for i, cat in enumerate(self.VALID_CATEGORIES):
+            res = self.client.post(self.url, self._payload(cat, course_code=f'TST{i:03d}'), format='json')
+            self.assertEqual(res.status_code, 201, msg=f'{cat} 거부됨')
+            self.assertEqual(res.data['category'], cat)
+
+    def test_옛_라벨_교양필수는_거부_115(self):
+        # #47 Phase 3에서 폐기된 라벨 — silent 통과 방지
+        res = self.client.post(self.url, self._payload('교양필수'), format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('category', res.data)
