@@ -1,6 +1,8 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 
+from courses.models import Course
+
 
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
@@ -89,7 +91,8 @@ class CourseHistory(models.Model):
     year = models.IntegerField(verbose_name='수강 연도')
     semester = models.IntegerField(verbose_name='수강 학기')
     grade_received = models.CharField(max_length=10, blank=True, verbose_name='취득 성적')
-    category = models.CharField(max_length=20, verbose_name='이수구분')
+    # 학칙 7분류 강제 — Course.CATEGORY_CHOICES 재사용. 임의 문자열 silent 통과 차단 (#115)
+    category = models.CharField(max_length=20, choices=Course.CATEGORY_CHOICES, verbose_name='이수구분')
     # 교양 4종 (공통/핵심/학문기초/일반). 저장 시 course_code로 Course 찾아 자동 채움 (#47).
     # 전공·자유선택·매칭 안되는 교양은 null. 점수 계산의 4종별 진척도 키로 사용 (services._build_short_keys).
     liberal_subtype = models.CharField(
