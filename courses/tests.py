@@ -377,6 +377,86 @@ class CourseSearchAPITests(APITestCase):
         self.assertEqual(res.data['results'], [])
 
 
+# spec 6.6 추가 필터 5종 — college/department/major/year_open/semester_open (#123 §1)
+class CourseSearchAdditionalFilterTests(APITestCase):
+    url = '/api/v1/courses/'
+
+    def setUp(self):
+        self.user = _make_user()
+        # 학과·학년·학기 분산하여 5 필터 각각 격리 검증 가능한 fixture
+        _make_course(course_code='ICT1001', name='ICT개론',
+                     college='반도체ICT대학', department='컴퓨터정보통신공학부',
+                     major='컴퓨터공학전공', year_open=1, semester_open=1)
+        _make_course(course_code='ICT2001', name='운영체제',
+                     college='반도체ICT대학', department='컴퓨터정보통신공학부',
+                     major='컴퓨터공학전공', year_open=3, semester_open=2)
+        _make_course(course_code='SEM3001', name='반도체공학',
+                     college='반도체ICT대학', department='반도체공학부',
+                     major='반도체공학전공', year_open=2, semester_open=1)
+        _make_course(course_code='HUM1001', name='문학개론',
+                     college='인문대학', department='국어국문학부',
+                     major='국어국문학전공', year_open=1, semester_open=2)
+        # 학년 sentinel 0 — 전학년 공통 (#36 import 명령의 학년 무관 처리)
+        _make_course(course_code='COM0001', name='벤처창업',
+                     college='반도체ICT대학', department='컴퓨터정보통신공학부',
+                     major='컴퓨터공학전공', year_open=0, semester_open=1)
+        # 계절학기 분기 — 3=하계 / 4=동계 (#25 매핑)
+        _make_course(course_code='SUM3001', name='하계특강',
+                     college='반도체ICT대학', department='컴퓨터정보통신공학부',
+                     major='컴퓨터공학전공', year_open=2, semester_open=3)
+        _make_course(course_code='WIN4001', name='동계특강',
+                     college='반도체ICT대학', department='컴퓨터정보통신공학부',
+                     major='컴퓨터공학전공', year_open=3, semester_open=4)
+
+    def test_college_필터(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'college': '반도체ICT대학'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        codes = {c['course_code'] for c in res.data['results']}
+        self.assertEqual(codes, {'ICT1001', 'ICT2001', 'SEM3001',
+                                  'COM0001', 'SUM3001', 'WIN4001'})
+
+    def test_department_필터(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'department': '컴퓨터정보통신공학부'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        codes = {c['course_code'] for c in res.data['results']}
+        self.assertEqual(codes, {'ICT1001', 'ICT2001', 'COM0001',
+                                  'SUM3001', 'WIN4001'})
+
+    def test_major_필터(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'major': '반도체공학전공'})
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['course_code'], 'SEM3001')
+
+    def test_year_open_필터_1학년(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'year_open': '1'})
+        codes = {c['course_code'] for c in res.data['results']}
+        self.assertEqual(codes, {'ICT1001', 'HUM1001'})
+
+    def test_year_open_필터_sentinel_0_전학년(self):
+        # year_open=0 sentinel은 학년 무관 강의를 명시 조회 (필터로도 분리 가능해야 함)
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'year_open': '0'})
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['course_code'], 'COM0001')
+
+    def test_semester_open_필터_하계_3(self):
+        # 계절학기 매핑 검증 — 3=하계, 단일 row 격리되는지 확인
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'semester_open': '3'})
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['course_code'], 'SUM3001')
+
+    def test_semester_open_필터_동계_4(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url, {'semester_open': '4'})
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['course_code'], 'WIN4001')
+
+
 # 과목 검색 페이지네이션 검증 (spec 6.14 공통 응답 형식)
 class CourseSearchPaginationTests(APITestCase):
     url = '/api/v1/courses/'

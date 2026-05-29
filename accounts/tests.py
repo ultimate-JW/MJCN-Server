@@ -558,3 +558,83 @@ class PrunePendingSignupsTests(TestCase):
         output = out.getvalue()
 
         self.assertIn('deleted=0', output)
+
+
+class LoginEndpointTests(TestCase):
+    """spec 5.1.3 / 6.1 login 양수·음수 케이스 (#123 §2).
+
+    기존 NonASCIIEmailRejectionTests는 비ASCII 거부만 검증. 본 클래스는
+    정상 로그인 + 비밀번호/이메일 오류 + 미인증 사용자 4 케이스 커버.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        # 정상 인증된 사용자 — 정상 로그인 케이스 베이스
+        self.verified = User.objects.create_user(
+            email='login@mju.ac.kr',
+            password=VALID_PWD,
+        )
+        self.verified.is_email_verified = True
+        self.verified.save(update_fields=['is_email_verified'])
+
+    def test_정상_자격증명_200_JWT_발급(self):
+        res = self.client.post(LOGIN_URL, {
+            'email': 'login@mju.ac.kr',
+            'password': VALID_PWD,
+        }, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('access', res.data)
+        self.assertIn('refresh', res.data)
+        # JWT 토큰은 빈 문자열이면 안 됨
+        self.assertTrue(res.data['access'])
+        self.assertTrue(res.data['refresh'])
+
+    def test_잘못된_비밀번호_401(self):
+        res = self.client.post(LOGIN_URL, {
+            'email': 'login@mju.ac.kr',
+            'password': 'WrongPass123!',
+        }, format='json')
+        self.assertEqual(res.status_code, 401)
+        # 타이밍 공격 방어로 미존재 이메일과 동일 메시지
+        self.assertIn('이메일 또는 비밀번호', res.data['detail'])
+
+    def test_미존재_이메일_401(self):
+        res = self.client.post(LOGIN_URL, {
+            'email': 'nobody@mju.ac.kr',
+            'password': VALID_PWD,
+        }, format='json')
+        self.assertEqual(res.status_code, 401)
+        # 미존재 이메일이라는 정보를 응답으로 흘리면 enumeration 공격 가능 → 잘못된 비번과 동일 메시지여야 함
+        self.assertIn('이메일 또는 비밀번호', res.data['detail'])
+
+    def test_미인증_사용자_403(self):
+        # 카카오 first-login 이전 등 is_email_verified=False 상태로 User row 존재 시
+        unverified = User.objects.create_user(
+            email='unverified@mju.ac.kr',
+            password=VALID_PWD,
+        )
+        # default is_email_verified=False 그대로
+        self.assertFalse(unverified.is_email_verified)
+
+        res = self.client.post(LOGIN_URL, {
+            'email': 'unverified@mju.ac.kr',
+            'password': VALID_PWD,
+        }, format='json')
+        self.assertEqual(res.status_code, 403)
+        self.assertIn('이메일 인증', res.data['detail'])
+
+    def test_PendingSignup만_있는_상태는_401(self):
+        # 신규 signup 흐름 — verify 전엔 User 미생성 → login 시도 시 미존재로 처리
+        PendingSignup.objects.create(
+            email='pending@mju.ac.kr',
+            password_hash='dummy_hash',
+            code='123456',
+            code_expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        res = self.client.post(LOGIN_URL, {
+            'email': 'pending@mju.ac.kr',
+            'password': VALID_PWD,
+        }, format='json')
+        # User row가 없으므로 미존재 이메일과 같은 401 (403 아님)
+        self.assertEqual(res.status_code, 401)
+        self.assertIn('이메일 또는 비밀번호', res.data['detail'])
