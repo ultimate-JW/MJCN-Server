@@ -60,7 +60,9 @@ def classify_and_title(first_user_message: str) -> tuple[str, str]:
     return title, category
 
 
-def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
+def generate_assistant_reply(
+    user, history: Iterable[ChatMessage],
+) -> tuple[str, list[dict]]:
     """대화 히스토리 + 사용자 컨텍스트 + tool calling으로 assistant 응답 생성 (spec 5.2).
 
     호출 측이 컨텍스트 윈도우(최근 N개)를 잘라서 넘기는 책임을 진다.
@@ -70,10 +72,17 @@ def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
       2. OpenAI chat completion 호출 (tools=TOOLS_SCHEMA)
       3. 응답이 tool_calls면 dispatch_tool_call로 실행 → messages에 tool 결과 추가 → 재호출
       4. 최대 _MAX_TOOL_ROUNDS회까지 반복 (무한 루프 방어)
-      5. 최종 텍스트 응답 반환
+      5. 최종 텍스트 응답 + 누적된 참조 항목(refs) 반환
 
     tool 호출은 AI 판단 — 일반 잡담은 tool 안 부르고 일반 응답만 함.
     "시간표 짜줘"·"몇 학기 남았어" 류의 데이터 의존 질문에서만 tool 호출.
+
+    반환:
+      (assistant_text, refs)
+        - assistant_text: AI 자연어 응답
+        - refs: search_notices / search_information이 반환한 결과의
+                [{type, title, url}] snapshot (중복 dedup). 그 외 tool은 미적재.
+                프론트는 이걸 카드 UI에 그대로 사용 (#147).
     """
     system_parts = [prompts.CHAT_SYSTEM]
     user_context = prompts.build_user_context(user)
@@ -84,6 +93,8 @@ def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
         api_messages.append({'role': m.role, 'content': m.content})
 
     client = get_client()
+    refs: list[dict] = []
+    seen: set[tuple[str, str]] = set()
 
     for _ in range(_MAX_TOOL_ROUNDS):
         try:
@@ -101,7 +112,7 @@ def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
 
         if not tool_calls:
             # 일반 응답 — tool 안 부름. 최종 자연어 응답으로 반환.
-            return (msg.content or '').strip()
+            return (msg.content or '').strip(), refs
 
         # tool calls 있음 → assistant tool_call 메시지 + 각 tool 결과를 history에 append
         api_messages.append(_assistant_tool_call_message(msg, tool_calls))
@@ -112,6 +123,7 @@ def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
             except json.JSONDecodeError:
                 arguments = {}
             result = dispatch_tool_call(user, name, arguments)
+            _accumulate_refs(name, result, refs, seen)
             api_messages.append({
                 'role': 'tool',
                 'tool_call_id': call.id,
@@ -127,7 +139,41 @@ def generate_assistant_reply(user, history: Iterable[ChatMessage]) -> str:
         )
     except Exception as e:
         raise AIClientError(f'OpenAI 호출 실패 (final answer): {e}') from e
-    return (response.choices[0].message.content or '').strip()
+    return (response.choices[0].message.content or '').strip(), refs
+
+
+# tool name → referenced_items 페이로드의 'type' 매핑.
+# 이 dict에 없는 tool 결과는 적재하지 않음 (#147 — title+url 카드 UI 대상 tool만).
+_TOOL_REF_TYPE: dict[str, str] = {
+    'search_notices': 'notice',
+    'search_information': 'information',
+}
+
+
+def _accumulate_refs(
+    tool_name: str,
+    result: dict,
+    refs: list[dict],
+    seen: set[tuple[str, str]],
+) -> None:
+    """search_notices / search_information 결과에서 title·url을 뽑아 refs에 추가.
+
+    한 turn에서 같은 query로 두 번 호출되는 케이스 가드 — (type, url) 중복 dedup.
+    {'error': '...'} 같은 dispatcher 실패 응답은 'results' 키가 없어 자연스럽게 skip.
+    """
+    ref_type = _TOOL_REF_TYPE.get(tool_name)
+    if ref_type is None:
+        return
+    for item in result.get('results', []) or []:
+        title = (item.get('title') or '').strip()
+        url = (item.get('url') or '').strip()
+        if not title or not url:
+            continue
+        key = (ref_type, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append({'type': ref_type, 'title': title, 'url': url})
 
 
 def _assistant_tool_call_message(msg, tool_calls) -> dict:

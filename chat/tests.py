@@ -153,7 +153,7 @@ class SendMessageTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user_a)
 
-    @patch('chat.views.generate_assistant_reply', return_value='AI 응답입니다.')
+    @patch('chat.views.generate_assistant_reply', return_value=('AI 응답입니다.', []))
     @patch('chat.views.classify_and_title', return_value=('수강신청 문의', '수강·졸업'))
     def test_first_message_creates_title_and_category(self, mock_classify, mock_reply):
         res = self.client.post(
@@ -182,7 +182,7 @@ class SendMessageTests(TestCase):
         self.assertEqual((msgs[0].role, msgs[0].content), ('user', '수강신청 언제 시작해?'))
         self.assertEqual((msgs[1].role, msgs[1].content), ('assistant', 'AI 응답입니다.'))
 
-    @patch('chat.views.generate_assistant_reply', return_value='두 번째 응답')
+    @patch('chat.views.generate_assistant_reply', return_value=('두 번째 응답', []))
     @patch('chat.views.classify_and_title', return_value=('새 제목', '기타'))
     def test_second_message_does_not_overwrite_title(self, mock_classify, mock_reply):
         # 첫 메시지 후 title 이미 채워진 상태
@@ -204,7 +204,7 @@ class SendMessageTests(TestCase):
         self.assertEqual(self.room.title, '이미 정해진 제목')
         self.assertEqual(self.room.category, '공모전')
 
-    @patch('chat.views.generate_assistant_reply', return_value='응답')
+    @patch('chat.views.generate_assistant_reply', return_value=('응답', []))
     @patch('chat.views.classify_and_title', return_value=('t', '기타'))
     @override_settings(OPENAI_CHAT_CONTEXT_MESSAGES=3)
     def test_context_window_passes_only_last_n_messages(self, mock_classify, mock_reply):
@@ -225,7 +225,7 @@ class SendMessageTests(TestCase):
         self.assertEqual(history_arg[-1].content, '새 질문')
         self.assertEqual(history_arg[-1].role, 'user')
 
-    @patch('chat.views.generate_assistant_reply', return_value='AI 응답')
+    @patch('chat.views.generate_assistant_reply', return_value=('AI 응답', []))
     @patch('chat.views.classify_and_title', side_effect=AIClientError('boom'))
     def test_classify_failure_falls_back_and_continues(self, mock_classify, mock_reply):
         # #141 — classify_and_title 실패해도 fallback(title='' / category='기타') 후
@@ -273,7 +273,7 @@ class SendMessageAttachmentTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-    @patch('chat.views.generate_assistant_reply', return_value='첨부 확인했습니다.')
+    @patch('chat.views.generate_assistant_reply', return_value=('첨부 확인했습니다.', []))
     def test_image_attachment_saved(self, mock_reply):
         image = SimpleUploadedFile('photo.png', b'\x89PNG\r\n\x1a\nfake', content_type='image/png')
         res = self.client.post(
@@ -288,7 +288,7 @@ class SendMessageAttachmentTests(TestCase):
         self.assertEqual(attach.file_type, 'image')
         self.assertEqual(attach.original_name, 'photo.png')
 
-    @patch('chat.views.generate_assistant_reply', return_value='OK')
+    @patch('chat.views.generate_assistant_reply', return_value=('OK', []))
     def test_document_attachment_saved(self, mock_reply):
         pdf = SimpleUploadedFile('report.pdf', b'%PDF-1.4 fake', content_type='application/pdf')
         res = self.client.post(
@@ -300,7 +300,7 @@ class SendMessageAttachmentTests(TestCase):
         attach = self.room.messages.filter(role='user').last().attachments.first()
         self.assertEqual(attach.file_type, 'document')
 
-    @patch('chat.views.generate_assistant_reply', return_value='OK')
+    @patch('chat.views.generate_assistant_reply', return_value=('OK', []))
     def test_multiple_attachments(self, mock_reply):
         img = SimpleUploadedFile('a.jpg', b'fake', content_type='image/jpeg')
         pdf = SimpleUploadedFile('b.pdf', b'fake', content_type='application/pdf')
@@ -344,7 +344,7 @@ class SendMessageAttachmentTests(TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertEqual(ChatAttachment.objects.count(), 0)
 
-    @patch('chat.views.generate_assistant_reply', return_value='OK')
+    @patch('chat.views.generate_assistant_reply', return_value=('OK', []))
     def test_no_attachments_field_works_like_json(self, mock_reply):
         # multipart인데 attachments 안 보내도 텍스트 흐름 그대로
         res = self.client.post(
@@ -1040,3 +1040,290 @@ class ChatRoomRetrieveQueriesTests(TestCase):
             self.assertEqual(len(m['attachments']), 1)
             for key in ('id', 'file', 'file_type', 'original_name', 'created_at'):
                 self.assertIn(key, m['attachments'][0])
+
+
+# ─── #147: ChatMessage.referenced_items snapshot ─────────────────────
+
+def _mock_tool_call_response_multi(calls: list[tuple[str, str, str]]):
+    """OpenAI 응답 — tool_calls 여러 건 한꺼번에 포함 (#147).
+
+    calls: [(name, arguments_json, call_id), ...]
+    """
+    fns = []
+    for name, args, cid in calls:
+        fn = SimpleNamespace(arguments=args)
+        fn.name = name
+        fns.append(SimpleNamespace(id=cid, type='function', function=fn))
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='', tool_calls=fns))]
+    )
+
+
+class AccumulateRefsUnitTests(TestCase):
+    """services._accumulate_refs 단위 — name 매핑·dedup·error 응답 가드."""
+
+    def test_search_notices는_type_notice로_적재(self):
+        from chat.services import _accumulate_refs
+        refs, seen = [], set()
+        _accumulate_refs(
+            'search_notices',
+            {'results': [
+                {'title': '국가장학금', 'url': 'https://mju.ac.kr/a'},
+                {'title': '근로장학금', 'url': 'https://mju.ac.kr/b'},
+            ]},
+            refs, seen,
+        )
+        self.assertEqual(refs, [
+            {'type': 'notice', 'title': '국가장학금', 'url': 'https://mju.ac.kr/a'},
+            {'type': 'notice', 'title': '근로장학금', 'url': 'https://mju.ac.kr/b'},
+        ])
+
+    def test_search_information은_type_information으로_적재(self):
+        from chat.services import _accumulate_refs
+        refs, seen = [], set()
+        _accumulate_refs(
+            'search_information',
+            {'results': [{'title': 'UX 공모전', 'url': 'https://wevity.com/x'}]},
+            refs, seen,
+        )
+        self.assertEqual(refs, [
+            {'type': 'information', 'title': 'UX 공모전', 'url': 'https://wevity.com/x'},
+        ])
+
+    def test_지원안하는_tool은_적재_안함(self):
+        from chat.services import _accumulate_refs
+        refs, seen = [], set()
+        _accumulate_refs(
+            'get_graduation_progress',
+            {'progress_percent': 42},
+            refs, seen,
+        )
+        self.assertEqual(refs, [])
+
+    def test_같은_type_url_dedup(self):
+        from chat.services import _accumulate_refs
+        refs, seen = [], set()
+        _accumulate_refs(
+            'search_notices',
+            {'results': [{'title': '제목', 'url': 'https://mju.ac.kr/x'}]},
+            refs, seen,
+        )
+        # 두 번째 호출 — 같은 (type, url) → skip
+        _accumulate_refs(
+            'search_notices',
+            {'results': [{'title': '제목 다른 케이스', 'url': 'https://mju.ac.kr/x'}]},
+            refs, seen,
+        )
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0]['title'], '제목')  # 첫 번째 것 유지
+
+    def test_dispatcher_error_응답은_results_없어_자연스럽게_skip(self):
+        from chat.services import _accumulate_refs
+        refs, seen = [], set()
+        _accumulate_refs(
+            'search_notices',
+            {'error': '내부 호출 실패: TypeError'},
+            refs, seen,
+        )
+        self.assertEqual(refs, [])
+
+    def test_title이나_url_빈값이면_skip(self):
+        from chat.services import _accumulate_refs
+        refs, seen = [], set()
+        _accumulate_refs(
+            'search_notices',
+            {'results': [
+                {'title': '', 'url': 'https://mju.ac.kr/a'},
+                {'title': '정상', 'url': ''},
+                {'title': '   ', 'url': 'https://mju.ac.kr/b'},
+                {'title': '정상2', 'url': 'https://mju.ac.kr/c'},
+            ]},
+            refs, seen,
+        )
+        self.assertEqual(refs, [
+            {'type': 'notice', 'title': '정상2', 'url': 'https://mju.ac.kr/c'},
+        ])
+
+
+class ChatMessageReferencedItemsTests(TestCase):
+    """send_message 흐름에서 ChatMessage.referenced_items 적재 검증 (#147)."""
+
+    def setUp(self):
+        self.user = make_user('refs@mju.ac.kr')
+        self.room = ChatRoom.objects.create(user=self.user)
+        # 첫 메시지가 아니어서 classify_and_title 안 거치도록 prev 메시지 1쌍 깔아둠
+        ChatMessage.objects.create(room=self.room, role='user', content='prev')
+        ChatMessage.objects.create(room=self.room, role='assistant', content='prev_a')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    @patch('chat.tools._search_notices', return_value={
+        'count': 2,
+        'results': [
+            {'title': '국가장학금', 'url': 'https://mju.ac.kr/a'},
+            {'title': '근로장학금', 'url': 'https://mju.ac.kr/b'},
+        ],
+    })
+    @patch('chat.services.get_client')
+    def test_search_notices_결과가_referenced_items로_저장됨(
+        self, mock_get_client, _mock_search,
+    ):
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response('search_notices', arguments='{"query": "장학금"}'),
+            _mock_text_response('장학금 정리해드릴게요'),
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '장학금 알려줘'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['referenced_items'], [
+            {'type': 'notice', 'title': '국가장학금', 'url': 'https://mju.ac.kr/a'},
+            {'type': 'notice', 'title': '근로장학금', 'url': 'https://mju.ac.kr/b'},
+        ])
+        # DB에도 동일하게 저장
+        assistant_msg = ChatMessage.objects.filter(
+            room=self.room, role=ChatMessage.ROLE_ASSISTANT,
+        ).order_by('-id').first()
+        self.assertEqual(len(assistant_msg.referenced_items), 2)
+
+    @patch('chat.tools._search_information', return_value={
+        'count': 1,
+        'results': [{'title': 'UX 공모전', 'url': 'https://wevity.com/x'}],
+    })
+    @patch('chat.services.get_client')
+    def test_search_information_결과는_type_information으로_저장(
+        self, mock_get_client, _mock_search,
+    ):
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response('search_information', arguments='{"query": "공모전"}'),
+            _mock_text_response('공모전 정리'),
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '공모전 알려줘'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['referenced_items'], [
+            {'type': 'information', 'title': 'UX 공모전', 'url': 'https://wevity.com/x'},
+        ])
+
+    @patch('chat.tools._search_information', return_value={
+        'count': 1,
+        'results': [{'title': '외부 공모전', 'url': 'https://wevity.com/y'}],
+    })
+    @patch('chat.tools._search_notices', return_value={
+        'count': 1,
+        'results': [{'title': '교내 행사', 'url': 'https://mju.ac.kr/c'}],
+    })
+    @patch('chat.services.get_client')
+    def test_두_tool_모두_호출시_두_type_섞여_저장(
+        self, mock_get_client, _m_notices, _m_info,
+    ):
+        # 한 응답에서 tool_calls 두 건 동시 호출 케이스
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response_multi([
+                ('search_notices', '{"query": "공모전"}', 'c1'),
+                ('search_information', '{"query": "공모전"}', 'c2'),
+            ]),
+            _mock_text_response('교내·교외 정리'),
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '공모전 알려줘'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        items = res.data['referenced_items']
+        types = {it['type'] for it in items}
+        self.assertEqual(types, {'notice', 'information'})
+        self.assertEqual(len(items), 2)
+
+    @patch('chat.services.get_client')
+    def test_tool_호출_없는_일반_응답은_빈_배열(self, mock_get_client):
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.return_value = _mock_text_response('안녕하세요')
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '안녕'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['referenced_items'], [])
+
+    def test_user_메시지는_항상_빈_배열(self):
+        # send_message가 만들어주는 user_msg
+        with patch('chat.services.get_client') as mock_get_client:
+            mock_client = mock_get_client.return_value
+            mock_client.chat.completions.create.return_value = _mock_text_response('응답')
+            res = self.client.post(
+                messages_url(self.room.id),
+                {'content': '안녕'},
+                format='json',
+            )
+            self.assertEqual(res.status_code, 201)
+
+        user_msg = ChatMessage.objects.filter(
+            room=self.room, role=ChatMessage.ROLE_USER, content='안녕',
+        ).first()
+        self.assertEqual(user_msg.referenced_items, [])
+
+    @patch('chat.tools._search_notices', return_value={
+        'count': 1,
+        'results': [{'title': '제목', 'url': 'https://mju.ac.kr/dedup'}],
+    })
+    @patch('chat.services.get_client')
+    def test_같은_url_두번_나오면_dedup(self, mock_get_client, _mock_search):
+        # 같은 tool을 같은 query로 두 round 호출 → 두 round 결과 동일 → dedup으로 1건
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response('search_notices', arguments='{"query": "x"}', call_id='c1'),
+            _mock_tool_call_response('search_notices', arguments='{"query": "x"}', call_id='c2'),
+            _mock_text_response('완료'),
+        ]
+
+        res = self.client.post(
+            messages_url(self.room.id),
+            {'content': '뭐 있어'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(res.data['referenced_items']), 1)
+
+    @patch('chat.tools._search_notices', return_value={
+        'count': 1,
+        'results': [{'title': 'GET 검증', 'url': 'https://mju.ac.kr/get-check'}],
+    })
+    @patch('chat.services.get_client')
+    def test_GET_room_상세에서_referenced_items_노출(
+        self, mock_get_client, _mock_search,
+    ):
+        mock_client = mock_get_client.return_value
+        mock_client.chat.completions.create.side_effect = [
+            _mock_tool_call_response('search_notices', arguments='{"query": "x"}'),
+            _mock_text_response('OK'),
+        ]
+        self.client.post(
+            messages_url(self.room.id),
+            {'content': '확인'},
+            format='json',
+        )
+
+        res = self.client.get(f'/api/v1/chat/rooms/{self.room.id}/')
+        self.assertEqual(res.status_code, 200)
+        for m in res.data['messages']:
+            self.assertIn('referenced_items', m)
+        # 마지막 assistant 메시지에 검색 결과 들어있어야 함
+        last_assistant = [m for m in res.data['messages'] if m['role'] == 'assistant'][-1]
+        self.assertEqual(last_assistant['referenced_items'], [
+            {'type': 'notice', 'title': 'GET 검증', 'url': 'https://mju.ac.kr/get-check'},
+        ])
