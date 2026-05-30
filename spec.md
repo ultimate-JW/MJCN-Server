@@ -215,6 +215,7 @@ erDiagram
         int room_id FK
         string role
         text content
+        json referenced_items
         datetime created_at
     }
 
@@ -496,6 +497,7 @@ CHAT_CATEGORIES = [
 | room | FK(ChatRoom) | |
 | role | CharField | "user" 또는 "assistant" |
 | content | TextField | 메시지 내용 |
+| referenced_items | JSONField | AI가 참조한 공지/정보 카드 데이터 `[{type, title, url}]` snapshot. `type ∈ {notice, information}`. user 메시지는 빈 배열. 프론트가 markdown 파싱 없이 카드 UI 렌더용. |
 | created_at | DateTimeField | |
 
 #### ChatAttachment (첨부파일)
@@ -1004,6 +1006,7 @@ PendingSignup row는 `code_expires_at` 경과 후에도 자동 삭제되지 않�
 - POST 요청으로 메시지 전송
 - 첫 메시지인 경우: 채팅방 자동 생성 + AI에 제목 요약 요청 → ChatRoom.title 업데이트
 - AI API 호출 → 응답 저장 → JSON 응답 반환
+- AI가 `search_notices` / `search_information` tool을 호출하면 그 결과의 `title`·`url`을 `ChatMessage.referenced_items`에 snapshot으로 같이 적재 — 프론트는 markdown 파싱 없이 카드 UI 렌더에 그대로 사용
 
 #### 5.2.4 첨부파일 전송
 
