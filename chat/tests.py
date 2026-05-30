@@ -782,17 +782,19 @@ class ChatSearchToolIntegrationTests(TestCase):
         self.assertTrue(any('국가장학금' in m['content'] for m in tool_msgs))
 
 
-# ─── #104: 응답 포맷 규칙 (markdown 제거) ─────────────────────────────
+# ─── #145: 응답 포맷 규칙 (markdown 권장) ─────────────────────────────
 
 class ResponseFormatGuideTests(TestCase):
     """CHAT_SYSTEM에 응답 포맷 규칙이 들어 있어야 함."""
 
-    def test_system_prompt_includes_markdown_ban(self):
+    def test_system_prompt_allows_markdown(self):
+        """#145 — markdown 금지에서 markdown 권장으로 반전."""
         from chat.prompts import CHAT_SYSTEM
-        self.assertIn('마크다운', CHAT_SYSTEM)
-        # 핵심 금지 사항 명시 표식
-        for marker in ['markdown', '평문', 'URL']:
-            self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 "{marker}" 표식 누락')
+        self.assertIn('markdown', CHAT_SYSTEM)
+        self.assertIn('권장', CHAT_SYSTEM)
+        # 권장 markdown 문법 표식 (굵게 + 링크)
+        self.assertIn('**', CHAT_SYSTEM, 'CHAT_SYSTEM에 굵게 markdown 권장 표식 누락')
+        self.assertIn('[제목](URL)', CHAT_SYSTEM, 'CHAT_SYSTEM에 링크 markdown 권장 표식 누락')
 
     def test_system_prompt_includes_notices_card_style(self):
         """notices/ai BUILD_CARDS_SYSTEM 톤앤매너 차용 검증."""
@@ -814,7 +816,7 @@ class ResponseFormatGuideTests(TestCase):
 
     @patch('chat.services.get_client')
     def test_format_guide_reaches_openai(self, mock_get_client):
-        # 실 메시지 전송 시 system 메시지에 포맷 가이드가 그대로 전달되는지
+        # 실 메시지 전송 시 system 메시지에 markdown 권장 가이드가 그대로 전달되는지
         user = make_user('format@mju.ac.kr')
         room = ChatRoom.objects.create(user=user)
         ChatMessage.objects.create(room=room, role='user', content='prev')
@@ -835,8 +837,9 @@ class ResponseFormatGuideTests(TestCase):
 
         sys_msg = mock_client.chat.completions.create.call_args.kwargs['messages'][0]
         self.assertEqual(sys_msg['role'], 'system')
-        self.assertIn('마크다운', sys_msg['content'])
-        self.assertIn('금지', sys_msg['content'])
+        self.assertIn('markdown', sys_msg['content'])
+        self.assertIn('권장', sys_msg['content'])
+        self.assertIn('**', sys_msg['content'])
 
 
 # ─── #108: 검색 tool 의도 분류 (교내 vs 교외) ──────────────────────────
