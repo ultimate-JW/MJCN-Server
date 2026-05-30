@@ -3,6 +3,7 @@ from rest_framework import serializers
 from .models import (
     AcademicCalendar,
     Course,
+    CourseOffering,
     CoursePrerequisite,
     CourseSchedule,
     GraduationRequirement,
@@ -45,6 +46,31 @@ class CourseListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'course_code', 'name', 'college', 'department', 'major',
             'category', 'credits', 'professor',
+        ]
+
+
+class CourseOfferingListSerializer(serializers.ModelSerializer):
+    """분반 단위 검색 응답 — 한 카드 = 한 offering (spec 6.6 `/courses/offerings/`, #149).
+
+    `id` 값을 그대로 `POST /accounts/current-courses/`의 `offering_id`로 전달하면
+    서버가 CurrentCourse의 7개 평문 필드(course_name·code·요일·시간·교수·강의실)를
+    자동 hydrate.
+    """
+    course_code = serializers.CharField(source='course.course_code', read_only=True)
+    name = serializers.CharField(source='course.name', read_only=True)
+    college = serializers.CharField(source='course.college', read_only=True)
+    department = serializers.CharField(source='course.department', read_only=True)
+    major = serializers.CharField(source='course.major', read_only=True)
+    category = serializers.CharField(source='course.category', read_only=True)
+    credits = serializers.IntegerField(source='course.credits', read_only=True)
+    schedules = CourseScheduleSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CourseOffering
+        fields = [
+            'id', 'year', 'semester', 'section_no',
+            'course_code', 'name', 'college', 'department', 'major',
+            'category', 'credits', 'professor', 'schedules',
         ]
 
 

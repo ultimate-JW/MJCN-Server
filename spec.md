@@ -176,7 +176,6 @@ erDiagram
         time end_time
         string professor
         string room
-        string building
     }
 
     EmailVerification {
@@ -403,19 +402,21 @@ User ||--o{ Bookmark : "has"
 
 #### CurrentCourse (현재 수강과목)
 
+등록 시점의 **snapshot** — 학교 카탈로그(`Course`/`CourseOffering`/`CourseSchedule`)가 학기 지나 갱신돼도 사용자 시간표는 그대로 유지. 프론트는 `offering_id` 한 개만 보내면 서버가 아래 7개 필드를 모두 자동으로 채워 저장 (#149).
+
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | user | FK(User) | |
-| course_name | CharField | 과목명 |
-| course_code | CharField | 과목번호 |
-| day_of_week | CharField | 요일 |
-| start_time | TimeField | 시작 시간 |
-| end_time | TimeField | 종료 시간 |
-| professor | CharField(blank) | 교수명 |
-| room | CharField(blank) | 강의실 |
-| building | CharField(blank) | 강의실 위치 |
+| course_name | CharField | 과목명 (자동 채움) |
+| course_code | CharField | 과목번호 (자동 채움) |
+| day_of_week | CharField | 요일 (자동 채움) |
+| start_time | TimeField | 시작 시간 (자동 채움) |
+| end_time | TimeField | 종료 시간 (자동 채움) |
+| professor | CharField(blank) | 교수명 (자동 채움) |
+| room | CharField(blank) | 강의실 (자동 채움) |
 
 - unique_together: (user, day_of_week, start_time) — 동일 시간대 중복 수강 방지
+- `building` 필드는 학교 xlsx 원천에 정보 없어 항상 빈 문자열이라 #149에서 모델에서 완전 제거
 
 #### EmailVerification (비밀번호 재설정 전용)
 
@@ -899,9 +900,9 @@ PendingSignup row는 `code_expires_at` 경과 후에도 자동 삭제되지 않�
 **Step 5 — 현재 수강과목 (선택, 건너뛰기 가능)**
 - Step 2에서 선택한 학과의 현재 학기 개설 과목이 기본 리스트로 표시
 - 과목 탭 시 선택 (체크 표시)
-- 상단 검색으로 타과/교양 과목 검색 및 추가
-- 사용자 입력: 과목 선택만
-- 요일, 시간, 교수, 강의실 등은 과목 DB(Course + CourseSchedule 테이블)에서 자동 매칭
+- 상단 검색으로 타과/교양 과목 검색 및 추가 — `GET /api/v1/courses/offerings/` (분반 단위, #149)
+- 사용자 입력: 분반 카드 선택만 (`offering_id` 한 개)
+- 요일, 시간, 교수, 강의실 등은 과목 DB(Course + CourseOffering + CourseSchedule)에서 자동 매칭 — `POST /accounts/current-courses/`가 `offering_id`로 hydrate
 - "완료"로 온보딩 종료
 
 ##### 과목 DB 시딩 요구사항
@@ -1785,7 +1786,7 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 | PUT | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 수정 |
 | DELETE | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 삭제 |
 | GET | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 목록 |
-| POST | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 추가 |
+| POST | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 추가 — body `{offering_id}` 한 개로 7개 평문 필드 자동 hydrate (#149). 분반 검색은 `/api/v1/courses/offerings/` 사용 |
 | PUT | `/api/v1/accounts/current-courses/<id>/` | O | 현재 수강과목 수정 |
 | DELETE | `/api/v1/accounts/current-courses/<id>/` | O | 현재 수강과목 삭제 |
 
@@ -1809,6 +1810,7 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 | POST | `/api/v1/courses/recommend/curriculum/` | O | 전체 커리큘럼 추천 (body 노브, spec 5.3.2) |
 | GET | `/api/v1/courses/status/` | O | 이수현황 분석 |
 | GET | `/api/v1/courses/` | O | 과목 검색 (쿼리 파라미터) |
+| GET | `/api/v1/courses/offerings/?query=&year=&semester=` | O | 분반 단위 강의 검색 (#149) — 카드 1개 = offering 1개. `id` 값을 그대로 `POST /accounts/current-courses/`의 `offering_id`로 전달 |
 
 ### 6.7 공지사항 (notices)
 
@@ -2006,8 +2008,7 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
       "start_time": "09:00:00",
       "end_time": "10:30:00",
       "professor": "김교수",
-      "room": "5301",
-      "building": "공학관"
+      "room": "5301"
     }
   ],
   "notices": [ /* 공지 목록 항목 (6.7 NoticeListSerializer) — 최대 3개 */ ],
