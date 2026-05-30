@@ -137,6 +137,12 @@ class CourseHistory(models.Model):
 
 
 class CurrentCourse(models.Model):
+    """현재 수강과목 — 등록 시점의 snapshot (spec 4.2, #149).
+
+    POST 요청은 `offering_id` 한 개만 받고, 7개 평문 필드는
+    CourseOffering + CourseSchedule 조회로 자동 채움 (CurrentCourseSerializer.create).
+    학교 카탈로그가 학기 지나 갱신돼도 사용자 시간표는 그대로 유지.
+    """
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='current_courses')
     course_name = models.CharField(max_length=100, verbose_name='과목명')
     course_code = models.CharField(max_length=30, verbose_name='과목번호')
@@ -145,7 +151,6 @@ class CurrentCourse(models.Model):
     end_time = models.TimeField(verbose_name='종료 시간')
     professor = models.CharField(max_length=50, blank=True, verbose_name='교수명')
     room = models.CharField(max_length=30, blank=True, verbose_name='강의실')
-    building = models.CharField(max_length=50, blank=True, verbose_name='강의실 위치')
 
     class Meta:
         verbose_name = '현재 수강과목'

@@ -11,11 +11,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Course, GraduationRequirement
+from .models import Course, CourseOffering, GraduationRequirement
 from .required_courses import get_required_courses
 from .serializers import (
     CompletionStatusSerializer,
     CourseListSerializer,
+    CourseOfferingListSerializer,
     CurriculumPlanSerializer,
     NextSemesterRecommendationSerializer,
 )
@@ -105,6 +106,55 @@ class CourseSearchView(ListAPIView):
             queryset = queryset.filter(semester_open=int(semester_open))
 
         return queryset
+
+
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            'query', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            description='강의명·과목코드·교수명 부분 일치 검색',
+        ),
+        OpenApiParameter(
+            'year', OpenApiTypes.INT, OpenApiParameter.QUERY,
+            description='개설 연도 정확 일치 (예: 2026). 미지정 시 전체',
+        ),
+        OpenApiParameter(
+            'semester', OpenApiTypes.INT, OpenApiParameter.QUERY,
+            description='개설 학기 정확 일치 (1/2/3/4). 미지정 시 전체',
+        ),
+    ]
+)
+class CourseOfferingSearchView(ListAPIView):
+    """GET /api/v1/courses/offerings/ — 분반 단위 강의 검색 (#149).
+
+    한 카드 = 한 offering. 응답의 `id` 값을 그대로
+    `POST /api/v1/accounts/current-courses/`의 `offering_id`로 보내면
+    서버가 CurrentCourse의 7개 평문 필드를 자동 hydrate.
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = CourseOfferingListSerializer
+
+    def get_queryset(self):
+        qs = (
+            CourseOffering.objects
+            .select_related('course')
+            .prefetch_related('schedules')
+        )
+        params = self.request.query_params
+        query = (params.get('query') or '').strip()
+        year = params.get('year')
+        semester = params.get('semester')
+        if year:
+            qs = qs.filter(year=int(year))
+        if semester:
+            qs = qs.filter(semester=int(semester))
+        if query:
+            qs = qs.filter(
+                Q(course__name__icontains=query)
+                | Q(course__course_code__icontains=query)
+                | Q(professor__icontains=query)
+            )
+        return qs.order_by('-year', '-semester', 'course__course_code', 'section_no')
 
 
 # 이수현황

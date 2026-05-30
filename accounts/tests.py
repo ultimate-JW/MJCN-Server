@@ -638,3 +638,153 @@ class LoginEndpointTests(TestCase):
         # User row가 없으므로 미존재 이메일과 같은 401 (403 아님)
         self.assertEqual(res.status_code, 401)
         self.assertIn('이메일 또는 비밀번호', res.data['detail'])
+
+
+# ─── #149: CurrentCourse offering_id 자동 hydrate + building 제거 ──────
+
+class CurrentCourseHydrateTests(TestCase):
+    """POST/PUT/PATCH /api/v1/accounts/current-courses/ 흐름 검증 (#149).
+
+    offering_id 한 개로 7개 평문 필드(course_name·code·요일·시간·교수·강의실)가
+    CourseOffering + CourseSchedule에서 자동 채워지고, 응답·DB에 building 키 없음.
+    """
+
+    url = '/api/v1/accounts/current-courses/'
+
+    def setUp(self):
+        from datetime import time
+
+        from courses.models import Course, CourseOffering, CourseSchedule
+
+        self.user = User.objects.create_user(email='cc@mju.ac.kr', password=VALID_PWD)
+        self.user.is_email_verified = True
+        self.user.save(update_fields=['is_email_verified'])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        # 테스트용 카탈로그 (seed_data 1행 모사)
+        self.course = Course.objects.create(
+            course_code='컴공296', name='컴퓨터하드웨어',
+            college='반도체·ICT대학', department='컴퓨터정보통신공학부',
+            major='컴퓨터공학전공',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+            professor='박정민',
+        )
+        self.offering = CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1, section_no='0729',
+            professor='박정민', capacity=35,
+        )
+        CourseSchedule.objects.create(
+            course=self.course, offering=self.offering,
+            day_of_week='화', start_time=time(14, 0), end_time=time(16, 50),
+            building='', room='Y5420',
+        )
+
+    def test_post_offering_id_creates_currentcourse_with_hydration(self):
+        res = self.client.post(self.url, {'offering_id': self.offering.id}, format='json')
+        self.assertEqual(res.status_code, 201, msg=res.data)
+        # 응답 8키 (7 평문 + id) — building 없음
+        self.assertEqual(
+            set(res.data.keys()),
+            {'id', 'course_name', 'course_code', 'day_of_week',
+             'start_time', 'end_time', 'professor', 'room'},
+        )
+        self.assertEqual(res.data['course_name'], '컴퓨터하드웨어')
+        self.assertEqual(res.data['course_code'], '컴공296')
+        self.assertEqual(res.data['day_of_week'], '화')
+        self.assertEqual(res.data['start_time'], '14:00:00')
+        self.assertEqual(res.data['end_time'], '16:50:00')
+        self.assertEqual(res.data['professor'], '박정민')
+        self.assertEqual(res.data['room'], 'Y5420')
+
+    def test_post_nonexistent_offering_id_returns_400(self):
+        res = self.client.post(self.url, {'offering_id': 99999}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('offering_id', res.data)
+
+    def test_post_offering_without_schedule_returns_400(self):
+        from courses.models import CourseOffering
+
+        empty = CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1, section_no='0730',
+            professor='박정민',
+        )
+        res = self.client.post(self.url, {'offering_id': empty.id}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('offering_id', res.data)
+
+    def test_unique_constraint_returns_400(self):
+        # 1차 등록
+        res = self.client.post(self.url, {'offering_id': self.offering.id}, format='json')
+        self.assertEqual(res.status_code, 201)
+        # 같은 (day_of_week, start_time) 슬롯에 또 다른 offering 등록 → 400
+        from datetime import time
+
+        from courses.models import Course, CourseOffering, CourseSchedule
+
+        other_course = Course.objects.create(
+            course_code='컴공297', name='운영체제',
+            college='반도체·ICT대학', department='컴퓨터정보통신공학부',
+            major='컴퓨터공학전공',
+            category='전공선택', credits=3, year_open=3, semester_open=1,
+        )
+        other_offering = CourseOffering.objects.create(
+            course=other_course, year=2026, semester=1, section_no='0801',
+            professor='이교수',
+        )
+        CourseSchedule.objects.create(
+            course=other_course, offering=other_offering,
+            day_of_week='화', start_time=time(14, 0), end_time=time(16, 50),
+            building='', room='Y5421',
+        )
+        res2 = self.client.post(self.url, {'offering_id': other_offering.id}, format='json')
+        self.assertEqual(res2.status_code, 400)
+        self.assertIn('offering_id', res2.data)
+
+    def test_list_response_excludes_building(self):
+        self.client.post(self.url, {'offering_id': self.offering.id}, format='json')
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200)
+        # 페이지네이션이 results 키일 수도, 리스트 자체일 수도 — 모두 대응
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(items), 1)
+        self.assertNotIn('building', items[0])
+
+    def test_put_with_offering_id_rehydrates(self):
+        # 1차 등록
+        res1 = self.client.post(self.url, {'offering_id': self.offering.id}, format='json')
+        cc_id = res1.data['id']
+        # 다른 분반 만들기 (다른 요일·시간으로 unique 충돌 회피)
+        from datetime import time
+
+        from courses.models import Course, CourseOffering, CourseSchedule
+
+        c2 = Course.objects.create(
+            course_code='컴공297', name='운영체제',
+            college='반도체·ICT대학', department='컴퓨터정보통신공학부',
+            major='컴퓨터공학전공',
+            category='전공선택', credits=3, year_open=3, semester_open=1,
+        )
+        o2 = CourseOffering.objects.create(
+            course=c2, year=2026, semester=1, section_no='0801', professor='이교수',
+        )
+        CourseSchedule.objects.create(
+            course=c2, offering=o2,
+            day_of_week='목', start_time=time(9, 0), end_time=time(11, 50),
+            building='', room='Y5437',
+        )
+        # PUT으로 분반 변경 → 7개 필드 재 hydrate
+        res2 = self.client.put(
+            f'{self.url}{cc_id}/', {'offering_id': o2.id}, format='json',
+        )
+        self.assertEqual(res2.status_code, 200, msg=res2.data)
+        self.assertEqual(res2.data['course_name'], '운영체제')
+        self.assertEqual(res2.data['day_of_week'], '목')
+        self.assertEqual(res2.data['room'], 'Y5437')
+
+    def test_building_field_removed_from_model(self):
+        """모델에서 building 필드가 실제로 제거됐는지 회귀 (#149)."""
+        from accounts.models import CurrentCourse
+
+        field_names = {f.name for f in CurrentCourse._meta.get_fields()}
+        self.assertNotIn('building', field_names)

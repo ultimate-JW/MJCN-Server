@@ -6,6 +6,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
+from courses.models import CourseOffering
+
 from .fields import ASCIIEmailField
 from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark, PendingSignup
 
@@ -149,21 +151,83 @@ class CourseHistorySerializer(serializers.ModelSerializer):
 
 
 class CurrentCourseSerializer(serializers.ModelSerializer):
+    """현재 수강과목 — `offering_id` 한 개로 7개 평문 필드 자동 hydrate (spec 4.2, #149).
+
+    POST·PUT·PATCH 모두 `offering_id` write-only 필드만 받음. 시리얼라이저가
+    CourseOffering + 첫 schedule을 조회해 course_name·code·요일·시간·교수·강의실을 채움.
+    응답은 평문 필드 read-only로 노출 (snapshot).
+    """
+    offering_id = serializers.IntegerField(write_only=True)
+
     class Meta:
         model = CurrentCourse
-        fields = ['id', 'course_name', 'course_code', 'day_of_week',
-                  'start_time', 'end_time', 'professor', 'room', 'building']
+        fields = ['id', 'offering_id', 'course_name', 'course_code', 'day_of_week',
+                  'start_time', 'end_time', 'professor', 'room']
+        read_only_fields = ['id', 'course_name', 'course_code', 'day_of_week',
+                            'start_time', 'end_time', 'professor', 'room']
+
+    def validate_offering_id(self, value):
+        try:
+            offering = (
+                CourseOffering.objects
+                .select_related('course')
+                .prefetch_related('schedules')
+                .get(pk=value)
+            )
+        except CourseOffering.DoesNotExist:
+            raise serializers.ValidationError('존재하지 않는 분반입니다.')
+        if not offering.schedules.exists():
+            raise serializers.ValidationError('강의 시간 정보가 없습니다.')
+        # create/update 재호출 비용 절감 — 검증 시점에 조회한 객체를 캐시
+        self._offering = offering
+        return value
 
     def validate(self, data):
-        # PUT은 전체, PATCH는 부분 — 병합된 최종 상태로 검증
-        instance = self.instance
-        start = data.get('start_time', instance.start_time if instance else None)
-        end = data.get('end_time', instance.end_time if instance else None)
-        if start is not None and end is not None and start >= end:
-            raise serializers.ValidationError({
-                'end_time': 'end_time은 start_time보다 이후여야 합니다.',
-            })
+        # unique_together (user, day_of_week, start_time) 사전 체크 →
+        # IntegrityError(500) 대신 깔끔한 400.
+        offering = getattr(self, '_offering', None)
+        if offering is None:
+            return data
+        schedule = offering.schedules.first()
+        user = self.context['request'].user
+        qs = CurrentCourse.objects.filter(
+            user=user,
+            day_of_week=schedule.day_of_week,
+            start_time=schedule.start_time,
+        )
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                {'offering_id': '같은 시간대에 이미 다른 과목이 등록돼 있습니다.'}
+            )
         return data
+
+    def _snapshot(self, offering: CourseOffering) -> dict:
+        # 분반당 schedule은 보통 1건. 둘 이상이면 첫 건 사용 (자동 매칭 단순화).
+        schedule = offering.schedules.first()
+        return {
+            'course_name': offering.course.name,
+            'course_code': offering.course.course_code,
+            'day_of_week': schedule.day_of_week,
+            'start_time': schedule.start_time,
+            'end_time': schedule.end_time,
+            'professor': offering.professor or offering.course.professor or '',
+            'room': schedule.room or '',
+        }
+
+    def create(self, validated_data):
+        snapshot = self._snapshot(self._offering)
+        return CurrentCourse.objects.create(
+            user=self.context['request'].user, **snapshot,
+        )
+
+    def update(self, instance, validated_data):
+        snapshot = self._snapshot(self._offering)
+        for field, value in snapshot.items():
+            setattr(instance, field, value)
+        instance.save(update_fields=list(snapshot.keys()))
+        return instance
 
 
 class ProfileSerializer(serializers.ModelSerializer):

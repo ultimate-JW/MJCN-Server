@@ -1872,3 +1872,125 @@ class BackfillCourseTagsTests(TestCase):
         c.refresh_from_db()
         self.assertIn('IT/개발', c.tags)
         self.assertNotIn('디자인', c.tags)
+
+
+# ─── #149: 분반 단위 검색 API (GET /api/v1/courses/offerings/) ──────────
+
+class CourseOfferingSearchAPITests(APITestCase):
+    """GET /api/v1/courses/offerings/ — 분반 단위 검색 응답 (#149).
+
+    한 카드 = 한 offering. 응답의 `id`는 그대로 `POST /accounts/current-courses/`
+    의 `offering_id`로 보낼 수 있음.
+    """
+
+    url = '/api/v1/courses/offerings/'
+
+    def setUp(self):
+        self.user = User.objects.create_user(email='os@mju.ac.kr', password='Pwd@1234')
+        self.user.is_email_verified = True
+        self.user.save(update_fields=['is_email_verified'])
+        self.client.force_authenticate(user=self.user)
+
+        # 카탈로그: 2개 강의, 각 1~2 분반
+        self.c_ai = Course.objects.create(
+            course_code='ICTC202', name='AI프로그래밍',
+            college='반도체·ICT대학', department='컴퓨터정보통신공학부',
+            major='컴퓨터공학전공',
+            category='전공선택', credits=3, year_open=3, semester_open=1,
+            professor='김상귀',
+        )
+        self.off_ai_1 = CourseOffering.objects.create(
+            course=self.c_ai, year=2026, semester=1, section_no='0727',
+            professor='김상귀',
+        )
+        CourseSchedule.objects.create(
+            course=self.c_ai, offering=self.off_ai_1,
+            day_of_week='수', start_time=time(14, 0), end_time=time(16, 50),
+            building='', room='Y5411',
+        )
+        # 같은 강의 다른 분반 (다른 학기)
+        self.off_ai_2 = CourseOffering.objects.create(
+            course=self.c_ai, year=2025, semester=2, section_no='0501',
+            professor='홍길동',
+        )
+        CourseSchedule.objects.create(
+            course=self.c_ai, offering=self.off_ai_2,
+            day_of_week='화', start_time=time(9, 0), end_time=time(11, 50),
+            building='', room='Y5301',
+        )
+
+        # 다른 강의 1개
+        self.c_oop = Course.objects.create(
+            course_code='ICTC201', name='객체지향프로그래밍',
+            college='반도체·ICT대학', department='컴퓨터정보통신공학부',
+            major='컴퓨터공학전공',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+            professor='이교수',
+        )
+        self.off_oop_1 = CourseOffering.objects.create(
+            course=self.c_oop, year=2026, semester=1, section_no='0710',
+            professor='이교수',
+        )
+        CourseSchedule.objects.create(
+            course=self.c_oop, offering=self.off_oop_1,
+            day_of_week='월', start_time=time(10, 0), end_time=time(12, 50),
+            building='', room='Y5212',
+        )
+
+    def test_unauthenticated_returns_401(self):
+        self.client.force_authenticate(user=None)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 401)
+
+    def test_no_filter_returns_all_offerings(self):
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200)
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(items), 3)
+
+    def test_response_shape_has_required_fields(self):
+        res = self.client.get(self.url, {'query': 'AI프로그래밍'})
+        self.assertEqual(res.status_code, 200)
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        self.assertGreater(len(items), 0)
+        item = items[0]
+        for k in ('id', 'year', 'semester', 'section_no',
+                  'course_code', 'name', 'college', 'department', 'major',
+                  'category', 'credits', 'professor', 'schedules'):
+            self.assertIn(k, item, msg=f'필드 누락: {k}')
+        # college/dept/major Figma 카드 3단 표시
+        self.assertEqual(item['college'], '반도체·ICT대학')
+        self.assertEqual(item['department'], '컴퓨터정보통신공학부')
+        self.assertEqual(item['major'], '컴퓨터공학전공')
+        # schedules nested
+        self.assertEqual(len(item['schedules']), 1)
+        sch = item['schedules'][0]
+        for k in ('day_of_week', 'start_time', 'end_time', 'room'):
+            self.assertIn(k, sch)
+
+    def test_query_filter_matches_course_name(self):
+        res = self.client.get(self.url, {'query': 'AI'})
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        names = {i['name'] for i in items}
+        self.assertEqual(names, {'AI프로그래밍'})
+
+    def test_query_filter_matches_course_code(self):
+        res = self.client.get(self.url, {'query': 'ICTC201'})
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        codes = {i['course_code'] for i in items}
+        self.assertEqual(codes, {'ICTC201'})
+
+    def test_query_filter_matches_professor(self):
+        res = self.client.get(self.url, {'query': '홍길동'})
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        # 2025-2학기 AI프로그래밍 (off_ai_2)에만 홍길동
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['professor'], '홍길동')
+
+    def test_year_semester_filter(self):
+        res = self.client.get(self.url, {'year': 2026, 'semester': 1})
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(items), 2)  # AI 0727 + OOP 0710
+        for it in items:
+            self.assertEqual(it['year'], 2026)
+            self.assertEqual(it['semester'], 1)
