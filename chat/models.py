@@ -73,6 +73,16 @@ class ChatMessage(models.Model):
     )
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, verbose_name='역할')
     content = models.TextField(verbose_name='메시지 내용')
+    referenced_items = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name='참조 항목 (공지/정보 title+url snapshot)',
+        help_text=(
+            'AI가 search_notices / search_information tool로 가져온 카드 데이터 '
+            'snapshot — [{type, title, url}] 형식. type ∈ {notice, information}. '
+            'user 메시지는 빈 배열.'
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='생성 시각')
 
     class Meta:

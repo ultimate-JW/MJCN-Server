@@ -65,7 +65,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChatMessage
-        fields = ['id', 'role', 'content', 'created_at', 'attachments']
+        fields = ['id', 'role', 'content', 'referenced_items', 'created_at', 'attachments']
         read_only_fields = fields
 
 

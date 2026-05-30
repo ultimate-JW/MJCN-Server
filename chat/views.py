@@ -161,9 +161,11 @@ class ChatRoomViewSet(
         recent.reverse()  # 호출 시점에 시간 순으로
 
         # 응답 실패 시 AIClientError/AIResponseParseError raise → view가 503 처리
-        assistant_text = generate_assistant_reply(self.request.user, recent)
+        assistant_text, refs = generate_assistant_reply(self.request.user, recent)
 
-        return self._save_assistant_message(room_id, assistant_text, title, category)
+        return self._save_assistant_message(
+            room_id, assistant_text, title, category, refs,
+        )
 
     def _save_user_message(self, room_pk, content: str, attachments: list):
         """트랜잭션 1: room 락 + user_msg + 첨부 저장. 락 시간 = INSERT 시간만."""
@@ -194,11 +196,14 @@ class ChatRoomViewSet(
                 )
         return room.id, user_msg, is_first_message
 
-    def _save_assistant_message(self, room_id, assistant_text: str, title, category):
+    def _save_assistant_message(
+        self, room_id, assistant_text: str, title, category, refs: list,
+    ):
         """트랜잭션 2: assistant_msg 저장 + room 메타 갱신. 락 시간 = INSERT/UPDATE 시간만.
 
         title이 None이면 첫 메시지가 아니라 title/category 미갱신.
         title이 '' 이면 분류 실패 fallback이라 room.title은 유지 (category만 갱신).
+        refs는 [{type, title, url}] 형식 — search_notices/search_information 결과 snapshot (#147).
         """
         with transaction.atomic():
             room = (
@@ -211,6 +216,7 @@ class ChatRoomViewSet(
                 room=room,
                 role=ChatMessage.ROLE_ASSISTANT,
                 content=assistant_text,
+                referenced_items=refs,
             )
             room.last_message_preview = assistant_text[:200]
             update_fields = ['last_message_preview', 'updated_at']
