@@ -8,7 +8,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from accounts.models import CourseHistory, CurrentCourse
+from accounts.models import CourseHistory, CurrentCourse, InterestArea
 from courses.category_map import classify_liberal_subtype, classify_core_area
 from courses.management.commands.import_courses_from_xlsx import parse_year_open
 from courses.models import (
@@ -1994,3 +1994,103 @@ class CourseOfferingSearchAPITests(APITestCase):
         for it in items:
             self.assertEqual(it['year'], 2026)
             self.assertEqual(it['semester'], 1)
+
+
+class NextSemesterSectionsAPITests(APITestCase):
+    """수강신청 테마 상세 2섹션 추천 API (spec 5.3.1 확장, #164).
+
+    핵심: 전체 추천 로직을 다시 짠 게 아니라 recommend_next_semester_courses(원래 엔진)
+    결과를 두 우선순위로 재구성한다 — interest(관심사 키워드↔과목명) / linked(후수과목 우선).
+    """
+    url = '/api/v1/courses/recommend/next/sections/'
+
+    def _ai_courses(self):
+        # 관심사 'AI' 매칭용 — 이름에 'AI' 포함, 선수과목 없음 (③-a 채움)
+        self.ai1 = _make_course(course_code='CSE3101', name='AI프로그래밍', category='전공선택', year_open=3)
+        self.ai2 = _make_course(course_code='CSE3102', name='AI개론', category='전공선택', year_open=3)
+        self.ai3 = _make_course(course_code='CSE3103', name='AI응용', category='전공선택', year_open=3)
+
+    def test_인증_없으면_401(self):
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_응답_스키마와_학기(self):
+        user = _make_user()
+        self._ai_courses()
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(res.data.keys()),
+                         {'target_year', 'target_semester', 'interest_courses', 'linked_courses'})
+        # user.semester=2 → 다음은 학기 1
+        self.assertEqual(res.data['target_semester'], 1)
+
+    def test_관심사_1개면_그_키워드로_최대3개(self):
+        user = _make_user()
+        InterestArea.objects.create(user=user, category='기타', custom_text='AI')
+        self._ai_courses()
+        _make_course(course_code='CSE3201', name='운영체제', category='전공선택', year_open=3)  # 비매칭
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        interest_codes = [c['course_code'] for c in res.data['interest_courses']]
+        # 'AI' 키워드 매칭 3개가 관심분야 추천을 채움
+        self.assertEqual(set(interest_codes), {'CSE3101', 'CSE3102', 'CSE3103'})
+        # ③-b는 ③-a 과목 제외
+        linked_codes = {c['course_code'] for c in res.data['linked_courses']}
+        self.assertFalse(linked_codes & set(interest_codes))
+
+    def test_관심사_3개면_키워드당_1개씩_부분일치(self):
+        user = _make_user()
+        for kw in ('AI', '데이터', '보안'):
+            InterestArea.objects.create(user=user, category='기타', custom_text=kw)
+        _make_course(course_code='CSE3101', name='AI프로그래밍', category='전공선택', year_open=3)
+        _make_course(course_code='CSE3102', name='데이터마이닝', category='전공선택', year_open=3)  # '데이터' 부분일치
+        _make_course(course_code='CSE3103', name='정보보안', category='전공선택', year_open=3)      # '보안' 부분일치
+        _make_course(course_code='CSE3201', name='운영체제', category='전공선택', year_open=3)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        interest_codes = {c['course_code'] for c in res.data['interest_courses']}
+        # 키워드당 1개씩 — 세 과목 모두 노출 (부분일치 icontains 검증)
+        self.assertEqual(interest_codes, {'CSE3101', 'CSE3102', 'CSE3103'})
+
+    def test_linked_직전학기_후수과목_우선(self):
+        user = _make_user()
+        # ③-a를 AI로 채워서 후수과목이 ③-b로 가게 함
+        InterestArea.objects.create(user=user, category='기타', custom_text='AI')
+        self._ai_courses()
+        # 선수과목 C언어 — 직전 학기(2024-1) 이수
+        c_lang = _make_course(course_code='CSE1001', name='C언어', category='전공필수', year_open=1)
+        CourseHistory.objects.create(
+            user=user, course_name='C언어', course_code='CSE1001',
+            year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+        )
+        # 후수과목(코드가 커서 base 정렬상 뒤) — 후수 우선 로직이 맨 위로 끌어와야 함
+        succ = _make_course(course_code='CSE9001', name='심화프로그래밍', category='전공선택', year_open=3)
+        CoursePrerequisite.objects.create(course=succ, prerequisite=c_lang)
+        # 비후수 (코드 작아서 base 정렬상 앞)
+        _make_course(course_code='CSE3201', name='운영체제', category='전공선택', year_open=3)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        linked_codes = [c['course_code'] for c in res.data['linked_courses']]
+        # 후수과목(CSE9001)이 비후수(CSE3201)보다 앞 — base 코드 순서를 뒤집고 위로 올라옴
+        self.assertEqual(linked_codes[0], 'CSE9001')
+        self.assertLess(linked_codes.index('CSE9001'), linked_codes.index('CSE3201'))
+
+    def test_두_섹션은_원래_추천엔진_풀의_부분집합(self):
+        """전체 로직 재작성 X — 원래 recommend 결과 풀에서만 뽑힘 (#164)."""
+        user = _make_user()
+        InterestArea.objects.create(user=user, category='기타', custom_text='AI')
+        self._ai_courses()
+        _make_course(course_code='CSE3201', name='운영체제', category='전공선택', year_open=3)
+        self.client.force_authenticate(user=user)
+
+        base = self.client.get('/api/v1/courses/recommend/next/')
+        base_codes = {i['course_code'] for i in base.data}
+
+        res = self.client.get(self.url)
+        section_codes = (
+            {c['course_code'] for c in res.data['interest_courses']}
+            | {c['course_code'] for c in res.data['linked_courses']}
+        )
+        self.assertTrue(section_codes)
+        self.assertTrue(section_codes <= base_codes)

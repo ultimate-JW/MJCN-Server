@@ -20,7 +20,9 @@ from .serializers import (
     CurriculumPlanSerializer,
     NextSemesterRecommendationSerializer,
 )
+from .serializers import RecommendationSectionsSerializer
 from .services import (
+    build_next_semester_sections,
     generate_curriculum_plans,
     recommend_next_semester_courses,
 )
@@ -362,6 +364,54 @@ class NextSemesterRecommendView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             ), None
         return year, sem
+
+
+class NextSemesterSectionsView(APIView):
+    """GET /api/v1/courses/recommend/next/sections/ — 수강신청 테마 상세 2섹션 추천 (#164).
+
+    spec 5.3.1 추천 엔진 위에 Figma 테마 상세(160-1144) ③ '수강 과목 권장 사항'을 위한
+    2섹션 조합 응답. 챗 tool(get_next_semester_courses)과 같은 풀에서 뽑아 추천이 어긋나지 않음.
+
+    응답:
+      {
+        "target_year": int, "target_semester": int,
+        "interest_courses": [ {RecommendedCourse}, ... ],  # 관심분야 추천 (관심사 키워드 ↔ 과목명)
+        "linked_courses":   [ {RecommendedCourse}, ... ]   # 지난학기 맞춤형 (후수과목 우선)
+      }
+
+    쿼리 파라미터 (선택): year / semester — 미지정 시 현재 학기 기반 자동 (NextSemesterRecommendView와 동일).
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                'year', OpenApiTypes.INT, OpenApiParameter.QUERY,
+                description='추천 대상 연도. 미지정 시 자동.',
+            ),
+            OpenApiParameter(
+                'semester', OpenApiTypes.INT, OpenApiParameter.QUERY,
+                description='추천 대상 학기 (1/2/3/4). 미지정 시 자동.',
+                enum=[1, 2, 3, 4],
+            ),
+        ],
+        responses={200: RecommendationSectionsSerializer, 400: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        # 학기 파싱은 다음학기 추천 뷰와 동일 규칙 재사용 (400 검증 포함)
+        target_year, target_semester = NextSemesterRecommendView._parse_term(request)
+        if isinstance(target_year, Response):
+            return target_year  # 검증 에러 그대로 반환
+
+        sections = build_next_semester_sections(
+            request.user,
+            target_year=target_year,
+            target_semester=target_semester,
+        )
+        # interest/linked는 Course 인스턴스 리스트 — RecommendedCourseSerializer가
+        # offerings(target 학기 prefetch분)·core_area를 직렬화.
+        serializer = RecommendationSectionsSerializer(sections)
+        return Response(serializer.data)
 
 
 # 카테고리 → 응답 키 매핑 (spec 5.3.2 4키 분리, #25)

@@ -17,15 +17,20 @@ from typing import Any
 
 from django.db.models import Q
 
-from courses.services import calc_graduation_progress, recommend_next_semester_courses
+from courses.services import (
+    MAX_NEXT_SEMESTER_RECOMMENDATIONS,
+    calc_graduation_progress,
+    recommend_next_semester_courses,
+)
 from information.models import Information
 from notices.models import Notice
 
 logger = logging.getLogger(__name__)
 
 
-# spec 5.3.1 — 다음학기 추천 결과를 AI에 전달할 때 상한 (토큰·응답 길이 가드)
-MAX_RECOMMEND_COURSES = 10
+# spec 5.3.1 — 다음학기 추천 결과를 AI에 전달할 때 상한 (토큰·응답 길이 가드).
+# themes 상세 추천과 같은 풀에서 뽑도록 courses 엔진의 canonical 상수를 공유 (#164).
+MAX_RECOMMEND_COURSES = MAX_NEXT_SEMESTER_RECOMMENDATIONS
 # Step 3 — Notice/Information 검색 결과 상한
 MAX_SEARCH_RESULTS = 5
 

@@ -178,6 +178,20 @@ class NextSemesterRecommendationSerializer(serializers.Serializer):
     core_area = serializers.CharField(allow_null=True)
 
 
+class RecommendationSectionsSerializer(serializers.Serializer):
+    """수강신청 테마 상세 ③ 2섹션 추천 응답 (spec 5.3.1 확장, #164, Figma 160-1144).
+
+    같은 추천 엔진 풀을 두 우선순위로 재구성한 결과.
+    카드는 RecommendedCourseSerializer 재사용 (course_code·name·category·credits·offerings·core_area).
+    """
+    target_year = serializers.IntegerField()
+    target_semester = serializers.IntegerField()
+    # ③-a 관심분야 추천 — custom_text 키워드 ↔ course.name 매칭
+    interest_courses = RecommendedCourseSerializer(many=True)
+    # ③-b 지난학기 맞춤형 — 직전학기 후수과목 우선 → 추천 점수순
+    linked_courses = RecommendedCourseSerializer(many=True)
+
+
 class SemesterPlanSerializer(serializers.Serializer):
     """학기 1개 응답 — 학칙 7분류로 분리 (spec 5.3.2, #47 Phase 3).
 

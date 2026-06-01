@@ -12,6 +12,7 @@ View / dashboard / chat 등 여러 곳에서 재사용 가능한 도메인 로�
   - generate_curriculum_plans(user, **knobs)  : 전체 커리큘럼 추천 (spec 5.3.2)
 """
 
+import re
 from datetime import date
 
 from django.db.models import Prefetch, Q
@@ -381,6 +382,11 @@ def _build_short_categories(user):
     }
 
 
+# 다음학기 추천 노출 상한 — chat tool(get_next_semester_courses)·themes 상세가 공유하는
+# canonical 풀 크기. 사용자에게 실제 보여주는 "추천 과목"은 점수 상위 이 개수까지로 통일 (#164).
+MAX_NEXT_SEMESTER_RECOMMENDATIONS = 10
+
+
 def recommend_next_semester_courses(user, *, target_year=None, target_semester=None):
     """
     한 사용자에 대해 다음학기 추천 과목 리스트를 반환한다. (spec 5.3.1, #36)
@@ -499,6 +505,150 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
         x[1].course_code,
     ))
     return scored
+
+
+# ────────────────────────────────────────
+# 수강신청 테마 상세 — 2섹션 추천 조합 (이슈 #164)
+# 같은 풀(recommend_next_semester_courses 상위 N = 챗 tool과 동일)을 두 가지 다른
+# 우선순위로 재구성:
+#   interest_courses : 관심사(custom_text) 키워드 ↔ course.name 부분일치, 키워드 라운드로빈
+#   linked_courses   : 직전 학기 후수과목 우선 → 나머지는 추천 점수순(필수·부족 카테고리 반영)
+# ────────────────────────────────────────
+
+# 각 섹션 노출 칸 수 (Figma 160-1144 — 섹션당 3개)
+SECTION_SIZE = 3
+
+# custom_text 자유입력 토큰 분리 — 콤마/공백/슬래시/가운뎃점 (common.matching와 동일 구분자)
+_INTEREST_SPLIT_RE = re.compile(r'[,\s/·]+')
+
+
+def _custom_text_keywords(area):
+    """InterestArea.custom_text 한 건을 소문자 토큰 set으로 (#164).
+
+    category·전공은 제외 — 관심분야 추천은 사용자가 직접 입력한 자유 키워드만 사용 (확정 2026-06-01).
+    """
+    text = (getattr(area, 'custom_text', '') or '').strip()
+    return {t.strip().lower() for t in _INTEREST_SPLIT_RE.split(text) if t.strip()}
+
+
+def _last_semester_taken_codes(user):
+    """직전(가장 최근) 수강학기에 이수한 course_code set — ③-b 후수과목 판정용 (#164)."""
+    histories = list(user.course_histories.values('course_code', 'year', 'semester'))
+    if not histories:
+        return set()
+    last = max((h['year'], h['semester']) for h in histories)
+    return {h['course_code'] for h in histories if (h['year'], h['semester']) == last}
+
+
+def _prerequisite_codes(course):
+    """course의 선수과목 course_code set (prefetch된 prerequisites 사용)."""
+    return {cp.prerequisite.course_code for cp in course.prerequisites.all()}
+
+
+def _build_interest_section(user, pool_courses, *, size=SECTION_SIZE):
+    """③-a 관심분야 추천 — custom_text 키워드 ↔ course.name 부분일치 + 라운드로빈 (#164).
+
+    관심사(InterestArea) 순서대로 각 1개씩 → 다시 돌며 채움. 어떤 관심사가 매칭 0건이면
+    다른 관심사가 더 채움. size 미달 시 기본 추천(pool 상위)으로 보충.
+    """
+    interests = list(user.interests.all())
+    # 관심사별 매칭 과목 — pool(점수) 순서 유지, name에 키워드 토큰 부분일치
+    per_interest = []
+    for area in interests:
+        tokens = _custom_text_keywords(area)
+        if not tokens:
+            per_interest.append([])
+            continue
+        per_interest.append([
+            c for c in pool_courses
+            if any(tok in c.name.lower() for tok in tokens)
+        ])
+
+    chosen, chosen_ids = [], set()
+    # 라운드로빈: 관심사 순서로 미사용 과목 1개씩 → size 채울 때까지 반복
+    progressed = True
+    while len(chosen) < size and progressed:
+        progressed = False
+        for matched in per_interest:
+            picked = next((c for c in matched if c.id not in chosen_ids), None)
+            if picked is not None:
+                chosen.append(picked)
+                chosen_ids.add(picked.id)
+                progressed = True
+                if len(chosen) >= size:
+                    break
+
+    # 부족분 → 기본 추천 상위(비매칭 포함)로 보충
+    if len(chosen) < size:
+        for c in pool_courses:
+            if c.id not in chosen_ids:
+                chosen.append(c)
+                chosen_ids.add(c.id)
+                if len(chosen) >= size:
+                    break
+    return chosen[:size]
+
+
+def _build_linked_section(user, pool_courses, *, size=SECTION_SIZE):
+    """③-b 지난학기 맞춤형 — 직전 학기 후수과목 우선 → 나머지 추천 점수순 (#164).
+
+    직전 학기 이수과목이 선수과목인 과목을 맨 위로(연계 끊김 방지), 부족하면 전체 수강이력
+    후수과목까지 확장, 그 뒤는 pool(추천 점수) 순서 그대로. pool_courses는 ③-a 과목 제외된 상태.
+    """
+    last_codes = _last_semester_taken_codes(user)
+    all_taken = set(user.course_histories.values_list('course_code', flat=True))
+
+    last_succ, all_succ, rest = [], [], []
+    for c in pool_courses:
+        prereqs = _prerequisite_codes(c)
+        if last_codes and (prereqs & last_codes):
+            last_succ.append(c)              # 직전 학기 직접 연계 후수과목
+        elif all_taken and (prereqs & all_taken):
+            all_succ.append(c)               # 전체 이력 후수과목 (확장)
+        else:
+            rest.append(c)                   # 나머지 (추천 점수순 그대로)
+    # 각 구간 내부는 pool 순서(추천 점수) 유지
+    return (last_succ + all_succ + rest)[:size]
+
+
+def build_next_semester_sections(user, *, target_year=None, target_semester=None):
+    """수강신청 테마 상세 ③ 2섹션(관심분야/지난학기) 추천을 반환한다 (#164, spec 5.3.1 확장).
+
+    같은 추천 엔진(recommend_next_semester_courses) 상위 N 풀을 두 우선순위로 재구성.
+    챗 tool(get_next_semester_courses)과 동일 풀이라 화면-챗 추천이 어긋나지 않음.
+
+    반환: {
+      'target_year': int, 'target_semester': int,
+      'interest_courses': [Course, ...],   # ③-a (최대 SECTION_SIZE)
+      'linked_courses':   [Course, ...],   # ③-b (최대 SECTION_SIZE, ③-a 과목 제외)
+    }
+    """
+    if target_year is None or target_semester is None:
+        auto_year, auto_sem = _curriculum_first_slot(user)
+        if target_year is None:
+            target_year = auto_year
+        if target_semester is None:
+            target_semester = auto_sem
+
+    scored = recommend_next_semester_courses(
+        user, target_year=target_year, target_semester=target_semester,
+    )
+    # 챗과 동일하게 상위 N 풀에서만 노출 (#164)
+    pool_courses = [course for _score, course in scored[:MAX_NEXT_SEMESTER_RECOMMENDATIONS]]
+
+    interest_courses = _build_interest_section(user, pool_courses)
+    interest_ids = {c.id for c in interest_courses}
+
+    # ③-b는 ③-a에 뽑힌 과목 제외 (두 섹션 중복 노출 방지)
+    linked_pool = [c for c in pool_courses if c.id not in interest_ids]
+    linked_courses = _build_linked_section(user, linked_pool)
+
+    return {
+        'target_year': target_year,
+        'target_semester': target_semester,
+        'interest_courses': interest_courses,
+        'linked_courses': linked_courses,
+    }
 
 
 # ────────────────────────────────────────
