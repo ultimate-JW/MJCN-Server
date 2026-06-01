@@ -2154,7 +2154,8 @@ class SectionsAdviceAPITests(APITestCase):
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         advice = res.data['advice']
-        self.assertEqual(set(advice.keys()), {'user_insight', 'stage_message', 'text'})
+        self.assertEqual(set(advice.keys()),
+                         {'user_insight', 'stage_message', 'term_note', 'text'})
         # 전공선택 dominant → 전공 심화 문구
         self.assertIn('전공 심화', advice['user_insight'])
         # 합본 text는 이름으로 시작
@@ -2212,3 +2213,61 @@ class SectionsQuickQuestionsAPITests(APITestCase):
         chips = res.data['quick_questions']
         self.assertEqual(len(chips), 3)
         self.assertTrue(any('클라우드' in c['label'] for c in chips))
+
+
+class ResolveOfferingTermTests(TestCase):
+    """다음학기 데이터 없을 때 작년 같은 학기 fallback (#164 발견1)."""
+
+    def test_target_데이터있으면_그대로(self):
+        from courses.services import _resolve_offering_term
+        c = _make_course(course_code='X1', semester_open=2)
+        CourseOffering.objects.create(course=c, year=2026, semester=2, section_no='01')
+        self.assertEqual(_resolve_offering_term(2026, 2), (2026, 2, False))
+
+    def test_없으면_같은학기_직전연도(self):
+        from courses.services import _resolve_offering_term
+        c = _make_course(course_code='X1', semester_open=2)
+        CourseOffering.objects.create(course=c, year=2025, semester=2, section_no='01')
+        # 2026-2 요청 → 없음 → 2025-2 fallback
+        self.assertEqual(_resolve_offering_term(2026, 2), (2025, 2, True))
+
+    def test_개설데이터_전무면_target그대로_no_fallback(self):
+        from courses.services import _resolve_offering_term
+        self.assertEqual(_resolve_offering_term(2026, 2), (2026, 2, False))
+
+
+class SectionsTermFallbackAPITests(APITestCase):
+    """섹션 엔드포인트 — 다음학기 미공개 시 작년 학기 fallback + 안내 문구 (#164 발견1)."""
+    url = '/api/v1/courses/recommend/next/sections/'
+
+    def test_다음학기_없으면_작년같은학기로_추천_및_안내(self):
+        user = _make_user()
+        c = _make_course(course_code='CSE2001', name='자료구조', category='전공선택',
+                         year_open=2, semester_open=2)
+        off = CourseOffering.objects.create(course=c, year=2025, semester=2,
+                                            section_no='01', professor='김교수')
+        CourseSchedule.objects.create(course=c, offering=off, day_of_week='월',
+                                      start_time=time(9, 0), end_time=time(10, 30), room='Y5407')
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url, {'year': 2026, 'semester': 2})  # 데이터 없는 학기 요청
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # 작년 같은 학기(2025-2)로 fallback
+        self.assertEqual((res.data['target_year'], res.data['target_semester']), (2025, 2))
+        # 마지막 줄 안내 문구 채워짐
+        self.assertTrue(res.data['advice']['term_note'])
+        self.assertIn('작년', res.data['advice']['term_note'])
+        self.assertIn('작년', res.data['advice']['text'])
+        # 빈 추천 아님 — 실제 과목 노출
+        codes = ([x['course_code'] for x in res.data['interest_courses']]
+                 + [x['course_code'] for x in res.data['linked_courses']])
+        self.assertIn('CSE2001', codes)
+
+    def test_데이터있으면_fallback_안하고_안내_빈문자열(self):
+        user = _make_user()
+        c = _make_course(course_code='CSE2001', name='자료구조', category='전공선택',
+                         year_open=2, semester_open=2)
+        CourseOffering.objects.create(course=c, year=2026, semester=2, section_no='01')
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url, {'year': 2026, 'semester': 2})
+        self.assertEqual((res.data['target_year'], res.data['target_semester']), (2026, 2))
+        self.assertEqual(res.data['advice']['term_note'], '')

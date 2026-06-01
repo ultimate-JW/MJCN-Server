@@ -648,6 +648,49 @@ def _recommendation_signals(user, pool_courses):
     return {'backlog': backlog, 'successor': successor, 'interest': interest, 'dominant': dominant}
 
 
+def _resolve_offering_term(target_year, target_semester):
+    """target 학기에 개설(CourseOffering) 데이터가 있으면 그대로, 없으면 fallback (#164 발견1).
+
+    다음 학기 개설 정보가 아직 안 올라온 경우(예: 2026-2 미공개) 빈 추천 대신
+    '작년 같은 학기'(예: 2025-2) 데이터로 추천하도록 학기를 바꿔준다.
+
+    반환: (year, semester, is_fallback)
+      - target에 데이터 있음 → (target_year, target_semester, False)
+      - 없음 → 같은 semester의 직전 연도 중 가장 최근 (year < target) → (그해, semester, True)
+      - 같은 semester 데이터 자체가 없음 → 전체에서 가장 최근 학기 (최후 fallback, True)
+      - 개설 데이터 전무 → target 그대로 (False)
+    """
+    has_target = CourseOffering.objects.filter(
+        year=target_year, semester=target_semester,
+    ).exists()
+    if has_target:
+        return target_year, target_semester, False
+
+    # 같은 학기의 직전 연도 — '작년 같은 학기'
+    prior_year = (
+        CourseOffering.objects
+        .filter(semester=target_semester, year__lt=target_year)
+        .order_by('-year')
+        .values_list('year', flat=True)
+        .first()
+    )
+    if prior_year is not None:
+        return prior_year, target_semester, True
+
+    # 같은 학기 데이터가 아예 없으면 전체에서 가장 최근 학기
+    latest = (
+        CourseOffering.objects
+        .order_by('-year', '-semester')
+        .values_list('year', 'semester')
+        .first()
+    )
+    if latest:
+        return latest[0], latest[1], True
+
+    # 개설 데이터 전무 (더미 시드 등) — target 그대로, fallback 아님
+    return target_year, target_semester, False
+
+
 def build_next_semester_sections(user, *, target_year=None, target_semester=None):
     """수강신청 테마 상세 ②조언 + ③2섹션 추천을 반환한다 (#164, spec 5.3.1 확장).
 
@@ -668,6 +711,11 @@ def build_next_semester_sections(user, *, target_year=None, target_semester=None
         if target_semester is None:
             target_semester = auto_sem
 
+    # 다음 학기 개설 정보가 아직 없으면 작년 같은 학기로 fallback (#164 발견1) — 빈 화면 방지
+    target_year, target_semester, is_fallback_term = _resolve_offering_term(
+        target_year, target_semester,
+    )
+
     scored = recommend_next_semester_courses(
         user, target_year=target_year, target_semester=target_semester,
     )
@@ -681,9 +729,9 @@ def build_next_semester_sections(user, *, target_year=None, target_semester=None
     linked_pool = [c for c in pool_courses if c.id not in interest_ids]
     linked_courses = _build_linked_section(user, linked_pool)
 
-    # ② 띵똥이의 조언 — 추천 신호 기반 (파트1) + 학년/학기 고정 멘트 (파트2)
+    # ② 띵똥이의 조언 — 추천 신호 기반 (파트1) + 학년/학기 고정 멘트 (파트2) + fallback 안내
     signals = _recommendation_signals(user, pool_courses)
-    advice = build_advice(user, signals)
+    advice = build_advice(user, signals, is_fallback_term=is_fallback_term)
 
     return {
         'target_year': target_year,

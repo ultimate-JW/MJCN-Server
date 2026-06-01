@@ -80,19 +80,28 @@ def _top_fragment(signals):
     return "여러 선택지가 열려 있는"
 
 
-def build_advice(user, signals):
-    """② 조언 dict — user_insight(파트1) + stage_message(파트2) + 합친 text.
+# 다음학기 개설 정보가 아직 없어 직전 학기(작년 같은 학기) 데이터로 추천했을 때의 안내 (#164 발견1)
+FALLBACK_TERM_NOTE = "아직 다음 학기 개설 정보가 없어서, 작년 같은 학기 과목 데이터를 기준으로 추천했어요."
 
-    text는 'OOO님, {파트1} {파트2}' 형식 — 프론트가 text 그대로 쓰거나 파트별로 렌더.
+
+def build_advice(user, signals, *, is_fallback_term=False):
+    """② 조언 dict — user_insight(파트1) + stage_message(파트2) + term_note + 합친 text.
+
+    text는 'OOO님, {파트1} {파트2} [{안내}]' 형식 — 프론트가 text 그대로 쓰거나 파트별로 렌더.
+    is_fallback_term=True면 마지막 줄에 작년 학기 데이터 기반 안내(term_note)를 덧붙인다.
     """
     insight = build_user_insight(signals)
     stage = stage_message(getattr(user, 'grade', None), getattr(user, 'semester', None))
+    term_note = FALLBACK_TERM_NOTE if is_fallback_term else ''
     name = (getattr(user, 'name', '') or '').strip()
     greeting = f"{name}님, " if name else ""
+
+    parts = [insight, stage] + ([term_note] if term_note else [])
     return {
         'user_insight': insight,
         'stage_message': stage,
-        'text': f"{greeting}{insight} {stage}",
+        'term_note': term_note,
+        'text': f"{greeting}{' '.join(parts)}",
     }
 
 

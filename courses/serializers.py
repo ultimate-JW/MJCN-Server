@@ -187,6 +187,8 @@ class AdviceSerializer(serializers.Serializer):
     """
     user_insight = serializers.CharField()
     stage_message = serializers.CharField()
+    # 다음학기 데이터 미공개 시 작년 학기 기반 안내 (fallback 아니면 빈 문자열) (#164 발견1)
+    term_note = serializers.CharField(allow_blank=True)
     text = serializers.CharField()
 
 
