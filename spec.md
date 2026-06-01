@@ -2803,12 +2803,13 @@ Notice.extracted_content에 추출 텍스트 저장
 
 ### Phase 4 - AI 비서 API (2주)
 
-- [ ] chat 앱: 채팅방/메시지 모델 + Serializer
-- [ ] AI API 연동 (services.py) + 메시지 전송 API
-- [ ] 첨부파일 업로드 API (multipart)
-- [ ] 채팅방 목록/폴더별 조회/삭제 API
-- [ ] 채팅방 제목 자동 생성 로직 (첫 질문 AI 요약)
-- [ ] 채팅방 카테고리 자동 분류 로직
+- [X] chat 앱: 채팅방/메시지 모델 + Serializer (PR #85)
+- [X] AI API 연동 (services.py) + 메시지 전송 API (PR #87) — function calling으로 courses/recommend 통합(#100), 사용자 프로필 컨텍스트 주입(#98)
+- [X] 첨부파일 업로드 API (multipart) (PR #89)
+- [X] 채팅방 목록/폴더별(카테고리) 조회/삭제 API (PR #85)
+- [X] 채팅방 제목 자동 생성 로직 (첫 질문 AI 요약) — `classify_and_title` (PR #87)
+- [X] 채팅방 카테고리 자동 분류 로직 — `classify_and_title`로 제목과 동시 생성 (PR #87)
+- [ ] (후속) chat 메시지 목록 페이지네이션 / spec 5.2.5 시간 기반 PUSH 추천 / 5.2.6 학사 가이딩 스케줄링 — 미구현
 
 ### Phase 5 - 알림 + 마무리 (2주)
 
@@ -2817,7 +2818,7 @@ Notice.extracted_content에 추출 텍스트 저장
 - [X] FCM 푸시 송신: `send_pending_pushes` 명령 + 매일 06:35 KST cron 등록 (PR #53)
 - [X] themes 앱: Theme/ThemeItem 모델 + 조회 API (`/api/v1/themes/`) + `seed_themes` 멱등 시드 (#117)
 - [ ] 맞춤 추천 알림 스케줄링 (마감일 전날 등) — Out of Scope, 후속 PR
-- [ ] API 통합 테스트 + Swagger 문서 검증 — 부분 완료, 통합 테스트 미실시
+- [ ] API 통합 테스트 + Swagger 문서 검증 — Swagger 검증은 매 PR 상시 수행(0 warning 유지), end-to-end 통합 테스트는 미실시
 - [X] 운영 환경 설정 (PostgreSQL, 환경변수 등) — PR #55 (DB 분기) + 2026-05-25 운영 cron 등록
 - [ ] 프론트엔드 팀과 API 연동 테스트 — 진행 중
 - [ ] **위비티 운영팀 통보** (서비스 런칭 직전)
