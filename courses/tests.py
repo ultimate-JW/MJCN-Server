@@ -2022,7 +2022,7 @@ class NextSemesterSectionsAPITests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(set(res.data.keys()),
                          {'target_year', 'target_semester', 'advice',
-                          'interest_courses', 'linked_courses'})
+                          'interest_courses', 'linked_courses', 'quick_questions'})
         # user.semester=2 → 다음은 학기 1
         self.assertEqual(res.data['target_semester'], 1)
 
@@ -2161,3 +2161,54 @@ class SectionsAdviceAPITests(APITestCase):
         self.assertTrue(advice['text'].startswith('홍길동님,'))
         # 2학년 2학기 stage 멘트
         self.assertIn('전공이 본격화', advice['stage_message'])
+
+
+class QuickQuestionsTests(TestCase):
+    """④ 띵똥이에게 물어보기 칩 — 규칙 기반 생성 (#164)."""
+
+    def test_3개_label_prompt_형식(self):
+        from courses.advice import build_quick_questions
+        user = _make_user()
+        chips = build_quick_questions(user)
+        self.assertEqual(len(chips), 3)
+        for chip in chips:
+            self.assertEqual(set(chip.keys()), {'label', 'prompt'})
+            self.assertTrue(chip['label'] and chip['prompt'])
+
+    def test_관심분야_키워드_치환(self):
+        from courses.advice import build_quick_questions
+        user = _make_user()
+        InterestArea.objects.create(user=user, category='기타', custom_text='AI, 데이터')
+        chips = build_quick_questions(user)
+        # 첫 키워드 'AI'가 label/prompt에 치환됨
+        interest_chip = next(c for c in chips if 'AI' in c['label'])
+        self.assertIn('AI', interest_chip['prompt'])
+
+    def test_관심분야_없으면_일반_fallback(self):
+        from courses.advice import build_quick_questions
+        user = _make_user()  # 관심사 없음
+        chips = build_quick_questions(user)
+        labels = [c['label'] for c in chips]
+        self.assertIn('관심분야 과목 더 추천', labels)
+
+    def test_고정칩_시간표_학점_포함(self):
+        from courses.advice import build_quick_questions
+        chips = build_quick_questions(_make_user())
+        labels = [c['label'] for c in chips]
+        self.assertIn('추천 과목으로 시간표 짜줘', labels)
+        self.assertIn('이번 학기 몇 학점이 적당해?', labels)
+
+
+class SectionsQuickQuestionsAPITests(APITestCase):
+    """④ 칩이 섹션 엔드포인트 응답에 포함되는지 (#164)."""
+    url = '/api/v1/courses/recommend/next/sections/'
+
+    def test_quick_questions_응답_포함_관심분야_치환(self):
+        user = _make_user()
+        InterestArea.objects.create(user=user, category='기타', custom_text='클라우드')
+        _make_course(course_code='CSE3101', name='AI프로그래밍', category='전공선택', year_open=3)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        chips = res.data['quick_questions']
+        self.assertEqual(len(chips), 3)
+        self.assertTrue(any('클라우드' in c['label'] for c in chips))

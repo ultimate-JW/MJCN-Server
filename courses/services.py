@@ -17,7 +17,7 @@ from datetime import date
 
 from django.db.models import Prefetch, Q
 
-from .advice import build_advice
+from .advice import build_advice, build_quick_questions
 from .required_courses import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
 from .models import (
     AcademicCalendar,
@@ -691,6 +691,8 @@ def build_next_semester_sections(user, *, target_year=None, target_semester=None
         'advice': advice,
         'interest_courses': interest_courses,
         'linked_courses': linked_courses,
+        # ④ 띵똥이에게 물어보기 — 탭하면 챗으로 전송될 숏컷 칩
+        'quick_questions': build_quick_questions(user),
     }
 
 

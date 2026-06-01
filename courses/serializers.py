@@ -190,8 +190,18 @@ class AdviceSerializer(serializers.Serializer):
     text = serializers.CharField()
 
 
+class QuickQuestionSerializer(serializers.Serializer):
+    """④ 띵똥이에게 물어보기 칩 (이슈 #164).
+
+    label : 버튼에 보이는 짧은 문구
+    prompt: 탭하면 챗(POST /chat-rooms/{id}/messages/)으로 전송될 질문 문장
+    """
+    label = serializers.CharField()
+    prompt = serializers.CharField()
+
+
 class RecommendationSectionsSerializer(serializers.Serializer):
-    """수강신청 테마 상세 ②조언 + ③2섹션 추천 응답 (spec 5.3.1 확장, #164, Figma 160-1144).
+    """수강신청 테마 상세 ②조언 + ③2섹션 추천 + ④물어보기 응답 (spec 5.3.1 확장, #164, Figma 160-1144).
 
     같은 추천 엔진 풀을 두 우선순위로 재구성한 결과.
     카드는 RecommendedCourseSerializer 재사용 (course_code·name·category·credits·offerings·core_area).
@@ -203,6 +213,7 @@ class RecommendationSectionsSerializer(serializers.Serializer):
     interest_courses = RecommendedCourseSerializer(many=True)
     # ③-b 지난학기 맞춤형 — 직전학기 후수과목 우선 → 추천 점수순
     linked_courses = RecommendedCourseSerializer(many=True)
+    quick_questions = QuickQuestionSerializer(many=True)  # ④ 띵똥이에게 물어보기
 
 
 class SemesterPlanSerializer(serializers.Serializer):
