@@ -1786,7 +1786,8 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 |--------|-----|------|------|
 | GET | `/api/v1/accounts/course-history/` | O | 수강이력 목록 |
 | POST | `/api/v1/accounts/course-history/` | O | 수강이력 추가 — body `{course_code, year, semester, grade_received(선택)}` 4개. `course_name`/`category`/`credits`/`liberal_subtype`/`core_area` 5개는 `Course` 카탈로그에서 자동 hydrate (#151). Course 미존재 → 400 |
-| PUT | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 수정 — `grade_received`만 partial 수정 가능 (학기 종료 후 성적 입력 케이스). 다른 필드 변경 불가 |
+| PUT | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 수정 — `grade_received`만 partial 수정 가능 (다른 필드 변경 불가) |
+| PATCH | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 부분 수정 — `grade_received`만 partial 수정 가능 (학기 종료 후 성적 입력 케이스) |
 | DELETE | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 삭제 |
 | GET | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 목록 |
 | POST | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 추가 — body `{offering_id}` 한 개로 7개 평문 필드 자동 hydrate (#149). 분반 검색은 `/api/v1/courses/offerings/` 사용 |
