@@ -13,7 +13,9 @@ from .serializers import DashboardInformationSerializer
 
 class DashboardGreetingSerializer(serializers.Serializer):
     """대시보드 인사 영역."""
-    user_name = serializers.CharField()
+    message = serializers.CharField(
+        help_text='서버 생성 인사 문구 (예: "안녕하세요, 홍길동님! 오늘은 총 3개의 수업이 있어요.")'
+    )
     weekday = serializers.CharField(help_text='월/화/수/목/금/토/일')
     today_class_count = serializers.IntegerField()
 

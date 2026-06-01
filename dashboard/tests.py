@@ -62,7 +62,7 @@ class DashboardAPITests(APITestCase):
     def test_greeting_사용자명_요일_수업수(self):
         res = self.client.get(self.url)
         greeting = res.data['greeting']
-        self.assertEqual(greeting['user_name'], '홍길동')
+        self.assertEqual(greeting['message'], '안녕하세요, 홍길동님! 오늘은 총 0개의 수업이 있어요.')
         self.assertEqual(greeting['weekday'], _today_kr())
         self.assertEqual(greeting['today_class_count'], 0)
 
