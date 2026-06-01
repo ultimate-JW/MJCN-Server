@@ -66,7 +66,9 @@ class NoticeListAPITests(TestCase):
         self.assertEqual(res.data['count'], 3)
 
     def test_최신순_정렬(self):
-        res = self.client.get(self.url)
+        # 기본값(personalized)은 #153부터 학사공지(academic) 우선 노출 정책이라
+        # 순수 최신순은 view=all에서 검증.
+        res = self.client.get(self.url, {'view': 'all'})
         ids = [item['id'] for item in res.data['results']]
         self.assertEqual(ids, [self.n2.id, self.n1.id, self.n3.id])
 

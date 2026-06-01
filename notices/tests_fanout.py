@@ -31,9 +31,9 @@ def make_user(email, *, major='', interests=None, **flags):
     return user
 
 
-def make_notice(*, tags, published_at=None, title='새 공지'):
+def make_notice(*, tags, published_at=None, title='새 공지', source='general'):
     return Notice.objects.create(
-        source='general',
+        source=source,
         title=title,
         url=f'https://example.com/{title}',
         published_at=published_at or timezone.now(),
@@ -154,3 +154,93 @@ class FanoutNewNoticeTests(TestCase):
         created = fanout_new_notice(notice)
 
         self.assertEqual(created, 0)
+
+
+# ─── #153: 학사공지 전체 fanout 예외 ─────────────────────────────────
+
+class AcademicNoticeFanoutTests(TestCase):
+    """학사공지(source='academic')는 매칭·태그 무관 모든 활성 사용자에게 알림 (#153)."""
+
+    def test_학사공지는_매칭_없는_사용자에게도_알림(self):
+        # 관심사가 '디자인'이고 공지 태그도 디자인 무관 — 일반 fanout이면 미발송
+        u = make_user('nomatch@mju.ac.kr', interests=['디자인'])
+        notice = make_notice(
+            source='academic', tags=['수강신청', '학사일정'], title='수강신청 안내',
+        )
+
+        created = fanout_new_notice(notice)
+
+        self.assertEqual(created, 1)
+        n = Notification.objects.get(user=u)
+        self.assertEqual(n.related_id, notice.id)
+        self.assertIn('학사', n.message)  # 학사 전용 메시지
+
+    def test_학사공지는_tags_비어있어도_알림(self):
+        u = make_user('any@mju.ac.kr', interests=['IT/개발'])
+        notice = make_notice(source='academic', tags=[], title='2026 등록 안내')
+
+        created = fanout_new_notice(notice)
+
+        self.assertEqual(created, 1)
+        self.assertEqual(Notification.objects.filter(user=u).count(), 1)
+
+    def test_학사공지_여러_사용자_모두에게_발송(self):
+        # 매칭 안 되는 사용자 포함 모두 받음
+        u1 = make_user('a@mju.ac.kr', interests=['IT/개발'])
+        u2 = make_user('b@mju.ac.kr', interests=['디자인'])
+        u3 = make_user('c@mju.ac.kr', major='경영학')
+        notice = make_notice(source='academic', tags=[], title='졸업 안내')
+
+        created = fanout_new_notice(notice)
+
+        self.assertEqual(created, 3)
+        for u in (u1, u2, u3):
+            self.assertEqual(Notification.objects.filter(user=u).count(), 1)
+
+    def test_학사공지도_토글_OFF_사용자는_제외(self):
+        # 학사공지여도 사용자가 공지 알림 OFF 했으면 존중
+        make_user(
+            'off@mju.ac.kr', interests=['IT/개발'],
+            notification_notice=False,
+        )
+        notice = make_notice(source='academic', tags=[])
+
+        created = fanout_new_notice(notice)
+
+        self.assertEqual(created, 0)
+
+    def test_학사공지도_비활성_사용자는_제외(self):
+        make_user('inactive@mju.ac.kr', interests=['IT/개발'], is_active=False)
+        notice = make_notice(source='academic', tags=[])
+
+        created = fanout_new_notice(notice)
+
+        self.assertEqual(created, 0)
+
+    def test_학사공지도_백필_가드_적용(self):
+        # 7일 이전 학사공지는 알림 발송 안 함 (대량 backfill 폭주 방지)
+        make_user('any@mju.ac.kr', interests=['IT/개발'])
+        old = timezone.now() - timedelta(days=NOTICE_FANOUT_RECENCY_DAYS + 1)
+        notice = make_notice(source='academic', tags=[], published_at=old)
+
+        created = fanout_new_notice(notice)
+
+        self.assertEqual(created, 0)
+
+    def test_general_source는_기존_로직_그대로(self):
+        # 회귀 — 학사 외 카테고리는 tags=[]면 skip
+        make_user('any@mju.ac.kr', interests=['IT/개발'])
+        notice = make_notice(source='general', tags=[])
+
+        created = fanout_new_notice(notice)
+
+        self.assertEqual(created, 0)
+
+    def test_학사공지_메시지는_학사_전용(self):
+        u = make_user('msg@mju.ac.kr', interests=['IT/개발'])
+        notice = make_notice(source='academic', tags=[], title='학사 공지')
+
+        fanout_new_notice(notice)
+
+        n = Notification.objects.get(user=u)
+        self.assertEqual(n.message, '새 학사 공지가 등록되었습니다.')

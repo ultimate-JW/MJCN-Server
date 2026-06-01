@@ -81,6 +81,17 @@ class NoticeListView(ListAPIView):
                 items, user_keywords, tags_attr='tags',
                 secondary_key=lambda x: -x.published_at.timestamp(),
             )
+            # #153: 학사공지(source='academic') 우선 상위 노출 — 매칭 점수 무관
+            # 모든 학생이 봐야 하는 행정 필수 공지(수강신청·등록·졸업 등) 누락 방지.
+            # match_score는 sort_by_match에서 이미 부여됨 — 프론트에 그대로 노출.
+            academic = sorted(
+                (n for n in sorted_items if n.source == 'academic'),
+                key=lambda n: -n.published_at.timestamp(),
+            )
+            if academic:
+                academic_ids = {n.id for n in academic}
+                non_academic = [n for n in sorted_items if n.id not in academic_ids]
+                sorted_items = academic + non_academic
         else:
             # view=all (또는 기타) — DB 정렬 그대로, match_score=0 부여
             sorted_items = list(queryset)
