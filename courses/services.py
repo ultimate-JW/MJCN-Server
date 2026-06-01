@@ -199,6 +199,95 @@ def calc_graduation_progress(user):
 
 
 # ────────────────────────────────────────
+# 5.8 메인 대시보드 — 학사일정 마감 안내 (AI 가이드 / 지금 해야 할 일)
+# ────────────────────────────────────────
+
+# 마감 임박 안내를 노출할 최대 선행 일수. 이보다 멀리 있는 마감은 "지금 해야 할 일"이
+# 아니므로 배너를 숨긴다(None). (CLAUDE.md 이슈 #159 — 튜닝 대상)
+ACADEMIC_GUIDE_LEAD_DAYS = 30
+
+# 안내 대상 학사 액션 기간 — (머신키, 표시명). 실제 날짜 필드는 '{키}_start' / '{키}_end'.
+# 종강(semester_end)은 "해야 할 행동"이 아니라 칩 영역 담당이므로 여기서 제외.
+_GUIDE_PERIODS = [
+    ('pre_registration', '수강신청 미리담기'),
+    ('registration', '수강신청'),
+    ('adjustment', '수강신청 정정기간'),
+]
+
+
+def _subject_particle(word):
+    """한글 끝글자 받침 유무로 주격조사 '이/가' 선택 (예: 정정기간→'이', 미리담기→'가')."""
+    code = ord(word[-1]) - 0xAC00          # 한글 음절 영역 오프셋
+    has_batchim = 0 <= code <= 11171 and code % 28 != 0  # 종성 인덱스 0이면 받침 없음
+    return '이' if has_batchim else '가'
+
+
+def build_academic_guide(today=None):
+    """메인 대시보드 'AI 가이드 - 지금 해야 할 일' 배너 데이터 (spec 5.8).
+
+    AcademicCalendar의 학사 액션 기간(미리담기/수강신청/정정기간) 중 가장 임박한
+    마감 1건을 골라 D-day 문구를 만든다. 임박한 게 없으면 None(배너 숨김).
+
+    각 기간은 오늘 기준 3분기:
+      - 시작 전 (today < start)        → "{기간명}이 N일 남았어요"  (D-day = start - today)
+      - 진행 중 (start ≤ today ≤ end)  → "{기간명} 마감 N일 전"     (D-day = end - today)
+      - 종료 후 (today > end)          → 후보 제외
+
+    여러 기간이 후보면 D-day가 가장 작은(임박한) 것을 채택. 동률이면 _GUIDE_PERIODS 순서.
+    채택 후보의 D-day가 ACADEMIC_GUIDE_LEAD_DAYS를 넘으면 "지금 할 일" 아님 → None.
+
+    반환: {'event_type', 'message', 'd_day', 'target_date'} 또는 None.
+    """
+    today = today or date.today()
+
+    candidates = []  # (d_day, period_idx, payload dict)
+    for cal in AcademicCalendar.objects.all():
+        for idx, (key, label) in enumerate(_GUIDE_PERIODS):
+            start = getattr(cal, f'{key}_start')
+            end = getattr(cal, f'{key}_end')
+            # 시작·종료 둘 중 하나라도 미등록이면 안내 불가 — skip
+            if start is None or end is None:
+                continue
+
+            if today < start:
+                # 시작 전 — 기간 시작까지 카운트다운 (today<start 이므로 d_day≥1)
+                d_day = (start - today).days
+                particle = _subject_particle(label)
+                message = f'{label}{particle} {d_day}일 남았어요'
+                candidates.append((d_day, idx, {
+                    'event_type': f'{key}_upcoming',  # 머신 코드 (프론트/AI가 표현 재가공 가능)
+                    'message': message,
+                    'd_day': d_day,
+                    'target_date': start,
+                }))
+            elif start <= today <= end:
+                # 진행 중 — 기간 마감까지 카운트다운
+                d_day = (end - today).days
+                message = (
+                    f'오늘 {label} 마감이에요' if d_day == 0
+                    else f'{label} 마감 {d_day}일 전이에요'
+                )
+                candidates.append((d_day, idx, {
+                    'event_type': f'{key}_ongoing',
+                    'message': message,
+                    'd_day': d_day,
+                    'target_date': end,
+                }))
+            # today > end (종료 후) — 후보 아님
+
+    if not candidates:
+        return None
+
+    # D-day 오름차순 → 동률 시 기간 우선순위(_GUIDE_PERIODS 순서)
+    d_day, _idx, payload = min(candidates, key=lambda c: (c[0], c[1]))
+
+    # 너무 먼 마감은 "지금 해야 할 일"이 아니므로 배너 숨김
+    if d_day > ACADEMIC_GUIDE_LEAD_DAYS:
+        return None
+    return payload
+
+
+# ────────────────────────────────────────
 # 5.3.1 다음학기 추천 — 점수 계산
 # ────────────────────────────────────────
 
