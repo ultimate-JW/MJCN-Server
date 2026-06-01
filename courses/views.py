@@ -20,7 +20,12 @@ from .serializers import (
     CurriculumPlanSerializer,
     NextSemesterRecommendationSerializer,
 )
-from .serializers import CareerRoadmapSerializer, RecommendationSectionsSerializer
+from .serializers import (
+    CareerRoadmapSerializer,
+    ExchangeGuideSerializer,
+    RecommendationSectionsSerializer,
+)
+from .exchange_guide import build_exchange_guide
 from .services import (
     build_career_roadmap_sections,
     build_next_semester_sections,
@@ -458,6 +463,23 @@ class CareerRoadmapView(APIView):
         # target 학기 prefetch된 offerings·core_area를 직렬화.
         serializer = CareerRoadmapSerializer(data)
         return Response(serializer.data)
+
+
+class ExchangeGuideView(APIView):
+    """GET /api/v1/courses/exchange-guide/ — 교환학생·해외 인턴십 가이드 테마 상세 (spec 5.3.9, #180).
+
+    Figma 221-6066. #171 로드맵의 형제 화면이나 개인화 축이 다름 — target_job이 아니라
+    학년·학기(메인) + 관심사(보조). 받쳐줄 추천 엔진 없는 진로 판단 콘텐츠라 전부 규칙 기반
+    템플릿(LLM 없음). 학년·학기는 온보딩 필수값이라 쿼리 파라미터·미입력 분기 없음.
+
+    응답: {advice, necessity, evaluation, current_recommendation, quick_questions}.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: ExchangeGuideSerializer})
+    def get(self, request):
+        data = build_exchange_guide(request.user)
+        return Response(ExchangeGuideSerializer(data).data)
 
 
 # 카테고리 → 응답 키 매핑 (spec 5.3.2 4키 분리, #25)

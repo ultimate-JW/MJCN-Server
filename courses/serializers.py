@@ -271,6 +271,61 @@ class CareerRoadmapSerializer(serializers.Serializer):
     quick_questions = QuickQuestionSerializer(many=True)    # ④ 띵똥이에게 물어보기
 
 
+# ────────────────────────────────────────
+# 교환학생·해외 인턴십 가이드 테마 상세 (이슈 #180, Figma 221-6066)
+# ────────────────────────────────────────
+
+class ExchangeAdviceSerializer(serializers.Serializer):
+    """② 띵똥이의 조언 — (학년, 학기) 템플릿 1문장 (#180).
+
+    #171 CareerAdviceSerializer(text)와 분리 — 이 화면은 stage_message 단일 키.
+    """
+    stage_message = serializers.CharField()
+
+
+class NecessityItemSerializer(serializers.Serializer):
+    """③ 나에게 필요한 선택일까 — 옵션 1개 별점 (#180).
+
+    score: 1~5 (프론트가 ⭐ 채움/빈칸 렌더). reason: 옵션×점수밴드 고정 한줄이유.
+    """
+    option = serializers.CharField()
+    icon = serializers.CharField()
+    score = serializers.IntegerField()
+    reason = serializers.CharField()
+
+
+class EvaluationItemSerializer(serializers.Serializer):
+    """④ 판단 기준에 따른 평가 — 옵션 1개 적합 조건 (#180).
+
+    fits: 학년 스테이지 base 조건 + 관심사 매칭 시 bullet 1개 추가.
+    interest_note: 관심사 매칭 시 안내 1줄, 미매칭이면 null.
+    """
+    option = serializers.CharField()
+    icon = serializers.CharField()
+    fits = serializers.ListField(child=serializers.CharField())
+    caveat = serializers.CharField()
+    interest_note = serializers.CharField(allow_null=True)
+
+
+class CurrentRecommendationItemSerializer(serializers.Serializer):
+    """⑤ 지금 시점 기준 추천 — 우선순위 1개 (#180)."""
+    rank = serializers.IntegerField()
+    title = serializers.CharField()
+    note = serializers.CharField()
+
+
+class ExchangeGuideSerializer(serializers.Serializer):
+    """교환학생·해외 인턴십 가이드 테마 상세 응답 (#180, Figma 221-6066).
+
+    전부 규칙 기반 템플릿 (LLM 없음). 학년·학기(메인) + 관심사(보조).
+    """
+    advice = ExchangeAdviceSerializer()                              # ② 조언
+    necessity = NecessityItemSerializer(many=True)                  # ③ 별점
+    evaluation = EvaluationItemSerializer(many=True)                # ④ 판단 기준
+    current_recommendation = CurrentRecommendationItemSerializer(many=True)  # ⑤ 시점 추천
+    quick_questions = QuickQuestionSerializer(many=True)            # ⑥ 물어보기
+
+
 class SemesterPlanSerializer(serializers.Serializer):
     """학기 1개 응답 — 학칙 7분류로 분리 (spec 5.3.2, #47 Phase 3).
 

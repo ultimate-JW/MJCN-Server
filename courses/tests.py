@@ -2410,3 +2410,167 @@ class CareerRoadmapAPITests(APITestCase):
         self.client.force_authenticate(user=user)
         res = self.client.get(self.url, {'semester': 9})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ────────────────────────────────────────
+# 교환학생·해외 인턴십 가이드 (#180, Figma 221-6066)
+# ────────────────────────────────────────
+
+class _FakeInterests:
+    """user.interests.all() 흉내 — interest_signal 단위 테스트용 (DB 없이)."""
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return self._items
+
+
+class _FakeInterest:
+    def __init__(self, category='', custom_text=''):
+        self.category = category
+        self.custom_text = custom_text
+
+
+def _guide_user(**kw):
+    from types import SimpleNamespace
+    base = dict(name='김지현', major='컴퓨터공학과', grade=3, semester=1,
+                target_job='', interests=_FakeInterests([]))
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+class ExchangeGuideTemplateTests(SimpleTestCase):
+    """교환학생·해외 인턴십 가이드 템플릿 조립 단위 테스트 (#180). DB 없이 규칙만 검증."""
+
+    def test_interest_signal_global_handson_미매칭(self):
+        from courses.exchange_guide import interest_signal
+        # 글로벌 키워드만
+        s = interest_signal(_guide_user(interests=_FakeInterests([_FakeInterest(custom_text='어학연수')])))
+        self.assertTrue(s['global'])
+        self.assertFalse(s['handson'])
+        # category 라벨로 handson (IT/개발 → '개발')
+        s = interest_signal(_guide_user(interests=_FakeInterests([_FakeInterest(category='IT/개발')])))
+        self.assertTrue(s['handson'])
+        self.assertFalse(s['global'])
+        # 관심사 없음 — 둘 다 False
+        s = interest_signal(_guide_user(interests=_FakeInterests([])))
+        self.assertEqual(s, {'global': False, 'handson': False})
+
+    def test_조언_학년학기_슬롯치환_디자인원문(self):
+        from courses.exchange_guide import build_advice
+        text = build_advice(_guide_user(grade=3, semester=1))['stage_message']
+        self.assertTrue(text.startswith('김지현님은 현재 컴퓨터공학과 3-1학기'))
+        self.assertIn('취업 준비 완성도', text)  # (3,1) 디자인 원문 반영
+
+    def test_계절학기_직전정규학기로_치환(self):
+        from courses.exchange_guide import build_advice
+        # semester=3(하계) → 정규 1학기 템플릿
+        text = build_advice(_guide_user(grade=2, semester=3))['stage_message']
+        self.assertIn('전공 기초를 다지는', text)  # (2,1) 템플릿
+
+    def test_별점_base_31학기_교환2_인턴4(self):
+        from courses.exchange_guide import build_necessity, interest_signal
+        user = _guide_user(grade=3, semester=1)
+        items = build_necessity(user, interest_signal(user))
+        by_opt = {i['option']: i['score'] for i in items}
+        self.assertEqual(by_opt['교환학생'], 2)      # 디자인 원문
+        self.assertEqual(by_opt['해외 인턴십'], 4)
+
+    def test_별점_global이면_교환플러스1_상한5(self):
+        from courses.exchange_guide import build_necessity
+        # 3-1 교환 base 2 → global이면 3
+        items = build_necessity(_guide_user(grade=3, semester=1), {'global': True, 'handson': False})
+        self.assertEqual(next(i['score'] for i in items if i['option'] == '교환학생'), 3)
+        # 2-2 교환 base 5 → global이어도 상한 5
+        items = build_necessity(_guide_user(grade=2, semester=2), {'global': True, 'handson': False})
+        self.assertEqual(next(i['score'] for i in items if i['option'] == '교환학생'), 5)
+
+    def test_별점_handson은_점수에_영향없음(self):
+        from courses.exchange_guide import build_necessity
+        base = build_necessity(_guide_user(grade=3, semester=1), {'global': False, 'handson': False})
+        hand = build_necessity(_guide_user(grade=3, semester=1), {'global': False, 'handson': True})
+        self.assertEqual([i['score'] for i in base], [i['score'] for i in hand])
+
+    def test_별점_한줄이유_밴드(self):
+        from courses.exchange_guide import build_necessity
+        items = build_necessity(_guide_user(grade=3, semester=1), {'global': False, 'handson': False})
+        intern = next(i for i in items if i['option'] == '해외 인턴십')  # 4점 high
+        self.assertIn('강력한 스펙', intern['reason'])
+
+    def test_평가_관심사_매칭시_bullet_note_추가(self):
+        from courses.exchange_guide import build_evaluation
+        # 미매칭 — interest_note None, 기본 bullet만
+        ev = build_evaluation(_guide_user(grade=3), {'global': False, 'handson': False})
+        exch = next(e for e in ev if e['option'] == '교환학생')
+        self.assertIsNone(exch['interest_note'])
+        base_len = len(exch['fits'])
+        # global 매칭 — 교환 카드에 bullet+note
+        ev = build_evaluation(_guide_user(grade=3), {'global': True, 'handson': False})
+        exch = next(e for e in ev if e['option'] == '교환학생')
+        self.assertEqual(len(exch['fits']), base_len + 1)
+        self.assertIsNotNone(exch['interest_note'])
+        # handson은 인턴 카드만
+        intern = next(e for e in ev if e['option'] == '해외 인턴십')
+        self.assertIsNone(intern['interest_note'])
+
+    def test_시점추천_스테이지별_3순위(self):
+        from courses.exchange_guide import build_current_recommendation
+        mid = build_current_recommendation(_guide_user(grade=3))
+        self.assertEqual([r['rank'] for r in mid], [1, 2, 3])
+        self.assertIn('프로젝트', mid[0]['title'])  # 3학년 1순위 = 프로젝트+포폴 (디자인)
+        early = build_current_recommendation(_guide_user(grade=1))
+        self.assertIn('교환학생', early[0]['title'])  # 저학년 1순위 = 교환 준비
+
+    def test_칩_target_job_있으면_로드맵동선_없으면_fallback(self):
+        from courses.exchange_guide import build_quick_questions
+        chips = build_quick_questions(_guide_user(target_job='클라우드 개발자'))
+        self.assertEqual(len(chips), 3)
+        self.assertIn('클라우드 개발자', chips[2]['label'])
+        chips = build_quick_questions(_guide_user(target_job=''))
+        self.assertEqual(chips[2]['label'], '내 진로 로드맵 보기')
+
+
+class ExchangeGuideAPITests(APITestCase):
+    """교환학생·해외 인턴십 가이드 API (#180)."""
+    url = '/api/v1/courses/exchange-guide/'
+
+    def test_인증_없으면_401(self):
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_정상_응답_스키마(self):
+        user = _make_user(grade=3, semester=1)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(res.data.keys()),
+                         {'advice', 'necessity', 'evaluation',
+                          'current_recommendation', 'quick_questions'})
+        self.assertEqual(len(res.data['necessity']), 2)
+        self.assertEqual(len(res.data['evaluation']), 2)
+        self.assertEqual(len(res.data['current_recommendation']), 3)
+        self.assertEqual(len(res.data['quick_questions']), 3)
+
+    def test_별점_점수범위_1_5(self):
+        user = _make_user(grade=3, semester=1)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        for item in res.data['necessity']:
+            self.assertIn(item['score'], range(1, 6))
+
+    def test_global_관심사면_교환별점_보정(self):
+        user = _make_user(grade=3, semester=1)
+        InterestArea.objects.create(user=user, category='기타', custom_text='글로벌, 어학')
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        exch = next(i for i in res.data['necessity'] if i['option'] == '교환학생')
+        self.assertEqual(exch['score'], 3)  # base 2 + global 1
+
+    def test_handson_관심사면_평가카드_bullet추가_별점불변(self):
+        user = _make_user(grade=3, semester=1)
+        InterestArea.objects.create(user=user, category='IT/개발', custom_text='')
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        intern_eval = next(e for e in res.data['evaluation'] if e['option'] == '해외 인턴십')
+        self.assertIsNotNone(intern_eval['interest_note'])
+        intern_score = next(i for i in res.data['necessity'] if i['option'] == '해외 인턴십')
+        self.assertEqual(intern_score['score'], 4)  # handson은 별점 불변 (3-1 인턴 4)
