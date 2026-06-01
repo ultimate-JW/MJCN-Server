@@ -1474,11 +1474,11 @@ combination_score = sum(course_score for course in combo)  # 5.3.1 점수 재활
 
 - **엔드포인트**: `GET /api/v1/notices/?view=personalized` (기본값, 맞춤형) / `?view=all` (전체보기)
 - **정렬 기준**:
-  - `view=personalized`: **`match_score` 내림차순** → 동점 시 `published_at` 최신순. 관심사 매칭된 공지를 상단에 노출해 "진짜 맞춤형" 피드를 만든다.
-  - `view=all`: `published_at` 최신순 단일 키 (비개인화 전체 목록).
+  - `view=personalized`: **`match_score >= 1`인 공지만 필터**한 뒤 `match_score` 내림차순 → 동점 시 `published_at` 최신순. 관심사에 매칭된 공지만 노출하는 "맞춤형" 피드 (개수가 줄어 `all`과 명확히 구분).
+  - `view=all`: 전체 공지, `published_at` 최신순 단일 키 (비개인화).
 - **응답에 점수 노출**: `match_score` 필드 — 관심사 ↔ `Notice.tags` 매칭 점수. **두 view 모두 실제 값으로 계산**해 응답에 포함한다 (`view=all`에서도 0으로 강제하지 않음).
-- **점수 0 항목도 포함**: personalized에서도 매칭 0인 공지를 제외하지 않고 정렬 최하위로 포함한다 (전체 열람 가능).
-- **학사공지 누락 방지**: PUSH 알림 fanout(§6.9)에서 학사공지를 모든 사용자에게 발송한다. personalized 상단에서 밀리더라도 `view=all` 탭에서 최신순으로 항상 열람 가능.
+- **매칭 0 제외 (personalized)**: personalized는 매칭 0인 공지를 응답에서 제외한다. 관심사 미설정 사용자는 personalized 결과가 빈다 (온보딩에서 관심사 설정 강제). 전체 공지는 `view=all`에서 열람.
+- **학사공지 누락 방지**: PUSH 알림 fanout(§6.9)에서 학사공지를 모든 사용자에게 발송한다. personalized에서 매칭 안 돼 빠지더라도 `view=all` 탭에서 최신순으로 항상 열람 가능.
 - **사용자 데이터 출처** (`match_score` 산출용):
   - `User.major` (전공명) → 키워드 추출
   - `InterestArea.category` (선택형 직업군) → 그대로 사용
@@ -1542,15 +1542,16 @@ combination_score = sum(course_score for course in combo)  # 5.3.1 점수 재활
 
 #### 5.5.2 맞춤형 보기 (기본값)
 
-목록 조회 시 사용자 관심사 ↔ `Information.categories` 매칭 점수 기반 정렬. 5.10 매칭 로직 참조.
+목록 조회 시 사용자 관심사 ↔ `Information.categories` 매칭. notices와 동일하게 `view`로 두 화면 분리. 5.10 매칭 로직 참조.
 
-- **엔드포인트**: `GET /api/v1/information/?view=personalized` (기본값) / `?view=all`
+- **엔드포인트**: `GET /api/v1/information/?view=personalized` (기본값, 맞춤형) / `?view=all` (전체)
 - **정렬 기준**:
-  - 1순위: 관련도 점수 내림차순
-  - 2순위: `end_date` 빠른 순 (D-day 임박 우선, 기존 정렬과 동일)
+  - `view=personalized`: **`match_score >= 1`인 정보만 필터** → 점수 내림차순 → 동점 시 `end_date` 빠른 순 (D-day 임박 우선)
+  - `view=all`: 전체, `end_date` 빠른 순
+- **매칭 0 제외 (personalized)**: 매칭 0인 정보는 personalized에서 제외 (관심사 미설정 시 빈 결과). 전체는 `view=all`에서 열람.
 - **사용자 데이터 출처**: notices와 동일 (User.major + InterestArea.category + custom_text)
 - **콘텐츠 매칭 대상**: `Information.categories`
-- **응답에 점수 노출**: `match_score` 필드 추가
+- **응답에 점수 노출**: `match_score` 필드 (두 view 모두 실제 계산)
 - **기존 필터와 조합 가능**: `?view=personalized&category=공모전` 같이 카테고리 필터 + 맞춤 정렬 동시 적용
 
 #### 5.5.3 정보 북마크
@@ -1676,7 +1677,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 - **토큰화 후 토큰 단위 정확 일치**: 사용자 키워드·콘텐츠 태그를 구분자(`/ · ,` 공백)로 토큰화한 뒤 비교한다. 관심사 라벨이 복합어(`공기업/공공기관`)이거나 전공이 통짜 문자열(`반도체·ICT대학 · 컴퓨터정보통신공학부 · 컴퓨터공학전공`)이어도, LLM이 뽑은 단일 키워드 태그(`공기업`, `컴퓨터공학전공`)와 토큰 단위로 매칭된다. 한 관심사가 여러 토큰으로 쪼개져도 점수는 최대 1점(인플레 방지).
 - **여전히 부분 문자열 매칭은 안 함**: 토큰화는 구분자로 쪼갠 뒤 **토큰 단위 완전 일치**만 인정한다 (`공기업` ↔ `공기업체관리`는 매칭 안 됨). 오탐 방지 원칙 유지.
 - **카테고리별 가중치 없음** (v1): 모든 출처 동등 가중. 정밀도 부족하면 v2에서 카테고리별 가중치 추가
-- **점수 0 케이스**: 관심사 미설정 사용자 또는 매칭 없는 경우 → 0점. 응답에 그대로 포함 (정렬 최하위)
+- **점수 0 케이스**: 관심사 미설정 사용자 또는 매칭 없는 경우 → 0점. `view=personalized`에서는 0점 항목을 **응답에서 제외**(맞춤형 필터, §5.4.2/§5.5.2). `view=all`에서는 0점이어도 전체 포함.
 
 #### 5.10.4 응답 노출 필드
 
