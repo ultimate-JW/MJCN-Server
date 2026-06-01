@@ -4,7 +4,13 @@ from types import SimpleNamespace
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from common.matching import extract_user_keywords, score_match, sort_by_match
+from common.matching import (
+    extract_user_keywords,
+    matched_keywords,
+    score_combined,
+    score_match,
+    sort_by_match,
+)
 
 User = get_user_model()
 
@@ -174,3 +180,73 @@ class SortByMatchTests(TestCase):
         sorted_items = sort_by_match(items, {'it'}, tags_attr='categories')
         self.assertEqual(sorted_items[0].id, 1)
         self.assertEqual(sorted_items[0].match_score, 1)
+
+
+class MatchedKeywordsTests(TestCase):
+    """spec 5.10.4 — 제목 동의어 부분일치 + categories 결합 (공모전용, #184)."""
+
+    def test_동의어_확장_개발(self):
+        # '개발' 관심사 → 제목엔 '코딩'으로 노출돼도 매칭
+        m = matched_keywords({'개발'}, ['공모전'], '2026 전국 코딩 경진대회')
+        self.assertEqual(m, ['개발'])
+
+    def test_동의어_확장_AI(self):
+        # 'ai' 관심사 → 제목 '인공지능'과 매칭
+        self.assertEqual(matched_keywords({'ai'}, [], '인공지능 챌린지'), ['ai'])
+
+    def test_영문_한글_인접_통과(self):
+        # 'ai'가 한글에 붙어도 매칭 ('제조ai' — 앞 글자가 라틴이 아니므로)
+        self.assertEqual(matched_keywords({'ai'}, [], '2026 제조AI 경진대회'), ['ai'])
+
+    def test_짧은_영문토큰_오매칭_가드(self):
+        # 'it'이 'digital' 안에 박혀도 매칭 안 됨 (앞뒤가 영문 알파벳)
+        self.assertEqual(matched_keywords({'it'}, [], 'digital design contest'), [])
+
+    def test_한글_부분일치_유지(self):
+        # '게임' → '인디게임' 부분일치 (한글 substring 허용)
+        self.assertEqual(matched_keywords({'게임'}, [], '대한민국 인디게임 축제'), ['게임'])
+
+    def test_categories_경로_매칭(self):
+        # 제목 매칭이 없어도 categories 토큰 완전일치로 매칭
+        self.assertEqual(matched_keywords({'대외활동'}, ['공모전', '대외활동'], '요리대회'), ['대외활동'])
+
+    def test_관심사당_1점_캡_categories_title_중복(self):
+        # 'ai'가 categories('AI')에도, 제목('AI 해커톤')에도 걸려도 한 번만
+        m = matched_keywords({'ai'}, ['AI'], 'AI 해커톤')
+        self.assertEqual(m, ['ai'])
+        self.assertEqual(score_combined({'ai'}, ['AI'], 'AI 해커톤'), 1)
+
+    def test_여러_관심사_합산(self):
+        self.assertEqual(score_combined({'게임', '개발'}, [], '게임 개발 공모전'), 2)
+
+    def test_매칭_없음(self):
+        self.assertEqual(matched_keywords({'금융'}, ['공모전'], 'AI 게임 해커톤'), [])
+        self.assertEqual(score_combined({'금융'}, ['공모전'], 'AI 게임 해커톤'), 0)
+
+    def test_빈_입력_안전(self):
+        self.assertEqual(matched_keywords(set(), ['공모전'], '코딩 대회'), [])
+        self.assertEqual(matched_keywords({'개발'}, [], ''), [])
+        self.assertEqual(matched_keywords({'개발'}, None, None), [])
+
+
+class SortByMatchTextAttrTests(TestCase):
+    """sort_by_match text_attr — 태그 + 제목 동의어 결합 점수 (#184)."""
+
+    def test_title_점수로_정렬(self):
+        # categories는 '공모전'뿐(0점) → 제목 동의어 매칭으로 점수 생성
+        items = [
+            SimpleNamespace(id=1, categories=['공모전'], title='AI 해커톤'),
+            SimpleNamespace(id=2, categories=['공모전'], title='요리 경연대회'),
+        ]
+        sorted_items = sort_by_match(
+            items, {'ai'}, tags_attr='categories', text_attr='title',
+        )
+        self.assertEqual(sorted_items[0].id, 1)
+        self.assertEqual(sorted_items[0].match_score, 1)
+        self.assertEqual(sorted_items[1].match_score, 0)
+
+    def test_text_attr_미지정시_제목_무시(self):
+        # text_attr 없으면 기존대로 태그만 — 공지 경로 무영향 확인
+        items = [SimpleNamespace(id=1, categories=['공모전'], title='AI 해커톤')]
+        sorted_items = sort_by_match(items, {'ai'}, tags_attr='categories')
+        self.assertEqual(sorted_items[0].match_score, 0)
