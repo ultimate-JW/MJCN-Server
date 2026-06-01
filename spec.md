@@ -2065,6 +2065,8 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
   ],
   "notices": [ /* 공지 목록 항목 (6.7 NoticeListSerializer) — 최대 3개 */ ],
   "information": [ /* 정보 목록 항목 (6.8) + d_day — 최대 3개 */ ],
+  "new_notice_count": 5,
+  "new_information_count": 2,
   "unread_notification_count": 5
 }
 ```
@@ -2077,6 +2079,11 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 - **today_schedule**: `CurrentCourse` 중 오늘 요일 항목을 `start_time` 오름차순 정렬. 주말 등 수업 없으면 빈 배열.
 - **notices**: 모든 공지를 `published_at` 내림차순으로 정렬한 상위 3개 (#155). 학사공지 우선 부스트나 관심사 매칭 정렬은 적용하지 않는다 — 학사공지도 자기 게시 시점에 따라 자연스럽게 노출. PUSH 알림 fanout(§6.9)이 학사공지를 모든 사용자에게 발송하므로 본 대시보드에서는 별도 슬롯 보장 없이도 누락 위험 낮음. 출처 제한 없음(오픈톡 포함). 응답에는 `match_score` 필드를 정보로 노출(정렬 키 아님).
 - **information**: `is_active=True`이고 미마감(`end_date`가 없거나 오늘 이후)인 항목만 대상. 관심사 매칭 점수 내림차순 → 동점 시 마감 임박(`end_date` 오름차순) 순 상위 3개. notices와 동일하게 부족분은 마감 임박 순으로 채운다. 각 항목에 `d_day`(마감까지 남은 일수, `end_date` 없으면 `null`) 필드를 추가한다.
+- **new_notice_count / new_information_count**: 상단 통계 칩의 "새 공지 N" / "새 정보 N". **가장 최근 크롤 배치에서 새로 수집된 건수**다 (읽음 여부·개인화 무관, 전역 동일 값).
+  - 산출: 각 모델에서 `Max(created_at)`의 (KST) 날짜를 구해, `created_at`이 그 날짜인 행 수를 COUNT. 크롤러가 `update_or_create` upsert + `created_at=auto_now_add`라 **기존 항목 재크롤은 created_at이 안 바뀌어** 진짜 신규만 셈.
+  - "마지막 배치" 기준이므로 자정~다음 크롤 사이에도 직전 크롤 수치를 유지(당일 0으로 리셋되지 않음). 데이터가 0건이면 0.
+  - 같은 날 수동 백필(`--max-pages N`)을 돌리면 그날 신규가 합산돼 칩 수치가 일시적으로 커질 수 있음.
+
 - **unread_notification_count**: 해당 사용자의 `is_read=False` 알림 수.
 
 ### 6.11 북마크 (accounts)
