@@ -70,7 +70,12 @@ def build_dashboard(user) -> dict:
 
     return {
         'greeting': {
-            'user_name': user.name,
+            # 화면 표시용 인사 문구 — 서버에서 완성 (프론트가 그대로 노출). 이름 없으면 폴백
+            'message': (
+                f'안녕하세요, {user.name}님! 오늘은 총 {len(today_courses)}개의 수업이 있어요.'
+                if user.name else
+                f'안녕하세요! 오늘은 총 {len(today_courses)}개의 수업이 있어요.'
+            ),
             'weekday': weekday,
             'today_class_count': len(today_courses),
         },

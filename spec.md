@@ -1646,7 +1646,7 @@ tool)·공지 추천과 **같은 과목**이 나오도록 보장(같은 상위 N
 
 #### 응답 데이터 구성
 
-- **greeting**: 인사 문구 데이터 (사용자명, 요일, 오늘 수업 수)
+- **greeting**: 서버 생성 인사 문구 (`message`) + 요일 + 오늘 수업 수. 임박한 학사 마감이 없을 때(`ai_guide: null`) 박스를 채우는 폴백
 - **graduation_progress_percent**: 졸업까지 진척도 (정수 0 ~ 100, 5.3.5 참조)
 - **ai_guide**: "지금 해야 할 일" 배너 — 임박한 학사 마감 1건 또는 `null` (없으면 배너 숨김)
   - `AcademicCalendar`의 액션 기간(미리담기/수강신청/정정기간) 중 가장 임박한 마감을 D-day로 안내
@@ -2039,7 +2039,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 ```json
 {
   "greeting": {
-    "user_name": "홍길동",
+    "message": "안녕하세요, 홍길동님! 오늘은 총 3개의 수업이 있어요.",
     "weekday": "목",
     "today_class_count": 3
   },
@@ -2070,7 +2070,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 
 #### 응답 정책
 
-- **greeting**: `user_name`은 `User.name`(미입력 시 빈 문자열), `weekday`는 오늘 요일(월~일 한글), `today_class_count`는 `today_schedule` 길이.
+- **greeting**: `message`는 서버 생성 인사 문구(`"안녕하세요, {User.name}님! 오늘은 총 N개의 수업이 있어요."`, 이름 미입력 시 `"안녕하세요! …"` 폴백), `weekday`는 오늘 요일(월~일 한글), `today_class_count`는 `today_schedule` 길이(= N).
 - **graduation_progress_percent**: 5.3.5 계산 결과(0~100 정수). 별도 단독 엔드포인트는 두지 않고 본 응답으로만 노출한다.
 - **ai_guide**: `AcademicCalendar`의 액션 기간(미리담기/수강신청/정정기간) 중 가장 임박한 마감 1건. 각 기간을 오늘 기준 3분기(시작 전/진행 중/종료 후)로 보고, 미래 마감 중 D-day 최소인 것을 채택(동률 시 미리담기→수강신청→정정 순). D-day가 `ACADEMIC_GUIDE_LEAD_DAYS`(기본 30) 초과거나 후보가 없으면 `null`(프론트는 배너 숨김). 종강(`semester_end`)은 액션이 아니라 제외. 표현(`message`)은 백엔드가 1차 생성하되 머신 코드(`event_type`)를 함께 줘 프론트/AI가 톤 재가공 가능.
 - **today_schedule**: `CurrentCourse` 중 오늘 요일 항목을 `start_time` 오름차순 정렬. 주말 등 수업 없으면 빈 배열.
