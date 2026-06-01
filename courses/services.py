@@ -17,6 +17,7 @@ from datetime import date
 
 from django.db.models import Prefetch, Q
 
+from .advice import build_advice
 from .required_courses import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
 from .models import (
     AcademicCalendar,
@@ -611,14 +612,51 @@ def _build_linked_section(user, pool_courses, *, size=SECTION_SIZE):
     return (last_succ + all_succ + rest)[:size]
 
 
+def _recommendation_signals(user, pool_courses):
+    """② 띵똥이의 조언(파트1)용 신호 추출 — 추천 결과를 숫자로 요약 (#164).
+
+    반환: {backlog, successor, interest, dominant}
+      backlog   : 권장학년 지났는데 추천에 뜬 필수/지정 과목 수 (calculate_recommendation_score와 동일 기준)
+      successor : 직전 학기 이수과목이 선수과목인 후수과목 수
+      interest  : 관심사 custom_text 키워드 ↔ course.name 매칭 과목 수
+      dominant  : 추천 풀에서 가장 많은 이수구분 (없으면 None)
+    """
+    from collections import Counter
+
+    grade = user.grade
+    last_codes = _last_semester_taken_codes(user)
+    interest_kw = set()
+    for area in user.interests.all():
+        interest_kw |= _custom_text_keywords(area)
+
+    backlog = sum(
+        1 for c in pool_courses
+        if c.year_open and grade and c.year_open < grade
+        and c.category in BACKLOG_REQUIRED_CATEGORIES
+    )
+    successor = sum(
+        1 for c in pool_courses
+        if last_codes and (_prerequisite_codes(c) & last_codes)
+    )
+    interest = sum(
+        1 for c in pool_courses
+        if interest_kw and any(tok in c.name.lower() for tok in interest_kw)
+    )
+    cats = Counter(c.category for c in pool_courses)
+    dominant = cats.most_common(1)[0][0] if cats else None
+
+    return {'backlog': backlog, 'successor': successor, 'interest': interest, 'dominant': dominant}
+
+
 def build_next_semester_sections(user, *, target_year=None, target_semester=None):
-    """수강신청 테마 상세 ③ 2섹션(관심분야/지난학기) 추천을 반환한다 (#164, spec 5.3.1 확장).
+    """수강신청 테마 상세 ②조언 + ③2섹션 추천을 반환한다 (#164, spec 5.3.1 확장).
 
     같은 추천 엔진(recommend_next_semester_courses) 상위 N 풀을 두 우선순위로 재구성.
     챗 tool(get_next_semester_courses)과 동일 풀이라 화면-챗 추천이 어긋나지 않음.
 
     반환: {
       'target_year': int, 'target_semester': int,
+      'advice': {user_insight, stage_message, text},   # ② 띵똥이의 조언
       'interest_courses': [Course, ...],   # ③-a (최대 SECTION_SIZE)
       'linked_courses':   [Course, ...],   # ③-b (최대 SECTION_SIZE, ③-a 과목 제외)
     }
@@ -643,9 +681,14 @@ def build_next_semester_sections(user, *, target_year=None, target_semester=None
     linked_pool = [c for c in pool_courses if c.id not in interest_ids]
     linked_courses = _build_linked_section(user, linked_pool)
 
+    # ② 띵똥이의 조언 — 추천 신호 기반 (파트1) + 학년/학기 고정 멘트 (파트2)
+    signals = _recommendation_signals(user, pool_courses)
+    advice = build_advice(user, signals)
+
     return {
         'target_year': target_year,
         'target_semester': target_semester,
+        'advice': advice,
         'interest_courses': interest_courses,
         'linked_courses': linked_courses,
     }

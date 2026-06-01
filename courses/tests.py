@@ -2021,7 +2021,8 @@ class NextSemesterSectionsAPITests(APITestCase):
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(set(res.data.keys()),
-                         {'target_year', 'target_semester', 'interest_courses', 'linked_courses'})
+                         {'target_year', 'target_semester', 'advice',
+                          'interest_courses', 'linked_courses'})
         # user.semester=2 → 다음은 학기 1
         self.assertEqual(res.data['target_semester'], 1)
 
@@ -2094,3 +2095,69 @@ class NextSemesterSectionsAPITests(APITestCase):
         )
         self.assertTrue(section_codes)
         self.assertTrue(section_codes <= base_codes)
+
+
+class AdviceTests(SimpleTestCase):
+    """② 띵똥이의 조언 — 규칙 기반 문구 조립 단위 테스트 (#164)."""
+
+    def test_user_insight_우선순위_밀린필수_최우선(self):
+        from courses.advice import build_user_insight
+        # backlog가 있으면 dominant/successor보다 우선
+        s = {'backlog': 2, 'successor': 1, 'interest': 1, 'dominant': '전공선택'}
+        self.assertIn('전공필수를 채워야', build_user_insight(s))
+
+    def test_user_insight_후수과목(self):
+        from courses.advice import build_user_insight
+        s = {'backlog': 0, 'successor': 1, 'interest': 0, 'dominant': '전공선택'}
+        self.assertIn('이어지는 전공 과목', build_user_insight(s))
+
+    def test_user_insight_전공심화(self):
+        from courses.advice import build_user_insight
+        s = {'backlog': 0, 'successor': 0, 'interest': 0, 'dominant': '전공선택'}
+        self.assertIn('전공 심화', build_user_insight(s))
+
+    def test_user_insight_관심분야(self):
+        from courses.advice import build_user_insight
+        s = {'backlog': 0, 'successor': 0, 'interest': 2, 'dominant': '일반교양'}
+        # dominant가 교양이지만 interest가 우선순위 위 → 관심분야 문구
+        self.assertIn('관심분야', build_user_insight(s))
+
+    def test_user_insight_fallback(self):
+        from courses.advice import build_user_insight
+        s = {'backlog': 0, 'successor': 0, 'interest': 0, 'dominant': None}
+        self.assertIn('여러 선택지', build_user_insight(s))
+
+    def test_stage_message_3학년1학기(self):
+        from courses.advice import stage_message
+        self.assertIn('취업 준비', stage_message(3, 1))
+
+    def test_stage_message_계절학기는_직전정규학기(self):
+        from courses.advice import stage_message, STAGE_MESSAGES
+        # 하계(3) → 1학기 멘트, 동계(4) → 2학기 멘트
+        self.assertEqual(stage_message(3, 3), STAGE_MESSAGES[(3, 1)])
+        self.assertEqual(stage_message(2, 4), STAGE_MESSAGES[(2, 2)])
+
+    def test_stage_message_학년미입력_기본(self):
+        from courses.advice import stage_message
+        self.assertTrue(stage_message(None, None))  # 빈 문자열 아님
+
+
+class SectionsAdviceAPITests(APITestCase):
+    """② 조언이 섹션 엔드포인트 응답에 포함되는지 (#164)."""
+    url = '/api/v1/courses/recommend/next/sections/'
+
+    def test_advice_응답_포함_및_형식(self):
+        user = _make_user()  # 홍길동, 2학년 2학기, 전공
+        _make_course(course_code='CSE3101', name='AI프로그래밍', category='전공선택', year_open=3)
+        _make_course(course_code='CSE3102', name='머신러닝', category='전공선택', year_open=3)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        advice = res.data['advice']
+        self.assertEqual(set(advice.keys()), {'user_insight', 'stage_message', 'text'})
+        # 전공선택 dominant → 전공 심화 문구
+        self.assertIn('전공 심화', advice['user_insight'])
+        # 합본 text는 이름으로 시작
+        self.assertTrue(advice['text'].startswith('홍길동님,'))
+        # 2학년 2학기 stage 멘트
+        self.assertIn('전공이 본격화', advice['stage_message'])
