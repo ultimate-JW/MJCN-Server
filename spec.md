@@ -1470,13 +1470,15 @@ combination_score = sum(course_score for course in combo)  # 5.3.1 점수 재활
 
 #### 5.4.2 맞춤형 보기 (기본값)
 
-목록 조회 시 **모든 공지를 `published_at` 최신순으로** 정렬한다 (#155). 관심사 매칭 점수는 정보로만 응답에 노출하고 정렬 키로는 사용하지 않는다.
+목록 조회는 `view` 파라미터로 **두 화면을 분리**한다. 프론트는 "맞춤형" 탭과 "전체" 탭을 각각 다른 view로 호출한다.
 
-- **엔드포인트**: `GET /api/v1/notices/?view=personalized` (기본값) / `?view=all` (전체보기 토글)
-- **정렬 기준**: `published_at` 내림차순 단일 키. 학사공지 우선 부스트나 관심사 매칭 정렬은 사용하지 않는다.
-  - `?view=personalized`와 `?view=all`은 정렬상 동일하지만, personalized는 응답에 `match_score`를 정보로 추가 노출 (호환 유지).
-- **응답에 점수 노출**: `match_score` 필드 — 관심사 ↔ `Notice.tags` 매칭 점수. **정렬 키로는 사용하지 않고** 프론트의 카드 배지·필터·디버깅 등 정보용으로만 활용.
-- **학사공지 누락 방지**: PUSH 알림 fanout(§6.9)에서 학사공지를 모든 사용자에게 발송하므로 본 목록 조회에서는 별도 슬롯 보장 정책을 두지 않는다. 학사공지도 최신순 정렬 위치에 자연스럽게 노출.
+- **엔드포인트**: `GET /api/v1/notices/?view=personalized` (기본값, 맞춤형) / `?view=all` (전체보기)
+- **정렬 기준**:
+  - `view=personalized`: **`match_score` 내림차순** → 동점 시 `published_at` 최신순. 관심사 매칭된 공지를 상단에 노출해 "진짜 맞춤형" 피드를 만든다.
+  - `view=all`: `published_at` 최신순 단일 키 (비개인화 전체 목록).
+- **응답에 점수 노출**: `match_score` 필드 — 관심사 ↔ `Notice.tags` 매칭 점수. **두 view 모두 실제 값으로 계산**해 응답에 포함한다 (`view=all`에서도 0으로 강제하지 않음).
+- **점수 0 항목도 포함**: personalized에서도 매칭 0인 공지를 제외하지 않고 정렬 최하위로 포함한다 (전체 열람 가능).
+- **학사공지 누락 방지**: PUSH 알림 fanout(§6.9)에서 학사공지를 모든 사용자에게 발송한다. personalized 상단에서 밀리더라도 `view=all` 탭에서 최신순으로 항상 열람 가능.
 - **사용자 데이터 출처** (`match_score` 산출용):
   - `User.major` (전공명) → 키워드 추출
   - `InterestArea.category` (선택형 직업군) → 그대로 사용
@@ -1829,7 +1831,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | GET | `/api/v1/notices/?source=academic` | O | 출처 필터 |
 | GET | `/api/v1/notices/<id>/` | O | 공지 상세 |
 
-응답에 `match_score: int` 필드 포함 (`view=personalized` 시 의미 있음, 그 외는 0).
+응답에 `match_score: int` 필드 포함 (두 view 모두 실제 계산. `view=personalized`는 점수 내림차순 정렬, `view=all`은 최신순 정렬).
 
 #### 응답 필드 — 부서명 표시
 
@@ -1875,7 +1877,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | GET | `/api/v1/information/?category=공모전` | O | 카테고리 필터 |
 | GET | `/api/v1/information/<id>/` | O | 정보 상세 |
 
-응답에 `match_score: int` 필드 포함 (`view=personalized` 시 의미 있음, 그 외는 0). `?view=personalized&category=공모전` 같이 조합 가능.
+응답에 `match_score: int` 필드 포함 (두 view 모두 실제 계산. `view=personalized`는 점수 내림차순 → D-day 순, `view=all`은 마감일 순). `?view=personalized&category=공모전` 같이 조합 가능.
 
 ### 6.9 알림 (notifications)
 

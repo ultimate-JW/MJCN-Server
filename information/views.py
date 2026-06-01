@@ -8,7 +8,7 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 
-from common.matching import extract_user_keywords, sort_by_match
+from common.matching import extract_user_keywords, score_match, sort_by_match
 
 from .models import Information
 from .serializers import InformationDetailSerializer, InformationListSerializer
@@ -116,18 +116,18 @@ class InformationListView(ListAPIView):
         view_mode = request.query_params.get('view', 'personalized')
         queryset = self.filter_queryset(self.get_queryset())
 
+        user_keywords = extract_user_keywords(request.user)
         if view_mode == 'personalized':
-            user_keywords = extract_user_keywords(request.user)
-            items = list(queryset)
-            # 동점 시 end_date 빠른 순 (D-day 임박 우선), NULL은 마지막
+            # match_score 내림차순 → 동점 시 end_date 빠른 순 (D-day 임박 우선)
             sorted_items = sort_by_match(
-                items, user_keywords, tags_attr='categories',
+                list(queryset), user_keywords, tags_attr='categories',
                 secondary_key=_end_date_key,
             )
         else:
+            # view=all — 마감일 순 그대로 유지, match_score는 정보로 계산해 노출 (#162)
             sorted_items = list(queryset)
             for item in sorted_items:
-                item.match_score = 0
+                item.match_score = score_match(user_keywords, item.categories or [])
 
         page = self.paginate_queryset(sorted_items)
         if page is not None:
