@@ -23,6 +23,13 @@ class AIResponseParseError(AIClientError):
     """JSON mode 응답이 기대한 스키마와 다를 때."""
 
 
+class AIRateLimitError(AIClientError):
+    """OpenAI rate limit(429) 초과. SDK 내부 재시도 소진 후에도 발생 시 던짐.
+
+    호출 측에서 일반 실패와 구분해 더 긴 백오프 후 재시도하는 데 쓴다 (VLM 백필).
+    """
+
+
 _client: OpenAI | None = None
 
 

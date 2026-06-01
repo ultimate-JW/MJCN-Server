@@ -9,15 +9,17 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
 import requests
 from django.conf import settings
+from openai import RateLimitError
 
 from notices.models import Notice
 
-from .client import AIClientError, get_client
+from .client import AIClientError, AIRateLimitError, get_client
 from .prompts import VLM_EXTRACT_SYSTEM
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,10 @@ def extract_text_from_images(image_urls: list[str]) -> str:
                 {'role': 'user', 'content': user_content},
             ],
         )
+    except RateLimitError as e:
+        # SDK 내부 재시도(max_retries) 소진 후에도 429 → 상위 루프가 더 긴
+        # 백오프로 같은 공지를 재시도하도록 별도 예외로 구분 (TPM 한도 대응).
+        raise AIRateLimitError(f'VLM rate limit(429): {e}') from e
     except Exception as e:
         raise AIClientError(f'VLM 호출 실패: {e}') from e
 
@@ -116,6 +122,9 @@ def process_notice_image(notice: Notice, *, force: bool = False) -> str:
 
     try:
         extracted = extract_text_from_images(notice.image_urls)
+    except AIRateLimitError:
+        # 일반 실패가 아니라 일시적 한도 초과 → 상위 루프가 백오프 후 재시도.
+        raise
     except (AIClientError, ValueError) as e:
         logger.warning('[VLM:%s] 추출 실패: %s', notice.id, e)
         return 'failed'
@@ -129,22 +138,65 @@ def process_notice_image(notice: Notice, *, force: bool = False) -> str:
     return 'success'
 
 
+def _process_with_backoff(
+    notice: Notice, *, force: bool, max_retries: int, base_backoff: float,
+) -> str:
+    """단일 Notice 처리. 429(rate limit)면 지수 백오프 후 같은 공지 재시도.
+
+    TPM(분당 토큰) 한도는 1분 윈도로 회복되므로, SDK 내부 재시도로도 못 빠져나온
+    경우 base_backoff * 2**(n-1)초(최대 60초)만큼 더 기다렸다 재시도한다.
+    재시도를 모두 소진하거나 다른 예외가 나면 'failed'.
+    """
+    attempt = 0
+    while True:
+        try:
+            return process_notice_image(notice, force=force)
+        except AIRateLimitError as e:
+            attempt += 1
+            if attempt > max_retries:
+                logger.warning(
+                    '[VLM:%s] rate limit 재시도 소진(%d회) → failed: %s',
+                    notice.id, max_retries, e,
+                )
+                return 'failed'
+            wait = min(base_backoff * (2 ** (attempt - 1)), 60.0)
+            logger.info(
+                '[VLM:%s] rate limit, %.0f초 후 재시도 (%d/%d)',
+                notice.id, wait, attempt, max_retries,
+            )
+            time.sleep(wait)
+        except Exception:
+            logger.exception('[VLM:%s] 처리 중 예외', notice.id)
+            return 'failed'
+
+
 def process_notice_images(
     notices: Iterable[Notice], *, force: bool = False,
 ) -> VLMResult:
-    """여러 Notice를 순차 처리하면서 집계."""
+    """여러 Notice를 순차 처리하면서 집계.
+
+    호출 간 pacing(`OPENAI_VLM_REQUEST_INTERVAL`초)과 429 백오프 재시도로
+    대량 백필 시 OpenAI TPM 한도 초과를 완화한다 (spec 9.1.5).
+    """
     summary = VLMResult()
-    for notice in notices:
-        try:
-            action = process_notice_image(notice, force=force)
-            if action == 'success':
-                summary.success += 1
-            elif action == 'skipped':
-                summary.skipped += 1
-            else:
-                summary.failed += 1
-        except Exception:
-            logger.exception('[VLM:%s] 처리 중 예외', notice.id)
+    interval = getattr(settings, 'OPENAI_VLM_REQUEST_INTERVAL', 0.0)
+    max_retries = getattr(settings, 'OPENAI_VLM_RATE_LIMIT_RETRIES', 5)
+    base_backoff = getattr(settings, 'OPENAI_VLM_RATE_LIMIT_BACKOFF', 20.0)
+
+    for i, notice in enumerate(notices):
+        # 호출 간 기본 pacing (TPM 포화 완화). 첫 건은 대기 불필요.
+        if i and interval > 0:
+            time.sleep(interval)
+
+        action = _process_with_backoff(
+            notice, force=force,
+            max_retries=max_retries, base_backoff=base_backoff,
+        )
+        if action == 'success':
+            summary.success += 1
+        elif action == 'skipped':
+            summary.skipped += 1
+        else:
             summary.failed += 1
     return summary
 
