@@ -18,6 +18,12 @@ from datetime import date
 from django.db.models import Prefetch, Q
 
 from .advice import build_advice, build_quick_questions
+from .career_roadmap import (
+    CAREER_STEP5_SIZE,
+    NOTE_NO_CAREER_GOAL,
+    NOTE_UNSUPPORTED_CAREER_GOAL,
+    build_career_roadmap,
+)
 from .required_courses import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
 from .models import (
     AcademicCalendar,
@@ -830,6 +836,80 @@ def build_next_semester_sections(user, *, target_year=None, target_semester=None
         'linked_courses': linked_courses,
         # ④ 띵똥이에게 물어보기 — 탭하면 챗으로 전송될 숏컷 칩
         'quick_questions': build_quick_questions(user),
+    }
+
+
+# ────────────────────────────────────────
+# 취업·진로 로드맵 테마 상세 (이슈 #171, Figma 221-5848)
+# 대부분 진로 도메인 지식(LLM 영역)이라 career_roadmap.py 직무별 템플릿으로 채우되,
+# 실제 계산 가능한 두 조각만 grounded 값으로 주입:
+#   ② 전공 기초 status : 졸업요건상 전공필수 잔여 여부 (_build_short_categories)
+#   ③ STEP 5 학기 전략  : 5.3.1 추천 상위 과목 (recommend_next_semester_courses)
+# ────────────────────────────────────────
+
+# 전공 기초 충족 판정 키 — 졸업요건 트리플 키 (전공필수는 liberal_subtype/core_area None)
+_MAJOR_REQUIRED_KEY = ('전공필수', None, None)
+
+
+def build_career_roadmap_sections(user, *, target_year=None, target_semester=None):
+    """취업·진로 로드맵 응답을 조립한다 (#171). 직무 미지원 시 note 동반 빈 상태.
+
+    grounded 2조각만 실데이터:
+      - 전공 기초: 졸업요건상 전공필수 잔여 없으면 충분(ok) → ②전공기초·①조언에 반영
+      - STEP 5 학기 전략: 5.3.1 추천 상위 CAREER_STEP5_SIZE개 (target 학기 fallback 포함)
+
+    반환: {
+      target_job, note, target_year, target_semester,
+      advice|None, readiness:[...], roadmap:[...], quick_questions:[...]
+    }
+    """
+    # 전공 기초 grounded 판정 — 전공필수 잔여 키가 short set에 없으면 충분.
+    # 졸업요건 데이터 없으면(_build_short_categories 빈 set) 충분으로 간주(데이터 있다는 전제, #171).
+    short = _build_short_categories(user)
+    major_basics_ok = _MAJOR_REQUIRED_KEY not in short
+
+    # STEP 5 학기 전략용 학기 결정 — 5.3.1과 동일 (자동 결정 → 개설 데이터 fallback)
+    if target_year is None or target_semester is None:
+        auto_year, auto_sem = _curriculum_first_slot(user)
+        if target_year is None:
+            target_year = auto_year
+        if target_semester is None:
+            target_semester = auto_sem
+    target_year, target_semester, _is_fallback = _resolve_offering_term(
+        target_year, target_semester,
+    )
+
+    # 추천 상위에서 STEP 5 과목 추출 (Course 인스턴스 — target 학기 offerings prefetch 완료)
+    scored = recommend_next_semester_courses(
+        user, target_year=target_year, target_semester=target_semester,
+    )
+    step5_courses = [course for _score, course in scored[:CAREER_STEP5_SIZE]]
+
+    roadmap = build_career_roadmap(
+        user, major_basics_ok=major_basics_ok, step5_courses=step5_courses,
+    )
+    job = (getattr(user, 'target_job', '') or '').strip()
+
+    # 직무 미입력/미지원 — note 머신 코드 동반 빈 상태 (프론트/LLM이 톤 결정)
+    if roadmap is None:
+        note = NOTE_NO_CAREER_GOAL if not job else NOTE_UNSUPPORTED_CAREER_GOAL
+        return {
+            'target_job': job,
+            'note': note,
+            'target_year': target_year,
+            'target_semester': target_semester,
+            'advice': None,
+            'readiness': [],
+            'roadmap': [],
+            'quick_questions': [],
+        }
+
+    return {
+        'target_job': job,
+        'note': None,
+        'target_year': target_year,
+        'target_semester': target_semester,
+        **roadmap,
     }
 
 

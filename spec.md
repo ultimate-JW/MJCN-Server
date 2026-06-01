@@ -1479,6 +1479,27 @@ tool)·공지 추천과 **같은 과목**이 나오도록 보장(같은 상위 N
   같은 학기 직전 연도로 자동 교체(예: 2026-2 미공개 → 2025-2) + `advice.term_note` 안내.
   빈 화면 방지.
 
+#### 5.3.8 취업·진로 로드맵 테마 상세 (#171)
+
+진로 테마 상세 화면(`career`, "나의 취업·진로 로드맵") 한 장을 단일 응답으로 제공한다.
+이 화면은 본래 **누적된 AI 챗에서 사용자의 진로 신호를 모아 LLM이 생성**하는 것이 목표지만,
+누적 챗 인프라 이전 단계에서는 **목표 직무별 템플릿**으로 채우되 실제 계산 가능한 두 조각만
+grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스택 / 포트폴리오 / 자격증 등)은
+백엔드에 데이터가 없어 템플릿이 담당하며, 추후 LLM 생성으로 교체할 수 있도록 분리한다.
+
+- **목표 직무** (`target_job`): `User.target_job`에 저장. 미입력 시 로드맵 비활성(아래 `note`).
+- **① 띵똥이의 조언** (`advice.text`): 직무 + 전공 기초 grounded 판정 기반 1문장 (규칙 기반).
+- **② 현재 취업 준비도 평가** (`readiness`): `{status, label, message}` 3칸.
+  - `전공 기초`: **grounded** — 졸업요건상 전공필수 잔여 여부(`status` ok/warn).
+  - `실무 경험` / `인턴십`: 백엔드 데이터 없음 → 직무 템플릿 고정값(스텁).
+- **③ 단계별 로드맵** (`roadmap`): STEP 1~6 `{step, title, lines, courses}`.
+  - `STEP 5 학기 전략`: **grounded** — 5.3.1 추천 상위 과목(`courses`, 5.3.1 풀의 부분집합).
+  - 그 외 STEP: 직무 템플릿 텍스트(`lines`), `courses`는 빈 배열.
+- **④ 띵똥이에게 물어보기** (`quick_questions`): 탭하면 챗으로 전송될 `{label, prompt}` 3개 (#164 패턴).
+- **직무 미입력/미지원 fallback**: `note` 머신 코드(`NO_CAREER_GOAL` / `UNSUPPORTED_CAREER_GOAL`)
+  + `advice`/`readiness`/`roadmap`/`quick_questions` 빈 값. 표현은 프론트/LLM이 결정(#25 정신).
+  - 현재 지원 직무는 `클라우드 개발자` 1종(시연 스코프). 직무 확장은 LLM 생성 도입 시점에 흡수.
+
 ### 5.4 통합 정보 제공 - 공지사항 (notices)
 
 > **크롤링 출처 정책**: 명지대학교 자체 공지 게시판만 수집한다. 외부 사이트(링커리어/씽굿/위비티 등)는 후속 작업으로 보류.
@@ -1845,6 +1866,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 |--------|-----|------|------|
 | GET | `/api/v1/courses/recommend/next/?year=&semester=` | O | 다음학기 수강과목 추천 (쿼리 미지정 시 사용자 학기 기반 자동, spec 5.3.1, #36). semester ∉ {1,2,3,4} 또는 비숫자 → 400 |
 | GET | `/api/v1/courses/recommend/next/sections/?year=&semester=` | O | 수강신청 테마 상세 — 조언(`advice`) + 관심분야/지난학기 2섹션(`interest_courses`/`linked_courses`) + 질문칩(`quick_questions`) (spec 5.3.7, #164). 개설 데이터 없으면 작년 같은 학기 fallback |
+| GET | `/api/v1/courses/recommend/career/roadmap/?year=&semester=` | O | 취업·진로 로드맵 테마 상세 — 조언(`advice`) + 준비도(`readiness`) + STEP 1~6 로드맵(`roadmap`, STEP5는 5.3.1 추천 주입) + 질문칩(`quick_questions`) (spec 5.3.8, #171). 직무 미입력/미지원 시 `note` 머신 코드 |
 | POST | `/api/v1/courses/recommend/curriculum/` | O | 전체 커리큘럼 추천 (body 노브, spec 5.3.2) |
 | GET | `/api/v1/courses/status/` | O | 이수현황 분석 |
 | GET | `/api/v1/courses/` | O | 과목 검색 (쿼리 파라미터) |

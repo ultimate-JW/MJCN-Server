@@ -2271,3 +2271,142 @@ class SectionsTermFallbackAPITests(APITestCase):
         res = self.client.get(self.url, {'year': 2026, 'semester': 2})
         self.assertEqual((res.data['target_year'], res.data['target_semester']), (2026, 2))
         self.assertEqual(res.data['advice']['term_note'], '')
+
+
+class CareerRoadmapTemplateTests(SimpleTestCase):
+    """취업·진로 로드맵 직무별 템플릿 조립 단위 테스트 (#171, Figma 221-5848).
+
+    grounded 2조각(전공기초 status / STEP5 과목)은 인자로 주입 — 여기선 주입값이
+    템플릿에 제대로 반영되는지만 검증 (DB·점수계산 분리)."""
+
+    def _user(self, **kw):
+        from types import SimpleNamespace
+        base = dict(target_job='클라우드 개발자', name='김지현')
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def test_지원직무_구조(self):
+        from courses.career_roadmap import build_career_roadmap
+        r = build_career_roadmap(self._user(), major_basics_ok=True, step5_courses=[])
+        self.assertEqual(set(r.keys()), {'advice', 'readiness', 'roadmap', 'quick_questions'})
+        self.assertEqual(len(r['roadmap']), 6)       # STEP 1~6
+        self.assertEqual(len(r['readiness']), 3)     # 전공기초 / 실무 / 인턴십
+        self.assertEqual(len(r['quick_questions']), 3)
+
+    def test_전공기초_충분이면_ok_조언에반영(self):
+        from courses.career_roadmap import build_career_roadmap
+        r = build_career_roadmap(self._user(), major_basics_ok=True, step5_courses=[])
+        self.assertEqual(r['readiness'][0]['status'], 'ok')
+        self.assertIn('충분', r['readiness'][0]['message'])
+        self.assertIn('기초는 충분', r['advice']['text'])
+
+    def test_전공기초_부족이면_warn_조언에반영(self):
+        from courses.career_roadmap import build_career_roadmap
+        r = build_career_roadmap(self._user(), major_basics_ok=False, step5_courses=[])
+        self.assertEqual(r['readiness'][0]['status'], 'warn')
+        self.assertIn('더 필요', r['readiness'][0]['message'])
+        self.assertIn('더 필요', r['advice']['text'])
+
+    def test_step5만_과목주입_나머지는_lines(self):
+        from courses.career_roadmap import build_career_roadmap
+        sentinel = ['c1', 'c2', 'c3']  # 직렬화 전이라 통과만 검증
+        r = build_career_roadmap(self._user(), major_basics_ok=True, step5_courses=sentinel)
+        step5 = next(s for s in r['roadmap'] if s['step'] == 5)
+        self.assertEqual(step5['courses'], sentinel)
+        self.assertEqual(step5['lines'], [])
+        step1 = next(s for s in r['roadmap'] if s['step'] == 1)
+        self.assertTrue(step1['lines'])
+        self.assertEqual(step1['courses'], [])
+
+    def test_이름_조언_앞머리에(self):
+        from courses.career_roadmap import build_career_roadmap
+        r = build_career_roadmap(self._user(name='김지현'), major_basics_ok=True, step5_courses=[])
+        self.assertTrue(r['advice']['text'].startswith('김지현님은'))
+
+    def test_미지원_직무_None(self):
+        from courses.career_roadmap import build_career_roadmap
+        r = build_career_roadmap(self._user(target_job='바리스타'), major_basics_ok=True, step5_courses=[])
+        self.assertIsNone(r)
+
+    def test_직무_미입력_None(self):
+        from courses.career_roadmap import build_career_roadmap
+        r = build_career_roadmap(self._user(target_job=''), major_basics_ok=True, step5_courses=[])
+        self.assertIsNone(r)
+
+
+class CareerRoadmapAPITests(APITestCase):
+    """취업·진로 로드맵 테마 상세 API (#171, Figma 221-5848)."""
+    url = '/api/v1/courses/recommend/career/roadmap/'
+
+    def test_인증_없으면_401(self):
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_정상_응답_스키마(self):
+        user = _make_user(target_job='클라우드 개발자')
+        _make_course(course_code='CSE3101', name='컴퓨터네트워크', category='전공선택', year_open=3)
+        _make_course(course_code='CSE3102', name='데이터베이스', category='전공선택', year_open=3)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(res.data.keys()),
+                         {'target_job', 'note', 'target_year', 'target_semester',
+                          'advice', 'readiness', 'roadmap', 'quick_questions'})
+        self.assertIsNone(res.data['note'])
+        self.assertEqual(res.data['target_job'], '클라우드 개발자')
+        self.assertEqual(len(res.data['roadmap']), 6)
+        self.assertEqual(len(res.data['readiness']), 3)
+        self.assertEqual(len(res.data['quick_questions']), 3)
+
+    def test_step5_추천과목_채워지고_추천풀_부분집합(self):
+        user = _make_user(target_job='클라우드 개발자')
+        _make_course(course_code='CSE3101', name='컴퓨터네트워크', category='전공선택', year_open=3)
+        _make_course(course_code='CSE3102', name='데이터베이스', category='전공선택', year_open=3)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        step5 = next(s for s in res.data['roadmap'] if s['step'] == 5)
+        step5_codes = {c['course_code'] for c in step5['courses']}
+        self.assertTrue(step5_codes)
+        # 별도 추천 로직 아님 — 5.3.1 추천 풀의 부분집합
+        base = self.client.get('/api/v1/courses/recommend/next/')
+        base_codes = {i['course_code'] for i in base.data}
+        self.assertTrue(step5_codes <= base_codes)
+        # STEP5 외 STEP은 courses 비고 lines 채움
+        step1 = next(s for s in res.data['roadmap'] if s['step'] == 1)
+        self.assertEqual(step1['courses'], [])
+        self.assertTrue(step1['lines'])
+
+    def test_직무_미입력시_note_빈상태(self):
+        user = _make_user(target_job='')
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['note'], 'NO_CAREER_GOAL')
+        self.assertIsNone(res.data['advice'])
+        self.assertEqual(res.data['roadmap'], [])
+        self.assertEqual(res.data['readiness'], [])
+
+    def test_미지원_직무_note(self):
+        user = _make_user(target_job='바리스타')
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['note'], 'UNSUPPORTED_CAREER_GOAL')
+        self.assertEqual(res.data['roadmap'], [])
+
+    def test_전공기초_grounded_졸업요건_부족이면_warn(self):
+        user = _make_user(target_job='클라우드 개발자')
+        # 전공필수 42학점 요건, 이수 0 → 전공 기초 부족 grounded 판정
+        GraduationRequirement.objects.create(
+            department=user.major, admission_year=user.admission_year,
+            category='전공필수', required_credits=42, total_required=130,
+        )
+        _make_course(course_code='CSE3101', name='컴퓨터네트워크', category='전공선택', year_open=3)
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['readiness'][0]['status'], 'warn')
+        self.assertIn('더 필요', res.data['readiness'][0]['message'])
+
+    def test_잘못된_semester_400(self):
+        user = _make_user(target_job='클라우드 개발자')
+        self.client.force_authenticate(user=user)
+        res = self.client.get(self.url, {'semester': 9})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
