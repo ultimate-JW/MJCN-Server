@@ -61,7 +61,8 @@ class NoticeListAPITests(TestCase):
         self.assertEqual(res.status_code, 401)
 
     def test_목록_조회(self):
-        res = self.client.get(self.url)
+        # 전체 목록 기능 검증은 view=all (personalized는 #174부터 매칭된 것만 노출)
+        res = self.client.get(self.url, {'view': 'all'})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data['count'], 3)
 
@@ -73,13 +74,13 @@ class NoticeListAPITests(TestCase):
         self.assertEqual(ids, [self.n2.id, self.n1.id, self.n3.id])
 
     def test_summary는_AI_결과에서(self):
-        res = self.client.get(self.url)
+        res = self.client.get(self.url, {'view': 'all'})
         by_id = {item['id']: item for item in res.data['results']}
         self.assertEqual(by_id[self.n2.id]['summary'], '장학금 모집 안내임.')
         self.assertEqual(by_id[self.n1.id]['summary'], '')  # AI 결과 없음
 
     def test_q_검색_제목(self):
-        res = self.client.get(self.url, {'q': '수강'})
+        res = self.client.get(self.url, {'q': '수강', 'view': 'all'})
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(res.data['results'][0]['id'], self.n1.id)
 
@@ -91,21 +92,21 @@ class NoticeListAPITests(TestCase):
             content='본문전용유일키워드 포함된 안내',
             published_at=timezone.now(),
         )
-        res = self.client.get(self.url, {'q': '본문전용유일키워드'})
+        res = self.client.get(self.url, {'q': '본문전용유일키워드', 'view': 'all'})
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(res.data['results'][0]['id'], n_body_only.id)
 
     def test_source_단일_필터(self):
-        res = self.client.get(self.url, {'source': 'academic'})
+        res = self.client.get(self.url, {'source': 'academic', 'view': 'all'})
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(res.data['results'][0]['id'], self.n1.id)
 
     def test_source_복수_필터(self):
-        res = self.client.get(self.url, {'source': 'academic,career'})
+        res = self.client.get(self.url, {'source': 'academic,career', 'view': 'all'})
         self.assertEqual(res.data['count'], 2)
 
     def test_source_label_포함(self):
-        res = self.client.get(self.url, {'source': 'academic'})
+        res = self.client.get(self.url, {'source': 'academic', 'view': 'all'})
         item = res.data['results'][0]
         self.assertEqual(item['source'], 'academic')
         self.assertEqual(item['source_label'], '학사공지')

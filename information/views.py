@@ -118,11 +118,12 @@ class InformationListView(ListAPIView):
 
         user_keywords = extract_user_keywords(request.user)
         if view_mode == 'personalized':
-            # match_score 내림차순 → 동점 시 end_date 빠른 순 (D-day 임박 우선)
-            sorted_items = sort_by_match(
+            # 매칭된 정보만(match_score>=1) 필터 → 점수 내림차순 → 동점 시 D-day 임박 순 (#174)
+            scored = sort_by_match(
                 list(queryset), user_keywords, tags_attr='categories',
                 secondary_key=_end_date_key,
             )
+            sorted_items = [it for it in scored if it.match_score >= 1]
         else:
             # view=all — 마감일 순 그대로 유지, match_score는 정보로 계산해 노출 (#162)
             sorted_items = list(queryset)

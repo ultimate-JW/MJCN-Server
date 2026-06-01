@@ -59,13 +59,14 @@ class PersonalizedInformationListTests(TestCase):
             categories=['음악'],
         )
 
-    def test_personalized_점수_내림차순(self):
+    def test_personalized_매칭된것만_점수순(self):
+        # #174: match_score>=1만 노출, 동점이면 end_date 빠른 순
         res = self.client.get(self.URL, {'view': 'personalized'})
         self.assertEqual(res.status_code, 200)
         ids = [r['id'] for r in res.data['results']]
-        # 점수: high_close 1, high_far 1, zero_close 0
-        # 동점이면 end_date 빠른 순 → high_close(3일) > high_far(30일)
-        self.assertEqual(ids, [self.high_close.id, self.high_far.id, self.zero_close.id])
+        # zero_close(0점) 제외 → high_close(3일) > high_far(30일)
+        self.assertEqual(ids, [self.high_close.id, self.high_far.id])
+        self.assertNotIn(self.zero_close.id, ids)
 
     def test_all은_end_date_빠른순(self):
         res = self.client.get(self.URL, {'view': 'all'})
@@ -76,6 +77,7 @@ class PersonalizedInformationListTests(TestCase):
     def test_personalized가_기본값(self):
         res = self.client.get(self.URL)
         ids = [r['id'] for r in res.data['results']]
+        self.assertEqual(res.data['count'], 2)  # 매칭 0인 zero_close 제외
         self.assertEqual(ids[0], self.high_close.id)
 
     def test_match_score_응답(self):
@@ -83,7 +85,8 @@ class PersonalizedInformationListTests(TestCase):
         scores = {r['id']: r['match_score'] for r in res.data['results']}
         self.assertEqual(scores[self.high_close.id], 1)
         self.assertEqual(scores[self.high_far.id], 1)
-        self.assertEqual(scores[self.zero_close.id], 0)
+        # zero_close(0점)는 personalized에서 제외됨
+        self.assertNotIn(self.zero_close.id, scores)
 
     def test_category_필터와_조합(self):
         # ?view=personalized&category=IT/개발 → IT 매칭만 노출
@@ -94,11 +97,12 @@ class PersonalizedInformationListTests(TestCase):
         self.assertIn(self.high_far.id, ids)
         self.assertNotIn(self.zero_close.id, ids)
 
-    def test_관심사_없는_사용자도_노출(self):
+    def test_관심사_없는_사용자는_personalized_빈결과_174(self):
+        # #174: 관심사 미설정 → 매칭 0 → personalized 빈 결과 (전체는 view=all)
         new_user = User.objects.create_user(email='new@mju.ac.kr', password='pw1234abc')
         client = APIClient()
         client.force_authenticate(new_user)
         res = client.get(self.URL, {'view': 'personalized'})
-        self.assertEqual(res.data['count'], 3)
-        for r in res.data['results']:
-            self.assertEqual(r['match_score'], 0)
+        self.assertEqual(res.data['count'], 0)
+        res_all = client.get(self.URL, {'view': 'all'})
+        self.assertEqual(res_all.data['count'], 3)
