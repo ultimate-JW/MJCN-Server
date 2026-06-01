@@ -42,4 +42,10 @@ class DashboardResponseSerializer(serializers.Serializer):
     information = DashboardInformationSerializer(
         many=True, help_text='관심사 매칭 정보 최대 3개 (d_day 포함)'
     )
+    new_notice_count = serializers.IntegerField(
+        help_text='상단 칩 "새 공지 N" — 가장 최근 크롤 배치 신규 공지 수 (전역, 읽음 무관)'
+    )
+    new_information_count = serializers.IntegerField(
+        help_text='상단 칩 "새 정보 N" — 가장 최근 크롤 배치 신규 정보 수 (전역, 읽음 무관)'
+    )
     unread_notification_count = serializers.IntegerField()
