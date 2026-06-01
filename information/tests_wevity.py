@@ -313,10 +313,30 @@ class WevityRealDetailParsingTests(TestCase):
         self.assertEqual(info.categories, ['공모전', '대외활동', '지원사업'])
 
     def test_상세_end_date로_is_active_재판정(self):
-        # 상세에서 추출한 end_date=2026-05-25 기준 활성 여부 결정
-        info = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
-        # 2026-05-25 >= 오늘(2026-05-12) → True
+        # 상세에서 추출한 end_date=2026-05-25 기준 활성 여부 결정.
+        # is_active = end_date >= date.today() 라 '오늘'을 고정해 날짜 의존성 제거.
+        import datetime
+        from unittest.mock import patch
+
+        class _FixedDate(datetime.date):
+            @classmethod
+            def today(cls):
+                return datetime.date(2026, 5, 1)
+
+        # 오늘 < end_date(2026-05-25) → 활성
+        with patch('information.crawlers.wevity.date', _FixedDate):
+            info = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
         self.assertTrue(info.is_active)
+
+        # 오늘 > end_date → 비활성 (재판정 로직 검증)
+        class _LateDate(datetime.date):
+            @classmethod
+            def today(cls):
+                return datetime.date(2026, 6, 1)
+
+        with patch('information.crawlers.wevity.date', _LateDate):
+            info_late = self.crawler.parse_detail(self.item, REAL_DETAIL_HTML)
+        self.assertFalse(info_late.is_active)
 
     def test_detail_info_map_라벨_파싱(self):
         # 헬퍼 직접 검증
