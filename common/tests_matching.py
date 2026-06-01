@@ -100,6 +100,23 @@ class ScoreMatchTests(TestCase):
     def test_대소문자_무관(self):
         self.assertEqual(score_match({'it/개발'}, ['IT/개발']), 1)
 
+    def test_복합라벨_토큰분해_매칭(self):
+        # 관심사 복합 라벨('공기업/공공기관')이 LLM 단일어 태그('공기업')와 매칭
+        self.assertEqual(score_match({'공기업/공공기관'}, ['공기업', '채용']), 1)
+
+    def test_전공_통짜문자열_분해_매칭(self):
+        # major 통짜 문자열도 '·'·공백으로 쪼개져 태그와 토큰 매칭
+        kw = {'반도체·ICT대학 · 컴퓨터정보통신공학부 · 컴퓨터공학전공'}
+        self.assertEqual(score_match(kw, ['컴퓨터공학전공', '세미나']), 1)
+
+    def test_한_관심사는_최대_1점(self):
+        # 복합 라벨이 토큰 2개로 쪼개지고 둘 다 태그에 있어도 점수는 1 (인플레 방지)
+        self.assertEqual(score_match({'스포츠/예술'}, ['스포츠', '예술']), 1)
+
+    def test_토큰_부분문자열은_매칭안됨(self):
+        # 토큰 단위 완전 일치만 — '공기업'은 '공기업체관리'에 매칭 안 됨 (오탐 방지)
+        self.assertEqual(score_match({'공기업'}, ['공기업체관리']), 0)
+
 
 class SortByMatchTests(TestCase):
     """sort_by_match — 점수 부여 + 정렬."""
