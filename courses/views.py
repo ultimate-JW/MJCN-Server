@@ -20,8 +20,9 @@ from .serializers import (
     CurriculumPlanSerializer,
     NextSemesterRecommendationSerializer,
 )
-from .serializers import RecommendationSectionsSerializer
+from .serializers import CareerRoadmapSerializer, RecommendationSectionsSerializer
 from .services import (
+    build_career_roadmap_sections,
     build_next_semester_sections,
     generate_curriculum_plans,
     recommend_next_semester_courses,
@@ -411,6 +412,51 @@ class NextSemesterSectionsView(APIView):
         # interest/linked는 Course 인스턴스 리스트 — RecommendedCourseSerializer가
         # offerings(target 학기 prefetch분)·core_area를 직렬화.
         serializer = RecommendationSectionsSerializer(sections)
+        return Response(serializer.data)
+
+
+class CareerRoadmapView(APIView):
+    """GET /api/v1/courses/recommend/career/roadmap/ — 취업·진로 로드맵 테마 상세 (#171).
+
+    Figma 221-5848 '나의 취업·진로 로드맵'. 대부분 진로 도메인 지식(LLM 영역)이라
+    career_roadmap.py 직무별 템플릿으로 채우되, 계산 가능한 두 조각만 grounded:
+      ② 전공 기초 status (졸업요건) / ③ STEP 5 학기 전략 (5.3.1 추천).
+
+    응답: {target_job, note, target_year, target_semester, advice, readiness, roadmap, quick_questions}.
+    직무 미입력/미지원 시 note 머신 코드(NO_CAREER_GOAL / UNSUPPORTED_CAREER_GOAL) + 빈 값.
+
+    쿼리 파라미터 (선택): year / semester — STEP 5 추천 대상 학기. 미지정 시 자동.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                'year', OpenApiTypes.INT, OpenApiParameter.QUERY,
+                description='STEP 5 추천 대상 연도. 미지정 시 자동.',
+            ),
+            OpenApiParameter(
+                'semester', OpenApiTypes.INT, OpenApiParameter.QUERY,
+                description='STEP 5 추천 대상 학기 (1/2/3/4). 미지정 시 자동.',
+                enum=[1, 2, 3, 4],
+            ),
+        ],
+        responses={200: CareerRoadmapSerializer, 400: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        # 학기 파싱은 다음학기 추천 뷰와 동일 규칙 재사용 (400 검증 포함)
+        target_year, target_semester = NextSemesterRecommendView._parse_term(request)
+        if isinstance(target_year, Response):
+            return target_year  # 검증 에러 그대로 반환
+
+        data = build_career_roadmap_sections(
+            request.user,
+            target_year=target_year,
+            target_semester=target_semester,
+        )
+        # roadmap[].courses 는 Course 인스턴스 리스트 — RecommendedCourseSerializer가
+        # target 학기 prefetch된 offerings·core_area를 직렬화.
+        serializer = CareerRoadmapSerializer(data)
         return Response(serializer.data)
 
 

@@ -10,5 +10,6 @@ urlpatterns = [
     path('status/', views.CompletionStatusView.as_view(), name='completion-status'),
     path('recommend/next/', views.NextSemesterRecommendView.as_view(), name='recommend-next'),
     path('recommend/next/sections/', views.NextSemesterSectionsView.as_view(), name='recommend-next-sections'),
+    path('recommend/career/roadmap/', views.CareerRoadmapView.as_view(), name='recommend-career-roadmap'),
     path('recommend/curriculum/', views.CurriculumRecommendView.as_view(), name='recommend-curriculum'),
 ]

@@ -34,6 +34,10 @@ class User(AbstractUser):
     # 학번별 요구: 1996~1998학번 2회 / 1999학번 이후 4회. 학점은 0.5×회수로 공통교양 합산.
     chapel_count = models.IntegerField(default=0, verbose_name='채플 누적 이수 회수')
     major = models.CharField(max_length=100, blank=True, verbose_name='전공')
+    # 목표 직무 — 취업·진로 로드맵(테마 상세) 화면의 입력 (#171). 본래는 누적된 AI 챗에서
+    # 진로 신호를 모아 추론되지만, 해당 인프라 전까지는 온보딩/마이페이지 명시 입력 또는 시드로 채운다.
+    # 미입력 시 로드맵 비활성(빈 상태). 예: '클라우드 개발자'.
+    target_job = models.CharField(max_length=100, blank=True, verbose_name='목표 직무')
     is_email_verified = models.BooleanField(default=False, verbose_name='이메일 인증 여부')
     is_onboarding_completed = models.BooleanField(default=False, verbose_name='온보딩 완료 여부')
     notification_enabled = models.BooleanField(default=True, verbose_name='전체 알림')
