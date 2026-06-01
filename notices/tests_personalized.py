@@ -43,19 +43,19 @@ class PersonalizedNoticeListTests(TestCase):
             tags=['음악', '미술'],  # 0점
         )
 
-    def test_personalized는_점수_무관_최신순_155(self):
-        # #155: 매칭 정렬 제거 — published_at 단일 키 정렬
+    def test_personalized는_점수_내림차순_162(self):
+        # #162: match_score 내림차순 → 동점 시 최신순
         res = self.client.get(self.URL, {'view': 'personalized'})
         self.assertEqual(res.status_code, 200)
         ids = [r['id'] for r in res.data['results']]
-        # published_at: n_mid (now) > n_high (-1d) > n_zero (-2d)
-        self.assertEqual(ids, [self.n_mid.id, self.n_high.id, self.n_zero.id])
+        # 점수: n_high(3) > n_mid(1) > n_zero(0)
+        self.assertEqual(ids, [self.n_high.id, self.n_mid.id, self.n_zero.id])
 
-    def test_personalized_가_기본값_155(self):
-        # view 파라미터 없으면 personalized — 정렬은 최신순
+    def test_personalized_가_기본값_162(self):
+        # view 파라미터 없으면 personalized — 점수 높은 것이 위
         res = self.client.get(self.URL)
         ids = [r['id'] for r in res.data['results']]
-        self.assertEqual(ids[0], self.n_mid.id)  # 최신이 위
+        self.assertEqual(ids[0], self.n_high.id)  # 최고 점수가 위
 
     def test_all은_최신순(self):
         res = self.client.get(self.URL, {'view': 'all'})
@@ -70,10 +70,15 @@ class PersonalizedNoticeListTests(TestCase):
         self.assertEqual(scores[self.n_mid.id], 1)
         self.assertEqual(scores[self.n_zero.id], 0)
 
-    def test_all일때_match_score_0(self):
+    def test_all은_최신순이고_match_score는_실제계산_162(self):
+        # #162: view=all은 최신순 정렬이되 match_score는 0 강제 안 하고 실제 계산
         res = self.client.get(self.URL, {'view': 'all'})
-        for r in res.data['results']:
-            self.assertEqual(r['match_score'], 0)
+        ids = [r['id'] for r in res.data['results']]
+        self.assertEqual(ids, [self.n_mid.id, self.n_high.id, self.n_zero.id])
+        scores = {r['id']: r['match_score'] for r in res.data['results']}
+        self.assertEqual(scores[self.n_high.id], 3)
+        self.assertEqual(scores[self.n_mid.id], 1)
+        self.assertEqual(scores[self.n_zero.id], 0)
 
     def test_관심사_없는_사용자도_0점으로_노출(self):
         # 신규 사용자 — 관심사 미설정, 빈 화면 방지 (spec 정책)
@@ -115,7 +120,7 @@ class PersonalizedNoticeListTests(TestCase):
         self.assertEqual(len(ids), 3)
 
 
-# AcademicNoticeBoostTests (#153/#154) 는 #155에서 학사 우선 부스트 정책이
-# 제거돼 의미 사라짐 — 모든 공지 단순 최신순으로 정렬. 학사 자체는 자기
-# published_at 위치에 자연스럽게 노출되며 누락 방지는 PUSH fanout(#153)이 담당.
-# 관련 회귀는 위 PersonalizedNoticeListTests의 test_personalized는_점수_무관_최신순_155에서 검증.
+# #155에서 personalized를 최신순으로 통일했으나, #162에서 personalized는
+# match_score 내림차순 정렬로 복원(맞춤형 분리). view=all만 최신순 유지.
+# 학사공지 누락 방지는 PUSH fanout(#153)이 담당하며, view=all 탭에서 항상 열람 가능.
+# 정렬 회귀는 test_personalized는_점수_내림차순_162 / test_all은_최신순에서 검증.
