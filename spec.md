@@ -1648,6 +1648,11 @@ tool)·공지 추천과 **같은 과목**이 나오도록 보장(같은 상위 N
 
 - **greeting**: 인사 문구 데이터 (사용자명, 요일, 오늘 수업 수)
 - **graduation_progress_percent**: 졸업까지 진척도 (정수 0 ~ 100, 5.3.5 참조)
+- **ai_guide**: "지금 해야 할 일" 배너 — 임박한 학사 마감 1건 또는 `null` (없으면 배너 숨김)
+  - `AcademicCalendar`의 액션 기간(미리담기/수강신청/정정기간) 중 가장 임박한 마감을 D-day로 안내
+  - 필드: `event_type`(머신 코드 `{기간}_{upcoming|ongoing}`) / `message`(표시 문구, 예: "수강신청 정정기간이 3일 남았어요") / `d_day`(0 이상) / `target_date`
+  - 시작 전 → "{기간명}이 N일 남았어요" / 진행 중 → "{기간명} 마감 N일 전" / 임박 임계(기본 30일) 밖이면 `null`
+  - 종강(`semester_end`)은 액션이 아니므로 본 배너 대상 제외 (칩 영역 담당)
 - **today_schedule**: 오늘 요일 기준 수업 리스트 (시간순 정렬)
 - - **notices**: 관심사 기반 최근 공지 N개 (카카오 오픈톡 포함)
 - **information**: 관심사 기반 정보 N개 (D-day 포함)
@@ -2039,6 +2044,12 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
     "today_class_count": 3
   },
   "graduation_progress_percent": 47,
+  "ai_guide": {
+    "event_type": "adjustment_upcoming",
+    "message": "수강신청 정정기간이 3일 남았어요",
+    "d_day": 3,
+    "target_date": "2026-03-02"
+  },
   "today_schedule": [
     {
       "id": 12,
@@ -2061,6 +2072,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 
 - **greeting**: `user_name`은 `User.name`(미입력 시 빈 문자열), `weekday`는 오늘 요일(월~일 한글), `today_class_count`는 `today_schedule` 길이.
 - **graduation_progress_percent**: 5.3.5 계산 결과(0~100 정수). 별도 단독 엔드포인트는 두지 않고 본 응답으로만 노출한다.
+- **ai_guide**: `AcademicCalendar`의 액션 기간(미리담기/수강신청/정정기간) 중 가장 임박한 마감 1건. 각 기간을 오늘 기준 3분기(시작 전/진행 중/종료 후)로 보고, 미래 마감 중 D-day 최소인 것을 채택(동률 시 미리담기→수강신청→정정 순). D-day가 `ACADEMIC_GUIDE_LEAD_DAYS`(기본 30) 초과거나 후보가 없으면 `null`(프론트는 배너 숨김). 종강(`semester_end`)은 액션이 아니라 제외. 표현(`message`)은 백엔드가 1차 생성하되 머신 코드(`event_type`)를 함께 줘 프론트/AI가 톤 재가공 가능.
 - **today_schedule**: `CurrentCourse` 중 오늘 요일 항목을 `start_time` 오름차순 정렬. 주말 등 수업 없으면 빈 배열.
 - **notices**: 모든 공지를 `published_at` 내림차순으로 정렬한 상위 3개 (#155). 학사공지 우선 부스트나 관심사 매칭 정렬은 적용하지 않는다 — 학사공지도 자기 게시 시점에 따라 자연스럽게 노출. PUSH 알림 fanout(§6.9)이 학사공지를 모든 사용자에게 발송하므로 본 대시보드에서는 별도 슬롯 보장 없이도 누락 위험 낮음. 출처 제한 없음(오픈톡 포함). 응답에는 `match_score` 필드를 정보로 노출(정렬 키 아님).
 - **information**: `is_active=True`이고 미마감(`end_date`가 없거나 오늘 이후)인 항목만 대상. 관심사 매칭 점수 내림차순 → 동점 시 마감 임박(`end_date` 오름차순) 순 상위 3개. notices와 동일하게 부족분은 마감 임박 순으로 채운다. 각 항목에 `d_day`(마감까지 남은 일수, `end_date` 없으면 `null`) 필드를 추가한다.

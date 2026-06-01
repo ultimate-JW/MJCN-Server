@@ -1,12 +1,15 @@
 """대시보드 집계 API 테스트 (spec 5.8 / 6.10)."""
-from datetime import time, timedelta
+from datetime import date, time, timedelta
 
 from django.contrib.auth import get_user_model
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import CurrentCourse, InterestArea
+from courses.models import AcademicCalendar
+from courses.services import build_academic_guide
 from information.models import Information
 from notices.models import Notice
 from notifications.models import Notification
@@ -52,7 +55,7 @@ class DashboardAPITests(APITestCase):
     def test_응답_최상위_키_구성(self):
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        for key in ('greeting', 'graduation_progress_percent', 'today_schedule',
+        for key in ('greeting', 'graduation_progress_percent', 'ai_guide', 'today_schedule',
                     'notices', 'information', 'unread_notification_count'):
             self.assertIn(key, res.data)
 
@@ -247,6 +250,38 @@ class DashboardAPITests(APITestCase):
         self.assertEqual(info[0]['title'], '맞춤정보')
         self.assertGreaterEqual(info[0]['match_score'], 1)
 
+    # --- ai_guide (학사일정 마감 배너) ---
+
+    def test_ai_guide_정정기간_임박_노출(self):
+        today = timezone.localdate()
+        # 정정기간 시작이 3일 뒤 — 미래 마감 중 가장 임박
+        AcademicCalendar.objects.create(
+            year=2026, semester=1,
+            adjustment_start=today + timedelta(days=3),
+            adjustment_end=today + timedelta(days=7),
+        )
+        res = self.client.get(self.url)
+        guide = res.data['ai_guide']
+        self.assertIsNotNone(guide)
+        self.assertEqual(guide['event_type'], 'adjustment_upcoming')
+        self.assertEqual(guide['d_day'], 3)
+        self.assertEqual(guide['message'], '수강신청 정정기간이 3일 남았어요')
+
+    def test_ai_guide_등록된_일정_없으면_null(self):
+        res = self.client.get(self.url)
+        self.assertIsNone(res.data['ai_guide'])
+
+    def test_ai_guide_먼_마감은_숨김(self):
+        today = timezone.localdate()
+        # 90일 뒤 — 임박 임계(30일) 밖 → 배너 숨김
+        AcademicCalendar.objects.create(
+            year=2026, semester=2,
+            registration_start=today + timedelta(days=90),
+            registration_end=today + timedelta(days=93),
+        )
+        res = self.client.get(self.url)
+        self.assertIsNone(res.data['ai_guide'])
+
     # --- unread_notification_count ---
 
     def test_unread_notification_count(self):
@@ -270,6 +305,68 @@ class DashboardAPITests(APITestCase):
         )
         res = self.client.get(self.url)
         self.assertEqual(res.data['unread_notification_count'], 2)
+
+
+class BuildAcademicGuideUnitTests(TestCase):
+    """build_academic_guide 단위 — today 주입으로 날짜 의존성 제거."""
+
+    def test_시작_전_카운트다운_문구(self):
+        AcademicCalendar.objects.create(
+            year=2026, semester=1,
+            adjustment_start=date(2026, 3, 5), adjustment_end=date(2026, 3, 9),
+        )
+        guide = build_academic_guide(today=date(2026, 3, 2))
+        self.assertEqual(guide['d_day'], 3)
+        self.assertEqual(guide['message'], '수강신청 정정기간이 3일 남았어요')
+        self.assertEqual(guide['target_date'], date(2026, 3, 5))
+
+    def test_진행_중_마감_카운트다운_문구(self):
+        AcademicCalendar.objects.create(
+            year=2026, semester=1,
+            registration_start=date(2026, 2, 17), registration_end=date(2026, 2, 19),
+        )
+        guide = build_academic_guide(today=date(2026, 2, 18))
+        self.assertEqual(guide['event_type'], 'registration_ongoing')
+        self.assertEqual(guide['d_day'], 1)
+        self.assertEqual(guide['message'], '수강신청 마감 1일 전이에요')
+        self.assertEqual(guide['target_date'], date(2026, 2, 19))
+
+    def test_여러_기간_중_가장_임박한_것_채택(self):
+        AcademicCalendar.objects.create(
+            year=2026, semester=1,
+            registration_start=date(2026, 2, 17), registration_end=date(2026, 2, 19),
+            adjustment_start=date(2026, 3, 2), adjustment_end=date(2026, 3, 6),
+        )
+        # 2/15 기준: 수강신청 시작까지 2일 / 정정 시작까지 15일 → 수강신청 채택
+        guide = build_academic_guide(today=date(2026, 2, 15))
+        self.assertEqual(guide['event_type'], 'registration_upcoming')
+        self.assertEqual(guide['d_day'], 2)
+
+    def test_종료된_기간만_있으면_None(self):
+        AcademicCalendar.objects.create(
+            year=2026, semester=1,
+            adjustment_start=date(2026, 3, 2), adjustment_end=date(2026, 3, 6),
+        )
+        self.assertIsNone(build_academic_guide(today=date(2026, 6, 1)))
+
+    def test_받침_없는_기간명_조사_가(self):
+        # '미리담기' (모음 끝) → 주격조사 '가'
+        AcademicCalendar.objects.create(
+            year=2026, semester=1,
+            pre_registration_start=date(2026, 2, 12), pre_registration_end=date(2026, 2, 14),
+        )
+        guide = build_academic_guide(today=date(2026, 2, 10))
+        self.assertEqual(guide['message'], '수강신청 미리담기가 2일 남았어요')
+
+    def test_마감_당일_문구(self):
+        AcademicCalendar.objects.create(
+            year=2026, semester=1,
+            adjustment_start=date(2026, 3, 2), adjustment_end=date(2026, 3, 6),
+        )
+        # 마감 당일 (today == end) → ongoing d_day 0
+        guide = build_academic_guide(today=date(2026, 3, 6))
+        self.assertEqual(guide['d_day'], 0)
+        self.assertEqual(guide['message'], '오늘 수강신청 정정기간 마감이에요')
 
 
 class DashboardGraduationProgressTests(APITestCase):

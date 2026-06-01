@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from accounts.serializers import CurrentCourseSerializer
 from common.matching import extract_user_keywords, score_match, sort_by_match  # sort_by_match는 information에만
-from courses.services import calc_graduation_progress
+from courses.services import build_academic_guide, calc_graduation_progress
 from information.models import Information
 from notices.models import Notice
 from notices.serializers import NoticeListSerializer
@@ -75,6 +75,8 @@ def build_dashboard(user) -> dict:
             'today_class_count': len(today_courses),
         },
         'graduation_progress_percent': calc_graduation_progress(user),
+        # 'AI 가이드 - 지금 해야 할 일' 배너 — 임박한 학사 마감 1건 또는 None (배너 숨김)
+        'ai_guide': build_academic_guide(today),
         'today_schedule': CurrentCourseSerializer(today_courses, many=True).data,
         'notices': NoticeListSerializer(notices, many=True).data,
         'information': DashboardInformationSerializer(information, many=True).data,
