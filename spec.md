@@ -1455,6 +1455,30 @@ combination_score = sum(course_score for course in combo)  # 5.3.1 점수 재활
 - 위 7-step 파이프라인 / UserPreference 7필드 / 충돌 bitmap / Jaccard dedup / `POST /timetables/recommend/` / `GET·PUT /timetables/preference/`
 - **V2 분리**: `SavedTimetable` (저장 기능), branch-and-bound 추가 가지치기, 카테고리별 후보 캡, LLM 자연어 통합
 
+#### 5.3.7 수강신청 테마 상세 추천 (#164)
+
+수강신청 테마 상세 화면(`course_registration`) 한 장에 필요한 동적 콘텐츠를
+**5.3.1 추천 엔진 위에** 재구성해 단일 응답으로 제공한다. 새 추천 로직을 만들지 않고
+`recommend_next_semester_courses`(5.3.1) 결과를 그대로 재사용 → 챗(`get_next_semester_courses`
+tool)·공지 추천과 **같은 과목**이 나오도록 보장(같은 상위 N 풀 공유).
+
+- **② 띵똥이의 조언** (`advice`)
+  - `user_insight`: 추천 결과 신호(밀린 필수 / 후수과목 / 관심분야 매칭 / 우세 이수구분)에서
+    도출한 근거 멘트 — 사용자마다 다름
+  - `stage_message`: `(학년, 학기)` 고정 행동 멘트 — 같은 학기 학생은 동일
+  - `term_note`: 다음 학기 개설 정보 미공개 시 작년 같은 학기 데이터 기반 안내 (아니면 빈 문자열)
+  - 규칙 기반(LLM 없음). 신호 추출과 phrasing 분리 → 추후 LLM phrasing 교체 가능
+- **③ 수강 과목 권장** — 같은 풀을 두 우선순위로 분리
+  - `interest_courses` (관심분야 추천): 관심사 `custom_text` 키워드 ↔ `course.name` 부분일치,
+    관심사별 라운드로빈으로 채움. 부족하면 기본 추천으로 보충
+  - `linked_courses` (지난학기 맞춤형): 직전 학기 이수과목의 후수과목 우선 → 나머지는 추천 점수순.
+    `interest_courses`에 뽑힌 과목은 제외(중복 방지)
+- **④ 띵똥이에게 물어보기** (`quick_questions`): 탭하면 챗으로 전송될 숏컷 `{label, prompt}` 3개.
+  관심분야 칩은 `custom_text` 첫 키워드 치환
+- **개설 학기 fallback (#164)**: target 학기 개설(`CourseOffering`) 데이터가 없으면
+  같은 학기 직전 연도로 자동 교체(예: 2026-2 미공개 → 2025-2) + `advice.term_note` 안내.
+  빈 화면 방지.
+
 ### 5.4 통합 정보 제공 - 공지사항 (notices)
 
 > **크롤링 출처 정책**: 명지대학교 자체 공지 게시판만 수집한다. 외부 사이트(링커리어/씽굿/위비티 등)는 후속 작업으로 보류.
@@ -1815,6 +1839,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
 | GET | `/api/v1/courses/recommend/next/?year=&semester=` | O | 다음학기 수강과목 추천 (쿼리 미지정 시 사용자 학기 기반 자동, spec 5.3.1, #36). semester ∉ {1,2,3,4} 또는 비숫자 → 400 |
+| GET | `/api/v1/courses/recommend/next/sections/?year=&semester=` | O | 수강신청 테마 상세 — 조언(`advice`) + 관심분야/지난학기 2섹션(`interest_courses`/`linked_courses`) + 질문칩(`quick_questions`) (spec 5.3.7, #164). 개설 데이터 없으면 작년 같은 학기 fallback |
 | POST | `/api/v1/courses/recommend/curriculum/` | O | 전체 커리큘럼 추천 (body 노브, spec 5.3.2) |
 | GET | `/api/v1/courses/status/` | O | 이수현황 분석 |
 | GET | `/api/v1/courses/` | O | 과목 검색 (쿼리 파라미터) |
