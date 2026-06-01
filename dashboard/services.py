@@ -11,7 +11,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from accounts.serializers import CurrentCourseSerializer
-from common.matching import extract_user_keywords, score_match, sort_by_match
+from common.matching import extract_user_keywords, score_match, sort_by_match  # sort_by_match는 information에만
 from courses.services import calc_graduation_progress
 from information.models import Information
 from notices.models import Notice
@@ -46,29 +46,16 @@ def build_dashboard(user) -> dict:
         user.current_courses.filter(day_of_week=weekday).order_by('start_time')
     )
 
-    # 공지: 학사공지(source='academic') 우선 슬롯 채움 (#153) → 나머지 슬롯은
-    # 매칭 점수 ↓ → 최신순으로 부족분 채움. spec §6.10 참고.
-    # 학사공지는 점수 무관 최신순으로 정렬하지만 match_score 속성은 정확히 부여
-    # (sort_by_match 거치지 않으면 0이 응답에 박힘 — NoticeListSerializer가 노출).
-    all_notices = list(Notice.objects.select_related('ai_result').all())
-    academic_pool = [n for n in all_notices if n.source == 'academic']
-    for n in academic_pool:
+    # 공지: 모든 공지를 published_at 최신순으로 단일 정렬 (#155).
+    # 학사공지 우선 부스트나 매칭 정렬은 적용하지 않는다 — 학사공지도 자기 게시
+    # 시점에 따라 자연스럽게 노출. PUSH fanout(spec §6.9)이 학사공지를 모든
+    # 사용자에게 발송하므로 본 슬롯에서는 누락 위험 낮음.
+    # match_score는 정렬 키 아닌 정보 노출용 — NoticeListSerializer가 응답에 포함.
+    notices = list(
+        Notice.objects.select_related('ai_result').order_by('-published_at')[:FEED_SIZE]
+    )
+    for n in notices:
         n.match_score = score_match(user_keywords, n.tags or [])
-    academic = sorted(
-        academic_pool, key=lambda n: -n.published_at.timestamp(),
-    )[:FEED_SIZE]
-    academic_ids = {n.id for n in academic}
-    remaining = FEED_SIZE - len(academic)
-    if remaining > 0:
-        matched = sort_by_match(
-            [n for n in all_notices if n.id not in academic_ids],
-            user_keywords,
-            tags_attr='tags',
-            secondary_key=lambda n: -n.published_at.timestamp(),
-        )[:remaining]
-        notices = academic + matched
-    else:
-        notices = academic
 
     # 정보: 활성 & 미마감 항목만 → 매칭 점수 ↓ → 마감 임박 순
     info_qs = Information.objects.filter(is_active=True).filter(

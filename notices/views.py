@@ -4,7 +4,7 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 
-from common.matching import extract_user_keywords, sort_by_match
+from common.matching import extract_user_keywords, score_match
 
 from .models import Notice
 from .serializers import NoticeDetailSerializer, NoticeListSerializer
@@ -74,24 +74,14 @@ class NoticeListView(ListAPIView):
         queryset = self.filter_queryset(self.get_queryset())
 
         if view_mode == 'personalized':
+            # #155: 모든 공지를 published_at 최신순으로만 정렬. match_score는
+            # 정보 노출용으로 부여하되 정렬 키로는 사용하지 않음. 학사공지 우선
+            # 부스트나 매칭 정렬은 PUSH fanout(spec §6.9)이 학사공지 발송을 담당하므로
+            # 본 view에서는 적용하지 않는다 (#153/#154 부스트 롤백).
             user_keywords = extract_user_keywords(request.user)
-            items = list(queryset)
-            # 동점 시 published_at 내림차순 (최근 위)
-            sorted_items = sort_by_match(
-                items, user_keywords, tags_attr='tags',
-                secondary_key=lambda x: -x.published_at.timestamp(),
-            )
-            # #153: 학사공지(source='academic') 우선 상위 노출 — 매칭 점수 무관
-            # 모든 학생이 봐야 하는 행정 필수 공지(수강신청·등록·졸업 등) 누락 방지.
-            # match_score는 sort_by_match에서 이미 부여됨 — 프론트에 그대로 노출.
-            academic = sorted(
-                (n for n in sorted_items if n.source == 'academic'),
-                key=lambda n: -n.published_at.timestamp(),
-            )
-            if academic:
-                academic_ids = {n.id for n in academic}
-                non_academic = [n for n in sorted_items if n.id not in academic_ids]
-                sorted_items = academic + non_academic
+            sorted_items = list(queryset)
+            for item in sorted_items:
+                item.match_score = score_match(user_keywords, item.tags or [])
         else:
             # view=all (또는 기타) — DB 정렬 그대로, match_score=0 부여
             sorted_items = list(queryset)

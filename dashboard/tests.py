@@ -87,30 +87,32 @@ class DashboardAPITests(APITestCase):
 
     # --- notices ---
 
-    def test_notices_맞춤형_우선_부족분은_최신으로_채움(self):
+    def test_notices_단순_최신순_정렬_155(self):
+        # #155: 매칭 정렬·학사 부스트 모두 제거 — published_at 최신순만
         now = timezone.now()
-        # 매칭 안 되는 일반공지 4개 (n0가 가장 최신)
+        # 일반 공지 4개 (n0가 가장 최신, n3 제일 오래)
         for i in range(4):
             Notice.objects.create(
                 source='general', title=f'일반공지{i}',
                 url=f'https://mju.ac.kr/n{i}',
                 published_at=now - timedelta(days=10 + i), tags=['기타'],
             )
-        # 매칭 공지 1개 — 가장 오래됐지만 점수로 1위여야 함
-        matched = Notice.objects.create(
-            source='academic', title='맞춤공지', url='https://mju.ac.kr/match',
+        # 매칭 점수 높은 학사공지지만 published_at은 가장 오래됨
+        oldest_match = Notice.objects.create(
+            source='academic', title='오래된 매칭공지', url='https://mju.ac.kr/match',
             published_at=now - timedelta(days=30),
             tags=['데이터테크놀로지전공'],
         )
         res = self.client.get(self.url)
         notices = res.data['notices']
         self.assertEqual(len(notices), 3)
-        # 맞춤형이 맨 앞
-        self.assertEqual(notices[0]['id'], matched.id)
-        self.assertGreaterEqual(notices[0]['match_score'], 1)
-        # 부족분은 최신 일반공지로 채워짐 (n0, n1)
-        self.assertEqual([n['title'] for n in notices[1:]], ['일반공지0', '일반공지1'])
-        self.assertTrue(all(n['match_score'] == 0 for n in notices[1:]))
+        # 최신순 — 일반0/1/2가 위, 오래된 매칭공지는 슬롯 밖
+        self.assertEqual([n['title'] for n in notices], ['일반공지0', '일반공지1', '일반공지2'])
+        ids = [n['id'] for n in notices]
+        self.assertNotIn(oldest_match.id, ids)
+        # match_score는 응답에 노출되지만 정렬 영향 없음
+        for n in notices:
+            self.assertIn('match_score', n)
 
     def test_notices_매칭_0개면_최신_3개(self):
         now = timezone.now()
@@ -132,67 +134,53 @@ class DashboardAPITests(APITestCase):
         res = self.client.get(self.url)
         self.assertEqual(len(res.data['notices']), 1)
 
-    # --- #153: 학사공지 우선 노출 ---
+    # --- #155: 모든 공지 단순 최신순 (학사 우선 슬롯 보장 정책 제거) ---
 
-    def test_학사공지_매칭_0이어도_노출_153(self):
-        # 학사공지 1개(매칭 0) + 매칭되는 일반 공지 5개. 학사가 무조건 슬롯 안.
+    def test_notices_학사도_자기_최신성_따라_정렬_155(self):
+        # 학사 1건 + 매칭 일반 4건. 학사가 published_at으로 슬롯 안에 들면 포함,
+        # 밖에 있으면 자연스럽게 제외 (#153/#154 강제 슬롯 보장 롤백).
         now = timezone.now()
+        # 학사는 가장 최신
         academic = Notice.objects.create(
             source='academic', title='수강신청 안내', url='https://mju.ac.kr/reg',
-            published_at=now - timedelta(days=5), tags=[],
+            published_at=now, tags=[],
         )
-        for i in range(5):
+        for i in range(4):
             Notice.objects.create(
                 source='general', title=f'관심사공지{i}',
                 url=f'https://mju.ac.kr/match{i}',
-                published_at=now - timedelta(days=i),
-                tags=['데이터테크놀로지전공'],  # 사용자 전공 매칭
-            )
-        res = self.client.get(self.url)
-        notices = res.data['notices']
-        self.assertEqual(len(notices), 3)
-        # 학사공지가 첫 슬롯에 무조건 포함 (FEED_SIZE=3 안)
-        ids = [n['id'] for n in notices]
-        self.assertIn(academic.id, ids)
-
-    def test_학사공지_여러건이면_최신순으로_슬롯_채움_153(self):
-        # academic 4건. FEED_SIZE=3이라 최신 3건만 노출.
-        now = timezone.now()
-        for i in range(4):
-            Notice.objects.create(
-                source='academic', title=f'학사{i}',
-                url=f'https://mju.ac.kr/a{i}',
-                published_at=now - timedelta(days=i), tags=[],
-            )
-        res = self.client.get(self.url)
-        notices = res.data['notices']
-        # 최신 3건 (학사0, 학사1, 학사2)
-        self.assertEqual([n['title'] for n in notices], ['학사0', '학사1', '학사2'])
-
-    def test_학사공지_2건_매칭_3건이면_학사_먼저_그_뒤_매칭_153(self):
-        now = timezone.now()
-        # 학사 2건 (최신순으로 a0, a1)
-        for i in range(2):
-            Notice.objects.create(
-                source='academic', title=f'학사{i}',
-                url=f'https://mju.ac.kr/a{i}',
-                published_at=now - timedelta(days=i), tags=[],
-            )
-        # 매칭 일반 3건
-        for i in range(3):
-            Notice.objects.create(
-                source='general', title=f'매칭{i}',
-                url=f'https://mju.ac.kr/m{i}',
-                published_at=now - timedelta(days=10 + i),
+                published_at=now - timedelta(days=i + 1),
                 tags=['데이터테크놀로지전공'],
             )
         res = self.client.get(self.url)
         notices = res.data['notices']
         self.assertEqual(len(notices), 3)
-        # 학사 2건이 먼저 (최신순) + 매칭 1건 (제일 최근 매칭)
-        self.assertEqual(notices[0]['title'], '학사0')
-        self.assertEqual(notices[1]['title'], '학사1')
-        self.assertEqual(notices[2]['title'], '매칭0')
+        # 최신순 — 학사가 가장 최신이라 1번째
+        self.assertEqual(notices[0]['id'], academic.id)
+        # 나머지는 일반 공지 published_at 최신순
+        self.assertEqual([n['title'] for n in notices[1:]], ['관심사공지0', '관심사공지1'])
+
+    def test_notices_학사가_오래되면_슬롯_밖_가능_155(self):
+        # 학사 1건(아주 오래됨) + 일반 5건(최신). 학사는 슬롯 밖 — 누락 가능.
+        # 누락 방지는 PUSH fanout(spec §6.9)이 담당.
+        now = timezone.now()
+        old_academic = Notice.objects.create(
+            source='academic', title='오래된 학사', url='https://mju.ac.kr/old',
+            published_at=now - timedelta(days=30), tags=[],
+        )
+        for i in range(5):
+            Notice.objects.create(
+                source='general', title=f'최신공지{i}',
+                url=f'https://mju.ac.kr/n{i}',
+                published_at=now - timedelta(days=i), tags=[],
+            )
+        res = self.client.get(self.url)
+        notices = res.data['notices']
+        self.assertEqual(len(notices), 3)
+        # 학사는 슬롯 밖
+        self.assertNotIn(old_academic.id, [n['id'] for n in notices])
+        # 최신순 3개
+        self.assertEqual([n['title'] for n in notices], ['최신공지0', '최신공지1', '최신공지2'])
 
     # --- information ---
 
