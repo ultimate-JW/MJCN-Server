@@ -150,7 +150,7 @@ class NoticeAPIResponseTests(TestCase):
             department='학생지원팀',
             url='https://x/list-1',
         )
-        res = self.client.get('/api/v1/notices/')
+        res = self.client.get('/api/v1/notices/', {'view': 'all'})
         self.assertEqual(len(res.data['results']), 1)
         item = res.data['results'][0]
         self.assertEqual(item['department'], '학생지원팀')
@@ -211,7 +211,7 @@ class NoticeAPIResponseTests(TestCase):
             department='학생지원팀',
             url='https://x/list-clean',
         )
-        res = self.client.get('/api/v1/notices/')
+        res = self.client.get('/api/v1/notices/', {'view': 'all'})
         self.assertEqual(
             res.data['results'][0]['title_without_dept'],
             '안내',

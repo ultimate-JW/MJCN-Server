@@ -86,7 +86,8 @@ class InformationListAPITests(TestCase):
         self.assertEqual(res.status_code, 401)
 
     def test_기본은_활성_미마감만(self):
-        res = self.client.get(self.url)
+        # 활성·마감 필터 검증은 view=all (personalized는 #174부터 매칭된 것만)
+        res = self.client.get(self.url, {'view': 'all'})
         ids = [item['id'] for item in res.data['results']]
         self.assertIn(self.active_close.id, ids)
         self.assertIn(self.active_far.id, ids)
@@ -95,7 +96,7 @@ class InformationListAPITests(TestCase):
         self.assertNotIn(self.inactive.id, ids)
 
     def test_마감일_빠른_순_정렬(self):
-        res = self.client.get(self.url)
+        res = self.client.get(self.url, {'view': 'all'})
         ids = [item['id'] for item in res.data['results']]
         # close(3일) → far(30일) → no_date(NULL은 마지막)
         self.assertEqual(ids[0], self.active_close.id)
@@ -103,13 +104,13 @@ class InformationListAPITests(TestCase):
         self.assertEqual(ids[2], self.active_nodate.id)
 
     def test_include_expired_true는_전체_포함(self):
-        res = self.client.get(self.url, {'include_expired': 'true'})
+        res = self.client.get(self.url, {'include_expired': 'true', 'view': 'all'})
         ids = [item['id'] for item in res.data['results']]
         self.assertIn(self.expired.id, ids)
         self.assertIn(self.inactive.id, ids)
 
     def test_q_검색(self):
-        res = self.client.get(self.url, {'q': '해커톤'})
+        res = self.client.get(self.url, {'q': '해커톤', 'view': 'all'})
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(res.data['results'][0]['id'], self.active_close.id)
 
@@ -118,17 +119,17 @@ class InformationListAPITests(TestCase):
             title='무관', organizer='명지대 산학협력단',
             url='https://x/99', end_date=timezone.localdate() + timedelta(days=10),
         )
-        res = self.client.get(self.url, {'q': '명지대 산학'})
+        res = self.client.get(self.url, {'q': '명지대 산학', 'view': 'all'})
         ids = [item['id'] for item in res.data['results']]
         self.assertIn(info.id, ids)
 
     def test_category_단일_필터(self):
-        res = self.client.get(self.url, {'category': '부트캠프'})
+        res = self.client.get(self.url, {'category': '부트캠프', 'view': 'all'})
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(res.data['results'][0]['id'], self.active_far.id)
 
     def test_category_복수_OR_매칭(self):
-        res = self.client.get(self.url, {'category': '공모전,부트캠프'})
+        res = self.client.get(self.url, {'category': '공모전,부트캠프', 'view': 'all'})
         ids = [item['id'] for item in res.data['results']]
         self.assertIn(self.active_close.id, ids)  # 공모전
         self.assertIn(self.active_far.id, ids)    # 부트캠프

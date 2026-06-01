@@ -83,11 +83,13 @@ class NoticeListView(ListAPIView):
         user_keywords = extract_user_keywords(request.user)
 
         if view_mode == 'personalized':
-            # match_score 내림차순 → 동점 시 최신순. 점수 0도 제외하지 않고 최하위 포함.
-            sorted_items = sort_by_match(
+            # 매칭된 공지만(match_score>=1) 필터 → 점수 내림차순 → 동점 시 최신순 (#174).
+            # 관심사 미설정 사용자는 빈 결과 (온보딩에서 관심사 설정 강제).
+            scored = sort_by_match(
                 list(queryset), user_keywords,
                 tags_attr='tags', secondary_key=_published_key,
             )
+            sorted_items = [it for it in scored if it.match_score >= 1]
         else:
             # view=all — 최신순 그대로 유지, match_score는 정보로 계산해 노출
             sorted_items = list(queryset)

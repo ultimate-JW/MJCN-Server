@@ -43,19 +43,21 @@ class PersonalizedNoticeListTests(TestCase):
             tags=['음악', '미술'],  # 0점
         )
 
-    def test_personalized는_점수_내림차순_162(self):
-        # #162: match_score 내림차순 → 동점 시 최신순
+    def test_personalized는_매칭된것만_점수순_174(self):
+        # #174: match_score>=1만 노출, 점수 내림차순 → 동점 시 최신순
         res = self.client.get(self.URL, {'view': 'personalized'})
         self.assertEqual(res.status_code, 200)
         ids = [r['id'] for r in res.data['results']]
-        # 점수: n_high(3) > n_mid(1) > n_zero(0)
-        self.assertEqual(ids, [self.n_high.id, self.n_mid.id, self.n_zero.id])
+        # n_zero(0점)는 제외 → n_high(3) > n_mid(1)
+        self.assertEqual(ids, [self.n_high.id, self.n_mid.id])
+        self.assertNotIn(self.n_zero.id, ids)
 
-    def test_personalized_가_기본값_162(self):
-        # view 파라미터 없으면 personalized — 점수 높은 것이 위
+    def test_personalized_가_기본값_174(self):
+        # view 파라미터 없으면 personalized — 매칭된 것만, 최고 점수가 위
         res = self.client.get(self.URL)
         ids = [r['id'] for r in res.data['results']]
-        self.assertEqual(ids[0], self.n_high.id)  # 최고 점수가 위
+        self.assertEqual(res.data['count'], 2)  # 매칭 0인 n_zero 제외
+        self.assertEqual(ids[0], self.n_high.id)
 
     def test_all은_최신순(self):
         res = self.client.get(self.URL, {'view': 'all'})
@@ -68,7 +70,8 @@ class PersonalizedNoticeListTests(TestCase):
         scores = {r['id']: r['match_score'] for r in res.data['results']}
         self.assertEqual(scores[self.n_high.id], 3)
         self.assertEqual(scores[self.n_mid.id], 1)
-        self.assertEqual(scores[self.n_zero.id], 0)
+        # n_zero(0점)는 personalized에서 제외됨
+        self.assertNotIn(self.n_zero.id, scores)
 
     def test_all은_최신순이고_match_score는_실제계산_162(self):
         # #162: view=all은 최신순 정렬이되 match_score는 0 강제 안 하고 실제 계산
@@ -80,17 +83,18 @@ class PersonalizedNoticeListTests(TestCase):
         self.assertEqual(scores[self.n_mid.id], 1)
         self.assertEqual(scores[self.n_zero.id], 0)
 
-    def test_관심사_없는_사용자도_0점으로_노출(self):
-        # 신규 사용자 — 관심사 미설정, 빈 화면 방지 (spec 정책)
+    def test_관심사_없는_사용자는_personalized_빈결과_174(self):
+        # #174: 관심사 미설정 → 매칭 0 → personalized는 빈 결과 (전체는 view=all에서)
         new_user = User.objects.create_user(
             email='new@mju.ac.kr', password='pw1234abc',
         )
         client = APIClient()
         client.force_authenticate(new_user)
         res = client.get(self.URL, {'view': 'personalized'})
-        self.assertEqual(res.data['count'], 3)
-        for r in res.data['results']:
-            self.assertEqual(r['match_score'], 0)
+        self.assertEqual(res.data['count'], 0)
+        # 전체는 view=all에서 그대로 열람 가능
+        res_all = client.get(self.URL, {'view': 'all'})
+        self.assertEqual(res_all.data['count'], 3)
 
     def test_동점이면_published_at_최근_위(self):
         # 같은 점수면 최신 공지가 위
@@ -114,10 +118,11 @@ class PersonalizedNoticeListTests(TestCase):
             tags=['IT/개발', 'AI', '백엔드'],  # 매칭 점수 높음
         )
         res = self.client.get(self.URL, {'view': 'personalized', 'source': 'general'})
-        # general source 3개만
+        # general source 중 매칭된 것만 (n_zero 0점 제외 → high, mid 2개)
         ids = [r['id'] for r in res.data['results']]
         self.assertNotIn(Notice.objects.get(source='academic').id, ids)
-        self.assertEqual(len(ids), 3)
+        self.assertNotIn(self.n_zero.id, ids)
+        self.assertEqual(len(ids), 2)
 
 
 # #155에서 personalized를 최신순으로 통일했으나, #162에서 personalized는
