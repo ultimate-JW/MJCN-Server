@@ -42,21 +42,21 @@ class PersonalizedInformationListTests(TestCase):
         self.client.force_authenticate(self.user)
 
         today = timezone.localdate()
-        # 매칭 점수 + 마감일 다르게
+        # 매칭은 tags 기준(#185). categories는 ?category= 필터용으로 함께 설정.
         self.high_close = make_info(
             title='IT 매칭 임박',
             end_date=today + timedelta(days=3),
-            categories=['IT/개발'],
+            categories=['IT/개발'], tags=['IT/개발'],
         )
         self.high_far = make_info(
             title='IT 매칭 멀음',
             end_date=today + timedelta(days=30),
-            categories=['IT/개발'],
+            categories=['IT/개발'], tags=['IT/개발'],
         )
         self.zero_close = make_info(
             title='무매칭 임박',
             end_date=today + timedelta(days=5),
-            categories=['음악'],
+            categories=['음악'], tags=['음악'],
         )
 
     def test_personalized_매칭된것만_점수순(self):

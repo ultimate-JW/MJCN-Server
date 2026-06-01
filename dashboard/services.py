@@ -78,7 +78,7 @@ def build_dashboard(user) -> dict:
     information = sort_by_match(
         list(info_qs),
         user_keywords,
-        tags_attr='categories',
+        tags_attr='tags',  # AI 태깅 기준 매칭 (#185) — categories는 활동유형이라 매칭 안 됨
         secondary_key=_end_date_key,
     )[:FEED_SIZE]
 
