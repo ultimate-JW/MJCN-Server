@@ -385,18 +385,20 @@ User ||--o{ Bookmark : "has"
 
 #### CourseHistory (수강이력)
 
+프론트는 `course_code` + `year` + `semester` + `grade_received`(선택) 4개만 보내면 서버가 5개 필드(`course_name`/`category`/`credits`/`liberal_subtype`/`core_area`)를 `Course` 카탈로그에서 자동으로 채워 저장 (#151). Course에 없는 `course_code`는 400 거부.
+
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | user | FK(User) | |
-| course_name | CharField | 과목명 |
-| course_code | CharField | 과목번호 |
-| year | IntegerField | 수강 연도 |
-| semester | IntegerField | 수강 학기 |
-| grade_received | CharField(blank) | 취득 성적 |
-| category | CharField | 전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택 (학칙 7분류, #47 Phase 3) |
-| liberal_subtype | CharField(null, blank) | 교양 4종 — 공통교양/핵심교양/학문기초교양/일반교양. category와 호환 동기화 (#47). 저장 시 course_code로 Course 찾아 자동 채움. 명시값은 안 덮음. bulk_create는 save() 우회하므로 별도 보강 필요. |
-| core_area | CharField(null, blank) | 핵심교양 4영역(역사와 철학/사회와 공동체/문화와 예술/과학기술과 정보) + 공통교양 4영역(기독교/사고와 표현/언어/진로와 디지털리터러시). liberal_subtype=='핵심교양'/'공통교양' 행에만 채움 (#47 Phase 2). |
-| credits | IntegerField | 학점 수 |
+| course_name | CharField | 과목명 (자동 채움) |
+| course_code | CharField | 과목번호 (사용자 입력 — Course 카탈로그 lookup 키) |
+| year | IntegerField | 수강 연도 (사용자 입력) |
+| semester | IntegerField | 수강 학기 (사용자 입력, 1/2) |
+| grade_received | CharField(blank) | 취득 성적 (사용자 입력, 선택 — PUT/PATCH로 학기 종료 후 갱신 가능) |
+| category | CharField | 전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택 (자동 채움, 학칙 7분류 #47 Phase 3) |
+| liberal_subtype | CharField(null, blank) | 교양 4종 (자동 채움). bulk_create 같이 시리얼라이저 우회 경로용 안전망으로 `CourseHistory.save()` override 유지 (#47). |
+| core_area | CharField(null, blank) | 핵심교양 4영역/공통교양 4영역 (자동 채움, liberal_subtype 행만, #47 Phase 2). |
+| credits | IntegerField | 학점 수 (자동 채움) |
 
 - unique_together: (user, course_code, year, semester) — 동일 학기 같은 과목 중복 등록 방지
 
@@ -891,10 +893,11 @@ PendingSignup row는 `code_expires_at` 경과 후에도 자동 삭제되지 않�
 **Step 4 — 수강이력 (선택, 건너뛰기 가능)**
 - Step 2에서 선택한 학과의 과목이 기본 리스트로 표시 (가나다순)
 - 과목 탭 시 선택 (체크 표시)
-- 상단 검색으로 타과/교양 과목 검색 및 추가
-- 사용자 입력: 과목 선택 + 수강 연도 + 학기 + 성적
-- 이수구분, 학점 수, 교수명 등은 과목 DB(Course 테이블)에서 자동 매칭
-- 성적(grade_received)은 선택 입력
+- 상단 검색으로 타과/교양 과목 검색 및 추가 — `GET /api/v1/courses/?q=` (과목 단위)
+- 사용자 입력: `course_code` 선택 + `year` + `semester` + `grade_received`(선택) — 4개 (#151)
+- 과목명·이수구분·학점·교양 분류(`liberal_subtype`/`core_area`)는 `Course` 카탈로그에서 자동 매칭
+- 카탈로그에 없는 `course_code`는 400 거부 — 카탈로그 등록 후 입력 가능
+- 성적은 학기 종료 후 `PATCH /accounts/course-history/<id>/`로 갱신 가능 (다른 필드는 변경 불가, 변경 시 DELETE → POST)
 - "다음" 또는 "건너뛰기"로 진행
 
 **Step 5 — 현재 수강과목 (선택, 건너뛰기 가능)**
@@ -1782,8 +1785,8 @@ score = |사용자_키워드 ∩ 콘텐츠_태그|   (단순 교집합 크기)
 | Method | URL | 인증 | 설명 |
 |--------|-----|------|------|
 | GET | `/api/v1/accounts/course-history/` | O | 수강이력 목록 |
-| POST | `/api/v1/accounts/course-history/` | O | 수강이력 추가 |
-| PUT | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 수정 |
+| POST | `/api/v1/accounts/course-history/` | O | 수강이력 추가 — body `{course_code, year, semester, grade_received(선택)}` 4개. `course_name`/`category`/`credits`/`liberal_subtype`/`core_area` 5개는 `Course` 카탈로그에서 자동 hydrate (#151). Course 미존재 → 400 |
+| PUT | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 수정 — `grade_received`만 partial 수정 가능 (학기 종료 후 성적 입력 케이스). 다른 필드 변경 불가 |
 | DELETE | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 삭제 |
 | GET | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 목록 |
 | POST | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 추가 — body `{offering_id}` 한 개로 7개 평문 필드 자동 hydrate (#149). 분반 검색은 `/api/v1/courses/offerings/` 사용 |
