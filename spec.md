@@ -2526,7 +2526,8 @@ Notice.extracted_content에 추출 텍스트 저장
 
 - **모델**: `gpt-4o-mini` (Vision 입력 지원, 비용 저렴)
 - **이미지 개수 한도**: 한 공지당 최대 N장(기본 5장)까지만 VLM에 보냄 — 초과분은 무시
-- **재시도**: 텍스트 파이프라인과 동일하게 지수 백오프 1~3회
+- **재시도**: 텍스트 파이프라인과 동일하게 지수 백오프 1~3회 (SDK `max_retries`)
+- **TPM rate limit pacing**: 대량 백필 시 OpenAI TPM(분당 토큰) 한도를 연속 호출이 포화시켜 `429`가 발생한다. SDK 내부 재시도로도 못 빠져나오면, 같은 공지를 **지수 백오프 후 재시도**한다 (기본 20→40→60초, 최대 `OPENAI_VLM_RATE_LIMIT_RETRIES`회). 또한 호출 간 `OPENAI_VLM_REQUEST_INTERVAL`초 간격을 둘 수 있다 (기본 0 — 일일 cron은 처리 건수가 적어 영향 없음, 백필 시 환경변수로 조절). 재시도 소진 시에만 `failed`로 떨군다.
 - **실패 처리**: VLM 호출 실패 시 `extracted_content`는 빈 채로 두고 다음 cron 실행에서 재시도
 - **재추출 트리거**: `--reprocess` 옵션 또는 `image_urls` 변경 시
 

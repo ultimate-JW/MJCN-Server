@@ -9,7 +9,7 @@ from django.utils import timezone
 from requests.exceptions import ConnectionError as requests_ConnectionError
 
 from notices.ai import pipeline, processor, vlm
-from notices.ai.client import AIClientError
+from notices.ai.client import AIClientError, AIRateLimitError
 from notices.models import Notice, NoticeAIResult
 
 
@@ -317,3 +317,83 @@ class ProcessNoticeImagesAggregateTests(TestCase):
         self.assertEqual(result.success, 1)
         self.assertEqual(result.skipped, 1)
         self.assertEqual(result.failed, 1)
+
+
+# --- TPM rate limit pacing / 백오프 (spec 9.1.5) ---
+
+@override_settings(
+    OPENAI_VLM_RATE_LIMIT_RETRIES=3,
+    OPENAI_VLM_RATE_LIMIT_BACKOFF=20.0,
+    OPENAI_VLM_REQUEST_INTERVAL=0,
+)
+class VLMRateLimitBackoffTests(TestCase):
+    """429 발생 시 같은 공지 백오프 재시도. time.sleep은 mock해 실제 대기 안 함."""
+
+    def test_429_한번_후_성공이면_재시도해서_success(self):
+        n = make_notice(content='', image_urls=['u1'], title='rl')
+        calls = {'n': 0}
+
+        def flaky(image_urls):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise AIRateLimitError('429')
+            return '추출됨'
+
+        with patch.object(vlm, 'extract_text_from_images', side_effect=flaky), \
+             patch.object(vlm.time, 'sleep') as sleep:
+            result = vlm.process_notice_images([n])
+
+        self.assertEqual(result.success, 1)
+        self.assertEqual(result.failed, 0)
+        self.assertEqual(calls['n'], 2)          # 1회 실패 + 1회 성공
+        sleep.assert_called_once_with(20.0)      # base_backoff * 2**0
+        n.refresh_from_db()
+        self.assertEqual(n.extracted_content, '추출됨')
+
+    def test_429_지수_백오프_그리고_재시도_소진시_failed(self):
+        n = make_notice(content='', image_urls=['u1'], title='rl')
+
+        with patch.object(vlm, 'extract_text_from_images',
+                          side_effect=AIRateLimitError('429')), \
+             patch.object(vlm.time, 'sleep') as sleep:
+            result = vlm.process_notice_images([n])
+
+        self.assertEqual(result.failed, 1)
+        self.assertEqual(result.success, 0)
+        # RETRIES=3 → 백오프 3회(20, 40, 60: 60에서 cap) 후 소진
+        self.assertEqual(sleep.call_count, 3)
+        self.assertEqual(
+            [c.args[0] for c in sleep.call_args_list], [20.0, 40.0, 60.0],
+        )
+
+    def test_429_아닌_일반실패는_즉시_failed_백오프없음(self):
+        n = make_notice(content='', image_urls=['u1'], title='rl')
+
+        with patch.object(vlm, 'extract_text_from_images',
+                          side_effect=AIClientError('boom')), \
+             patch.object(vlm.time, 'sleep') as sleep:
+            result = vlm.process_notice_images([n])
+
+        self.assertEqual(result.failed, 1)
+        sleep.assert_not_called()
+
+
+@override_settings(OPENAI_VLM_REQUEST_INTERVAL=2.0)
+class VLMPacingIntervalTests(TestCase):
+
+    def test_호출간_interval_sleep_적용_첫건은_제외(self):
+        notices = [
+            make_notice(content='', image_urls=['u1'], title='a'),
+            make_notice(content='', image_urls=['u2'], title='b'),
+            make_notice(content='', image_urls=['u3'], title='c'),
+        ]
+        with patch.object(vlm, 'extract_text_from_images', return_value='t'), \
+             patch.object(vlm.time, 'sleep') as sleep:
+            result = vlm.process_notice_images(notices)
+
+        self.assertEqual(result.success, 3)
+        # 3건 → 첫 건 제외 2번 pacing sleep
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(
+            [c.args[0] for c in sleep.call_args_list], [2.0, 2.0],
+        )

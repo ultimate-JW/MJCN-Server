@@ -270,6 +270,14 @@ OPENAI_REQUEST_TIMEOUT = int(os.getenv('OPENAI_REQUEST_TIMEOUT', '30'))
 OPENAI_MAX_RETRIES = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
 # VLM 전처리(spec 9.1.6): 한 공지당 VLM에 보낼 이미지 최대 장수
 OPENAI_VLM_MAX_IMAGES = int(os.getenv('OPENAI_VLM_MAX_IMAGES', '5'))
+# VLM TPM rate limit pacing (spec 9.1.5): 대량 백필 시 OpenAI TPM 한도 초과 완화.
+# - REQUEST_INTERVAL: VLM 호출 간 대기(초). 기본 0 → 일일 cron은 건수가 적어 영향 없음.
+#   백필 시 환경변수로 1~3초 등 설정해 호출 속도를 늦춤.
+# - RATE_LIMIT_RETRIES: 429 발생 시 같은 공지를 백오프 후 재시도하는 최대 횟수.
+# - RATE_LIMIT_BACKOFF: 백오프 기준 시간(초). 실제 대기 = base * 2**(n-1), 최대 60초.
+OPENAI_VLM_REQUEST_INTERVAL = float(os.getenv('OPENAI_VLM_REQUEST_INTERVAL', '0'))
+OPENAI_VLM_RATE_LIMIT_RETRIES = int(os.getenv('OPENAI_VLM_RATE_LIMIT_RETRIES', '5'))
+OPENAI_VLM_RATE_LIMIT_BACKOFF = float(os.getenv('OPENAI_VLM_RATE_LIMIT_BACKOFF', '20'))
 # chat 컨텍스트 윈도우 (spec 5.2): 멀티턴 대화에 포함할 최근 메시지 개수
 # 토큰 비용·응답 품질의 균형. settings로 환경별 조절 가능.
 OPENAI_CHAT_CONTEXT_MESSAGES = int(os.getenv('OPENAI_CHAT_CONTEXT_MESSAGES', '10'))
