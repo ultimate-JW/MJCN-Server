@@ -118,9 +118,11 @@ class InformationListView(ListAPIView):
 
         user_keywords = extract_user_keywords(request.user)
         if view_mode == 'personalized':
-            # 매칭된 정보만(match_score>=1) 필터 → 점수 내림차순 → 동점 시 D-day 임박 순 (#174)
+            # 매칭된 정보만(match_score>=1) 필터 → 점수 내림차순 → 동점 시 D-day 임박 순.
+            # 매칭은 AI 태깅(Information.tags) 기준 — categories(위비티 활동유형)는
+            # 직업분야 관심사와 분류축이 달라 매칭 안 됨 (#185). categories는 ?category= 필터 전용.
             scored = sort_by_match(
-                list(queryset), user_keywords, tags_attr='categories',
+                list(queryset), user_keywords, tags_attr='tags',
                 secondary_key=_end_date_key,
             )
             sorted_items = [it for it in scored if it.match_score >= 1]

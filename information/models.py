@@ -18,6 +18,9 @@ class Information(models.Model):
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
     categories = models.JSONField(default=list, blank=True)
+    # 관심사 매칭용 AI 자동 태깅 키워드 (직업분야 라벨 포함, spec 9.1.7).
+    # categories(위비티 활동유형)와 별개 — 맞춤형 매칭은 tags 기준.
+    tags = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     # 출처 식별 (예: source='wevity', source_id='106194')
