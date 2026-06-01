@@ -178,6 +178,46 @@ class NextSemesterRecommendationSerializer(serializers.Serializer):
     core_area = serializers.CharField(allow_null=True)
 
 
+class AdviceSerializer(serializers.Serializer):
+    """② 띵똥이의 조언 (이슈 #164, Figma 160-1144).
+
+    user_insight : 추천 결과 신호 기반 근거 멘트 (사용자별)
+    stage_message: (학년, 학기) 고정 행동 멘트
+    text         : 'OOO님, {user_insight} {stage_message}' 합본 — 프론트가 그대로 써도 됨
+    """
+    user_insight = serializers.CharField()
+    stage_message = serializers.CharField()
+    # 다음학기 데이터 미공개 시 작년 학기 기반 안내 (fallback 아니면 빈 문자열) (#164 발견1)
+    term_note = serializers.CharField(allow_blank=True)
+    text = serializers.CharField()
+
+
+class QuickQuestionSerializer(serializers.Serializer):
+    """④ 띵똥이에게 물어보기 칩 (이슈 #164).
+
+    label : 버튼에 보이는 짧은 문구
+    prompt: 탭하면 챗(POST /chat-rooms/{id}/messages/)으로 전송될 질문 문장
+    """
+    label = serializers.CharField()
+    prompt = serializers.CharField()
+
+
+class RecommendationSectionsSerializer(serializers.Serializer):
+    """수강신청 테마 상세 ②조언 + ③2섹션 추천 + ④물어보기 응답 (spec 5.3.1 확장, #164, Figma 160-1144).
+
+    같은 추천 엔진 풀을 두 우선순위로 재구성한 결과.
+    카드는 RecommendedCourseSerializer 재사용 (course_code·name·category·credits·offerings·core_area).
+    """
+    target_year = serializers.IntegerField()
+    target_semester = serializers.IntegerField()
+    advice = AdviceSerializer()  # ② 띵똥이의 조언
+    # ③-a 관심분야 추천 — custom_text 키워드 ↔ course.name 매칭
+    interest_courses = RecommendedCourseSerializer(many=True)
+    # ③-b 지난학기 맞춤형 — 직전학기 후수과목 우선 → 추천 점수순
+    linked_courses = RecommendedCourseSerializer(many=True)
+    quick_questions = QuickQuestionSerializer(many=True)  # ④ 띵똥이에게 물어보기
+
+
 class SemesterPlanSerializer(serializers.Serializer):
     """학기 1개 응답 — 학칙 7분류로 분리 (spec 5.3.2, #47 Phase 3).
 
