@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from courses.models import CourseOffering
+from courses.models import Course, CourseOffering
 
 from .fields import ASCIIEmailField
 from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark, PendingSignup
@@ -126,28 +126,86 @@ class InterestAreaSerializer(serializers.ModelSerializer):
 
 
 class CourseHistorySerializer(serializers.ModelSerializer):
+    """수강이력 — course_code 1개로 5개 필드 자동 hydrate (spec 4.2, #151).
+
+    POST는 course_code + year + semester + grade_received(선택) 4개만 받음.
+    course_name/category/credits/liberal_subtype/core_area는 Course에서 자동 복사.
+    PUT/PATCH는 grade_received만 partial 수정 가능 (학기 종료 후 성적 입력).
+    Course 미존재 → 400 (#149와 동일 정책).
+    """
     class Meta:
         model = CourseHistory
-        # liberal_subtype / core_area — CourseHistory.save() override가 course_code로
-        # Course에서 자동 복사 (#47 Phase 2). 프론트가 응답으로 확인 가능하도록 노출 (#114).
-        fields = ['id', 'course_name', 'course_code', 'year', 'semester',
-                  'grade_received', 'category', 'credits',
+        fields = ['id', 'course_code', 'year', 'semester', 'grade_received',
+                  'course_name', 'category', 'credits',
                   'liberal_subtype', 'core_area']
+        read_only_fields = ['id', 'course_name', 'category', 'credits',
+                            'liberal_subtype', 'core_area']
 
-    def validate_credits(self, value):
-        if value < 1 or value > 10:
-            raise serializers.ValidationError('학점은 1 이상 10 이하여야 합니다.')
-        return value
-
-    def validate_semester(self, value):
-        if value not in (1, 2):
-            raise serializers.ValidationError('semester는 1(봄학기) 또는 2(가을학기)만 허용됩니다.')
+    def validate_course_code(self, value):
+        try:
+            course = Course.objects.get(course_code=value)
+        except Course.DoesNotExist:
+            raise serializers.ValidationError(
+                f'존재하지 않는 과목입니다: {value}. 카탈로그 등록 후 다시 시도해주세요.'
+            )
+        # create 재호출 비용 절감 — 검증 시점에 조회한 객체를 캐시
+        self._course = course
         return value
 
     def validate_year(self, value):
         if value < 1900 or value > 2100:
             raise serializers.ValidationError('year는 1900 이상 2100 이하여야 합니다.')
         return value
+
+    def validate_semester(self, value):
+        if value not in (1, 2):
+            raise serializers.ValidationError(
+                'semester는 1(봄학기) 또는 2(가을학기)만 허용됩니다.'
+            )
+        return value
+
+    def validate(self, data):
+        # unique_together (user, course_code, year, semester) 사전 체크 → IntegrityError(500) 대신 400.
+        # PATCH로 일부 필드만 와서 year/semester 누락 시엔 unique 체크 건너뜀 (어차피 update는
+        # grade_received만 처리하므로 unique 충돌 발생 불가).
+        course = getattr(self, '_course', None)
+        if course is None or 'year' not in data or 'semester' not in data:
+            return data
+        user = self.context['request'].user
+        qs = CourseHistory.objects.filter(
+            user=user, course_code=data['course_code'],
+            year=data['year'], semester=data['semester'],
+        )
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                {'course_code': '같은 학기의 동일 과목 수강이력이 이미 있습니다.'}
+            )
+        return data
+
+    def create(self, validated_data):
+        course = self._course
+        return CourseHistory.objects.create(
+            user=self.context['request'].user,
+            course_code=course.course_code,
+            course_name=course.name,
+            category=course.category,
+            credits=course.credits,
+            liberal_subtype=course.liberal_subtype,
+            core_area=course.core_area,
+            year=validated_data['year'],
+            semester=validated_data['semester'],
+            grade_received=validated_data.get('grade_received', ''),
+        )
+
+    def update(self, instance, validated_data):
+        # grade_received만 partial 수정 허용. course_code/year/semester는 다시 보내도
+        # 같은 행으로 unique 충돌만 안 나면 무시 (값이 동일하므로 의미 없음).
+        if 'grade_received' in validated_data:
+            instance.grade_received = validated_data['grade_received']
+            instance.save(update_fields=['grade_received'])
+        return instance
 
 
 class CurrentCourseSerializer(serializers.ModelSerializer):

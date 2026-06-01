@@ -414,8 +414,19 @@ class CourseHistoryAutoFillResponseTests(TestCase):
             self.assertIn('core_area', item)
 
 
-class CourseHistoryCategoryChoicesTests(TestCase):
-    """#115 — CourseHistory.category가 학칙 7분류 외 임의 문자열 거부."""
+# #115 CourseHistoryCategoryChoicesTests는 #151에서 흡수됨 — 새 시리얼라이저가
+# category를 read_only로 두어 평문 임의 문자열 입력 자체가 무시되고, Course
+# 카탈로그의 category가 응답으로 노출됨. 회귀 검증은 CourseHistoryHydrateTests의
+# test_평문_category_보내도_무시되고_카탈로그가_정답 / test_학칙_7분류_각_과목별_자동_매칭에서 수행.
+
+
+class CourseHistoryHydrateTests(TestCase):
+    """#151 — POST /course-history/는 course_code 1개로 5개 필드 자동 hydrate.
+
+    course_name·category·credits·liberal_subtype·core_area가 Course에서 복사되고,
+    사용자 입력은 course_code + year + semester + grade_received(선택) 4개로 축소.
+    Course 미존재 시 400 (#149와 동일 정책). PUT/PATCH는 grade_received만 partial.
+    """
 
     url = '/api/v1/accounts/course-history/'
     VALID_CATEGORIES = (
@@ -424,47 +435,170 @@ class CourseHistoryCategoryChoicesTests(TestCase):
     )
 
     def setUp(self):
+        from courses.models import Course
         self.user = User.objects.create_user(
-            email='cat@mju.ac.kr', password=VALID_PWD,
+            email='hist151@mju.ac.kr', password=VALID_PWD,
         )
         self.user.is_email_verified = True
         self.user.save(update_fields=['is_email_verified'])
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
-    def _payload(self, category, course_code='TST001'):
-        return {
-            'course_name': '테스트',
-            'course_code': course_code,
+        # 핵심교양 — liberal_subtype + core_area 둘 다
+        self.c_core = Course.objects.create(
+            course_code='COR1001', name='서양사', category='핵심교양',
+            college='교양', liberal_subtype='핵심교양', core_area='역사와 철학',
+            credits=3, year_open=1, semester_open=1,
+        )
+        # 학문기초교양 — liberal_subtype만
+        self.c_found = Course.objects.create(
+            course_code='FOU1001', name='미적분학1', category='학문기초교양',
+            college='교양', liberal_subtype='학문기초교양',
+            credits=3, year_open=1, semester_open=1,
+        )
+        # 전공필수 — 두 키 모두 None
+        self.c_major = Course.objects.create(
+            course_code='MAJ1001', name='자료구조', category='전공필수',
+            college='ICT융합대학', major='컴퓨터공학전공',
+            credits=3, year_open=2, semester_open=1,
+        )
+
+    def test_POST_course_code로_5개_필드_자동_hydrate(self):
+        res = self.client.post(self.url, {
+            'course_code': 'COR1001',
             'year': 2024,
             'semester': 1,
             'grade_received': 'A',
-            'category': category,
-            'credits': 3,
-        }
+        }, format='json')
+        self.assertEqual(res.status_code, 201, msg=res.data)
+        self.assertEqual(res.data['course_name'], '서양사')
+        self.assertEqual(res.data['category'], '핵심교양')
+        self.assertEqual(res.data['credits'], 3)
+        self.assertEqual(res.data['liberal_subtype'], '핵심교양')
+        self.assertEqual(res.data['core_area'], '역사와 철학')
+        # 사용자 입력 4개 그대로
+        self.assertEqual(res.data['course_code'], 'COR1001')
+        self.assertEqual(res.data['year'], 2024)
+        self.assertEqual(res.data['semester'], 1)
+        self.assertEqual(res.data['grade_received'], 'A')
 
-    def test_임의_문자열_category_거부_115(self):
-        # 결함 M 재현 케이스 — 이전엔 201 통과 + DB에 garbage 박힘
-        res = self.client.post(self.url, self._payload('테스트교양'), format='json')
+    def test_grade_received_생략하면_빈_문자열(self):
+        res = self.client.post(self.url, {
+            'course_code': 'COR1001', 'year': 2024, 'semester': 1,
+        }, format='json')
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['grade_received'], '')
+
+    def test_평문_category_보내도_무시되고_카탈로그가_정답(self):
+        # 사용자가 평문 category='임의값' 보내도 read_only라 무시
+        res = self.client.post(self.url, {
+            'course_code': 'COR1001', 'year': 2024, 'semester': 1,
+            'category': '테스트교양', 'course_name': '다른이름',
+            'credits': 99,
+        }, format='json')
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['category'], '핵심교양')
+        self.assertEqual(res.data['course_name'], '서양사')
+        self.assertEqual(res.data['credits'], 3)
+
+    def test_학문기초교양_과목은_core_area_null(self):
+        res = self.client.post(self.url, {
+            'course_code': 'FOU1001', 'year': 2024, 'semester': 1,
+        }, format='json')
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['liberal_subtype'], '학문기초교양')
+        self.assertIsNone(res.data['core_area'])
+
+    def test_전공_과목은_두_키_모두_null(self):
+        res = self.client.post(self.url, {
+            'course_code': 'MAJ1001', 'year': 2024, 'semester': 1,
+        }, format='json')
+        self.assertEqual(res.status_code, 201)
+        self.assertIsNone(res.data['liberal_subtype'])
+        self.assertIsNone(res.data['core_area'])
+
+    def test_존재하지_않는_course_code_400(self):
+        res = self.client.post(self.url, {
+            'course_code': '존재하지않음', 'year': 2024, 'semester': 1,
+        }, format='json')
         self.assertEqual(res.status_code, 400)
-        self.assertIn('category', res.data)
+        self.assertIn('course_code', res.data)
 
-    def test_빈_문자열_category_거부_115(self):
-        res = self.client.post(self.url, self._payload(''), format='json')
+    def test_unique_constraint_400(self):
+        # 같은 (user, course_code, year, semester) 중복 등록 → 400
+        self.client.post(self.url, {
+            'course_code': 'COR1001', 'year': 2024, 'semester': 1,
+        }, format='json')
+        res = self.client.post(self.url, {
+            'course_code': 'COR1001', 'year': 2024, 'semester': 1,
+        }, format='json')
         self.assertEqual(res.status_code, 400)
-        self.assertIn('category', res.data)
+        self.assertIn('course_code', res.data)
 
-    def test_학칙_7분류_모두_통과_115(self):
+    def test_학칙_7분류_각_과목별_자동_매칭(self):
+        """#115 흡수 — Course의 category가 응답에 그대로 노출되는지 7분류 모두 검증."""
+        from courses.models import Course
         for i, cat in enumerate(self.VALID_CATEGORIES):
-            res = self.client.post(self.url, self._payload(cat, course_code=f'TST{i:03d}'), format='json')
-            self.assertEqual(res.status_code, 201, msg=f'{cat} 거부됨')
+            code = f'CAT{i:03d}'
+            Course.objects.create(
+                course_code=code, name=f'테스트{cat}', category=cat,
+                college='교양' if cat.endswith('교양') else 'ICT융합대학',
+                credits=3, year_open=1, semester_open=1,
+            )
+            res = self.client.post(self.url, {
+                'course_code': code, 'year': 2024, 'semester': 1,
+            }, format='json')
+            self.assertEqual(res.status_code, 201, msg=f'{cat}: {res.data}')
             self.assertEqual(res.data['category'], cat)
 
-    def test_옛_라벨_교양필수는_거부_115(self):
-        # #47 Phase 3에서 폐기된 라벨 — silent 통과 방지
-        res = self.client.post(self.url, self._payload('교양필수'), format='json')
-        self.assertEqual(res.status_code, 400)
-        self.assertIn('category', res.data)
+    def test_PATCH_grade_received만_갱신(self):
+        post = self.client.post(self.url, {
+            'course_code': 'COR1001', 'year': 2024, 'semester': 1,
+            'grade_received': 'B',
+        }, format='json')
+        hist_id = post.data['id']
+
+        res = self.client.patch(
+            f'{self.url}{hist_id}/', {'grade_received': 'A+'}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, msg=res.data)
+        self.assertEqual(res.data['grade_received'], 'A+')
+        # 자동 채움 결과 + course_code 무변경
+        self.assertEqual(res.data['course_name'], '서양사')
+        self.assertEqual(res.data['course_code'], 'COR1001')
+
+    def test_PATCH로_course_code_바꿔도_무시(self):
+        """course_code는 read_only가 아니지만 update는 grade_received만 보고 처리."""
+        post = self.client.post(self.url, {
+            'course_code': 'COR1001', 'year': 2024, 'semester': 1,
+        }, format='json')
+        hist_id = post.data['id']
+
+        # course_code도 같이 보내도 update는 grade_received만 변경
+        res = self.client.patch(f'{self.url}{hist_id}/', {
+            'course_code': 'MAJ1001',
+            'grade_received': 'C',
+        }, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['grade_received'], 'C')
+        # course_code·course_name 무변경
+        self.assertEqual(res.data['course_code'], 'COR1001')
+        self.assertEqual(res.data['course_name'], '서양사')
+
+    def test_GET_응답에_9개_필드_모두_노출(self):
+        self.client.post(self.url, {
+            'course_code': 'COR1001', 'year': 2024, 'semester': 1,
+            'grade_received': 'A',
+        }, format='json')
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200)
+        results = res.data['results']
+        self.assertEqual(len(results), 1)
+        item = results[0]
+        for k in ('id', 'course_code', 'year', 'semester', 'grade_received',
+                  'course_name', 'category', 'credits',
+                  'liberal_subtype', 'core_area'):
+            self.assertIn(k, item, msg=f'필드 누락: {k}')
 
 
 # ─── #135: prune_pending_signups cron ────────────────────────────────
