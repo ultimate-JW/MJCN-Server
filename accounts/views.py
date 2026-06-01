@@ -3,7 +3,7 @@ from smtplib import SMTPException
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.utils import timezone
 from rest_framework import status, viewsets, serializers
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
@@ -639,11 +639,17 @@ class BookmarkListCreateView(ListCreateAPIView):
         elif type_param == Bookmark.CONTENT_TYPE_INFORMATION:
             category = params.get('category')
             if category:
-                import json
-                needle = json.dumps(category, ensure_ascii=True)
-                info_ids = Information.objects.filter(
-                    categories__icontains=needle
-                ).values_list('id', flat=True)
+                # JSONField category 매칭은 vendor별로 다름 (information/views.py와 동일 정책)
+                if connection.vendor == 'postgresql':
+                    # PG JSONB는 한글 그대로 저장 → native __contains 사용
+                    info_qs = Information.objects.filter(categories__contains=[category])
+                else:
+                    # SQLite 폴백 (로컬·CI): Django가 한글을 ASCII escape로 저장 →
+                    # 같은 표현으로 직렬화한 needle로 icontains
+                    import json
+                    needle = json.dumps(category, ensure_ascii=True)
+                    info_qs = Information.objects.filter(categories__icontains=needle)
+                info_ids = info_qs.values_list('id', flat=True)
                 qs = qs.filter(object_id__in=list(info_ids))
 
         return qs
