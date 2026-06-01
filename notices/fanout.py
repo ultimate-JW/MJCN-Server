@@ -26,15 +26,21 @@ User = get_user_model()
 # 초기 백필이나 --max-pages 큰 값으로 과거 공지 대량 수집 시 알림 폭주 방지.
 NOTICE_FANOUT_RECENCY_DAYS = 7
 
-_FANOUT_MESSAGE = '관심사 기반 새 공지가 등록되었습니다.'
+_FANOUT_MESSAGE_PERSONALIZED = '관심사 기반 새 공지가 등록되었습니다.'
+_FANOUT_MESSAGE_ACADEMIC = '새 학사 공지가 등록되었습니다.'
+
+# spec §6.9 학사공지 전체 fanout 예외 (#153) — 수강신청·등록·졸업 등 행정 필수 공지는
+# 매칭·태그 무관 모든 활성 사용자에게 알림 발송. Notice.source choices의 'academic'.
+_ACADEMIC_SOURCE = 'academic'
 
 
 def fanout_new_notice(notice) -> int:
-    """신규 Notice 1건에 대해 매칭 사용자에게 알림 생성.
+    """신규 Notice 1건에 대해 매칭 사용자(또는 학사공지면 모든 사용자)에게 알림 생성.
 
     - 백필 가드: published_at이 7일 이전이면 skip
-    - 태그가 없으면 매칭 불가 → skip
-    - 매칭 점수 >= 1 + 활성 사용자 + 알림 토글 ON 사용자에게만 알림
+    - **학사공지(source='academic')는 매칭·태그 무관 모든 활성+토글 ON 사용자에게 발송 (#153)**
+    - 그 외 출처: tags 비어있으면 skip, 매칭 점수 >= 1인 사용자에게만 발송
+    - 활성 사용자 + 알림 토글 ON만 대상
     - 호출자(crawler.save)는 예외를 격리하므로 여기서는 예외 raise 가능
 
     Returns:
@@ -46,27 +52,33 @@ def fanout_new_notice(notice) -> int:
     if notice.published_at < threshold:
         return 0
 
+    is_academic = notice.source == _ACADEMIC_SOURCE
+
     tags = notice.tags or []
-    if not tags:
+    if not is_academic and not tags:
+        # 학사 외 카테고리는 tags=[]면 매칭 불가 → 기존 정책 그대로 skip
         return 0
 
     # DB에서 미리 토글 OFF 사용자를 제외 → 매칭 계산량 절감.
-    # (create_notification도 토글 체크하지만 거기 도달 전에 거르는 게 빠름)
+    # 학사공지도 같은 토글(notification_notice)을 따른다 (사용자가 OFF 했으면 존중).
     users = User.objects.filter(
         is_active=True,
         notification_enabled=True,
         notification_notice=True,
     ).prefetch_related('interests')
 
+    message = _FANOUT_MESSAGE_ACADEMIC if is_academic else _FANOUT_MESSAGE_PERSONALIZED
+
     created = 0
     for user in users:
-        user_keywords = extract_user_keywords(user)
-        if score_match(user_keywords, tags) < 1:
-            continue
+        if not is_academic:
+            user_keywords = extract_user_keywords(user)
+            if score_match(user_keywords, tags) < 1:
+                continue
         notif = create_notification(
             user,
             title=notice.title[:200],
-            message=_FANOUT_MESSAGE,
+            message=message,
             notification_type=Notification.TYPE_NOTICE,
             related_id=notice.id,
         )

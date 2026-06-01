@@ -46,14 +46,25 @@ def build_dashboard(user) -> dict:
         user.current_courses.filter(day_of_week=weekday).order_by('start_time')
     )
 
-    # 공지: 매칭 점수 ↓ → 최신순. sort_by_match가 점수 0 항목도 published_at
-    # 내림차순으로 정렬하므로, 상위 N개를 자르면 "맞춤형 우선 + 부족분 최신 채움"이 된다.
-    notices = sort_by_match(
-        list(Notice.objects.select_related('ai_result').all()),
-        user_keywords,
-        tags_attr='tags',
-        secondary_key=lambda n: -n.published_at.timestamp(),
+    # 공지: 학사공지(source='academic') 우선 슬롯 채움 (#153) → 나머지 슬롯은
+    # 매칭 점수 ↓ → 최신순으로 부족분 채움. spec §6.10 참고.
+    all_notices = list(Notice.objects.select_related('ai_result').all())
+    academic = sorted(
+        (n for n in all_notices if n.source == 'academic'),
+        key=lambda n: -n.published_at.timestamp(),
     )[:FEED_SIZE]
+    academic_ids = {n.id for n in academic}
+    remaining = FEED_SIZE - len(academic)
+    if remaining > 0:
+        matched = sort_by_match(
+            [n for n in all_notices if n.id not in academic_ids],
+            user_keywords,
+            tags_attr='tags',
+            secondary_key=lambda n: -n.published_at.timestamp(),
+        )[:remaining]
+        notices = academic + matched
+    else:
+        notices = academic
 
     # 정보: 활성 & 미마감 항목만 → 매칭 점수 ↓ → 마감 임박 순
     info_qs = Information.objects.filter(is_active=True).filter(
