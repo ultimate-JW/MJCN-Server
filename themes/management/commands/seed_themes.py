@@ -19,7 +19,7 @@ SEED_DATA = [
     (
         {
             'category': Theme.CATEGORY_COURSE_REGISTRATION,
-            'title': '2026-1 수강신청 가이드',
+            'title': '수강신청 가이드',
             'description': '수강신청 일정·전략·실수 회피 팁을 한곳에 모은 안내.',
             'order': 10,
         },
