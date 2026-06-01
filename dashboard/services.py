@@ -11,7 +11,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from accounts.serializers import CurrentCourseSerializer
-from common.matching import extract_user_keywords, sort_by_match
+from common.matching import extract_user_keywords, score_match, sort_by_match
 from courses.services import calc_graduation_progress
 from information.models import Information
 from notices.models import Notice
@@ -48,10 +48,14 @@ def build_dashboard(user) -> dict:
 
     # 공지: 학사공지(source='academic') 우선 슬롯 채움 (#153) → 나머지 슬롯은
     # 매칭 점수 ↓ → 최신순으로 부족분 채움. spec §6.10 참고.
+    # 학사공지는 점수 무관 최신순으로 정렬하지만 match_score 속성은 정확히 부여
+    # (sort_by_match 거치지 않으면 0이 응답에 박힘 — NoticeListSerializer가 노출).
     all_notices = list(Notice.objects.select_related('ai_result').all())
+    academic_pool = [n for n in all_notices if n.source == 'academic']
+    for n in academic_pool:
+        n.match_score = score_match(user_keywords, n.tags or [])
     academic = sorted(
-        (n for n in all_notices if n.source == 'academic'),
-        key=lambda n: -n.published_at.timestamp(),
+        academic_pool, key=lambda n: -n.published_at.timestamp(),
     )[:FEED_SIZE]
     academic_ids = {n.id for n in academic}
     remaining = FEED_SIZE - len(academic)

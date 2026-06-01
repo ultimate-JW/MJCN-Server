@@ -132,6 +132,68 @@ class DashboardAPITests(APITestCase):
         res = self.client.get(self.url)
         self.assertEqual(len(res.data['notices']), 1)
 
+    # --- #153: 학사공지 우선 노출 ---
+
+    def test_학사공지_매칭_0이어도_노출_153(self):
+        # 학사공지 1개(매칭 0) + 매칭되는 일반 공지 5개. 학사가 무조건 슬롯 안.
+        now = timezone.now()
+        academic = Notice.objects.create(
+            source='academic', title='수강신청 안내', url='https://mju.ac.kr/reg',
+            published_at=now - timedelta(days=5), tags=[],
+        )
+        for i in range(5):
+            Notice.objects.create(
+                source='general', title=f'관심사공지{i}',
+                url=f'https://mju.ac.kr/match{i}',
+                published_at=now - timedelta(days=i),
+                tags=['데이터테크놀로지전공'],  # 사용자 전공 매칭
+            )
+        res = self.client.get(self.url)
+        notices = res.data['notices']
+        self.assertEqual(len(notices), 3)
+        # 학사공지가 첫 슬롯에 무조건 포함 (FEED_SIZE=3 안)
+        ids = [n['id'] for n in notices]
+        self.assertIn(academic.id, ids)
+
+    def test_학사공지_여러건이면_최신순으로_슬롯_채움_153(self):
+        # academic 4건. FEED_SIZE=3이라 최신 3건만 노출.
+        now = timezone.now()
+        for i in range(4):
+            Notice.objects.create(
+                source='academic', title=f'학사{i}',
+                url=f'https://mju.ac.kr/a{i}',
+                published_at=now - timedelta(days=i), tags=[],
+            )
+        res = self.client.get(self.url)
+        notices = res.data['notices']
+        # 최신 3건 (학사0, 학사1, 학사2)
+        self.assertEqual([n['title'] for n in notices], ['학사0', '학사1', '학사2'])
+
+    def test_학사공지_2건_매칭_3건이면_학사_먼저_그_뒤_매칭_153(self):
+        now = timezone.now()
+        # 학사 2건 (최신순으로 a0, a1)
+        for i in range(2):
+            Notice.objects.create(
+                source='academic', title=f'학사{i}',
+                url=f'https://mju.ac.kr/a{i}',
+                published_at=now - timedelta(days=i), tags=[],
+            )
+        # 매칭 일반 3건
+        for i in range(3):
+            Notice.objects.create(
+                source='general', title=f'매칭{i}',
+                url=f'https://mju.ac.kr/m{i}',
+                published_at=now - timedelta(days=10 + i),
+                tags=['데이터테크놀로지전공'],
+            )
+        res = self.client.get(self.url)
+        notices = res.data['notices']
+        self.assertEqual(len(notices), 3)
+        # 학사 2건이 먼저 (최신순) + 매칭 1건 (제일 최근 매칭)
+        self.assertEqual(notices[0]['title'], '학사0')
+        self.assertEqual(notices[1]['title'], '학사1')
+        self.assertEqual(notices[2]['title'], '매칭0')
+
     # --- information ---
 
     def test_information_d_day_포함_만료_비활성_제외(self):
