@@ -56,7 +56,8 @@ class DashboardAPITests(APITestCase):
         res = self.client.get(self.url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         for key in ('greeting', 'graduation_progress_percent', 'ai_guide', 'today_schedule',
-                    'notices', 'information', 'unread_notification_count'):
+                    'notices', 'information', 'new_notice_count', 'new_information_count',
+                    'unread_notification_count'):
             self.assertIn(key, res.data)
 
     def test_greeting_사용자명_요일_수업수(self):
@@ -445,3 +446,72 @@ class DashboardGraduationProgressTests(APITestCase):
             graduation_year=None, graduation_month=None,
         )
         self.assertEqual(self._progress(user), 0)
+
+
+def _make_notice_at(dt, **overrides):
+    """created_at(auto_now_add)을 dt로 강제해 Notice 생성."""
+    defaults = dict(source='general', title='n', content='c',
+                    url=f'https://x/n{Notice.objects.count()}',
+                    published_at=timezone.now())
+    defaults.update(overrides)
+    n = Notice.objects.create(**defaults)
+    Notice.objects.filter(pk=n.pk).update(created_at=dt)
+    return n
+
+
+def _make_info_at(dt, **overrides):
+    """created_at을 dt로 강제해 Information 생성."""
+    defaults = dict(title='i', organizer='o', description='',
+                    url=f'https://wevity.com/i{Information.objects.count()}',
+                    source='wevity', source_id=f'cnt-{Information.objects.count()}',
+                    is_active=True, categories=[])
+    defaults.update(overrides)
+    info = Information.objects.create(**defaults)
+    Information.objects.filter(pk=info.pk).update(created_at=dt)
+    return info
+
+
+class DashboardNewCountTests(APITestCase):
+    """new_notice_count / new_information_count — 가장 최근 크롤 배치 신규 수 (#165)."""
+
+    url = '/api/v1/dashboard/'
+
+    def setUp(self):
+        self.user = _make_user()
+        self.client.force_authenticate(user=self.user)
+
+    def test_데이터_없으면_0(self):
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['new_notice_count'], 0)
+        self.assertEqual(res.data['new_information_count'], 0)
+
+    def test_가장_최근_배치_날짜의_건수만_카운트(self):
+        now = timezone.now()
+        yesterday = now - timedelta(days=1)
+        # 어제 배치 2건, 오늘 배치 3건
+        for _ in range(2):
+            _make_notice_at(yesterday)
+        for _ in range(3):
+            _make_notice_at(now)
+        res = self.client.get(self.url)
+        # 가장 최근 배치(오늘) = 3건만
+        self.assertEqual(res.data['new_notice_count'], 3)
+
+    def test_information도_동일_로직(self):
+        now = timezone.now()
+        _make_info_at(now - timedelta(days=1))
+        _make_info_at(now)
+        _make_info_at(now)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['new_information_count'], 2)
+
+    def test_읽음_여부_무관_전역값(self):
+        # 알림 읽음 상태와 무관하게 크롤 기준 카운트
+        now = timezone.now()
+        _make_notice_at(now)
+        _make_notice_at(now)
+        # 다른 사용자로도 같은 값이어야 함 (전역)
+        other = _make_user(email='other@mju.ac.kr')
+        self.client.force_authenticate(user=other)
+        res = self.client.get(self.url)
+        self.assertEqual(res.data['new_notice_count'], 2)

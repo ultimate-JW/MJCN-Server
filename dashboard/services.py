@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from django.db.models import Q
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from accounts.serializers import CurrentCourseSerializer
@@ -33,6 +33,20 @@ def _end_date_key(info) -> int:
     if info.end_date is None:
         return date.max.toordinal()
     return info.end_date.toordinal()
+
+
+def _latest_batch_count(model) -> int:
+    """가장 최근 크롤 배치에서 신규 수집된 건수 (spec 6.10, #165).
+
+    Max(created_at)의 (로컬) 날짜를 구해 그 날짜에 생성된 행 수를 센다.
+    크롤러가 update_or_create + created_at=auto_now_add라 기존 항목 재크롤은
+    created_at이 안 바뀌므로 진짜 신규만 카운트된다. 읽음·개인화 무관 전역 값.
+    """
+    latest = model.objects.aggregate(m=Max('created_at'))['m']
+    if latest is None:
+        return 0
+    latest_date = timezone.localtime(latest).date()
+    return model.objects.filter(created_at__date=latest_date).count()
 
 
 def build_dashboard(user) -> dict:
@@ -85,6 +99,9 @@ def build_dashboard(user) -> dict:
         'today_schedule': CurrentCourseSerializer(today_courses, many=True).data,
         'notices': NoticeListSerializer(notices, many=True).data,
         'information': DashboardInformationSerializer(information, many=True).data,
+        # 상단 통계 칩 — 가장 최근 크롤 배치 신규 건수 (전역, 읽음 무관, #165)
+        'new_notice_count': _latest_batch_count(Notice),
+        'new_information_count': _latest_batch_count(Information),
         'unread_notification_count': Notification.objects.filter(
             user=user, is_read=False,
         ).count(),
