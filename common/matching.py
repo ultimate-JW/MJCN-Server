@@ -13,8 +13,22 @@ import re
 from typing import Callable, Iterable
 
 
-# 자유 텍스트 분리 구분자 — 콤마, 공백, 슬래시 등
-_CUSTOM_TEXT_SPLIT_RE = re.compile(r'[,\s/·]+')
+# 키워드 토큰 분리 구분자 — 콤마, 공백, 슬래시, 가운뎃점.
+# custom_text 자유 입력 분리 + 복합 라벨/전공 토큰화에 공통 사용 (spec 5.10.3).
+_TOKEN_SPLIT_RE = re.compile(r'[,\s/·]+')
+
+
+def _tokenize(value: str) -> set[str]:
+    """단일 문자열을 구분자로 쪼갠 정규화(lower/strip) 토큰 set.
+
+    '공기업/공공기관' → {'공기업', '공공기관'}
+    '반도체·ICT대학 · 컴퓨터공학전공' → {'반도체', 'ict대학', '컴퓨터공학전공'}
+    """
+    return {
+        tok.strip().lower()
+        for tok in _TOKEN_SPLIT_RE.split(value or '')
+        if tok.strip()
+    }
 
 
 def extract_user_keywords(user) -> set[str]:
@@ -51,7 +65,7 @@ def extract_user_keywords(user) -> set[str]:
         # custom_text (자유 텍스트)
         custom = (getattr(area, 'custom_text', '') or '').strip()
         if custom:
-            for token in _CUSTOM_TEXT_SPLIT_RE.split(custom):
+            for token in _TOKEN_SPLIT_RE.split(custom):
                 token = token.strip()
                 if token:
                     keywords.add(token)
@@ -65,22 +79,31 @@ def _normalize(keywords: set[str]) -> set[str]:
 
 
 def score_match(user_keywords: set[str], content_tags: Iterable[str]) -> int:
-    """단순 교집합 크기 = 점수 (spec 5.10.3).
+    """토큰 단위로 매칭된 관심사 수 = 점수 (spec 5.10.3).
 
-    부분 문자열 매칭은 v1에서 적용 안 함 (오탐 방지).
-    카테고리별 가중치도 없음 (단순화).
+    사용자 키워드·콘텐츠 태그를 구분자로 토큰화한 뒤, 각 관심사가 태그 토큰과
+    하나라도 겹치면 1점. 복합 라벨('공기업/공공기관')·전공 통짜 문자열도 토큰으로
+    쪼개져 LLM의 단일어 태그('공기업')와 매칭된다.
+
+    토큰 단위 '완전 일치'만 인정하므로 부분 문자열 오탐은 없다 ('공기업' ↔
+    '공기업체관리'는 매칭 안 됨). 한 관심사는 여러 토큰으로 쪼개져도 최대 1점
+    (점수 인플레 방지).
 
     Args:
-        user_keywords: extract_user_keywords() 결과 (이미 정규화됨)
+        user_keywords: extract_user_keywords() 결과
         content_tags: Notice.tags 또는 Information.categories 같은 list[str]
 
     Returns:
-        매칭 키워드 수 (0 이상의 정수)
+        매칭된 관심사 수 (0 이상의 정수)
     """
     if not user_keywords or not content_tags:
         return 0
-    normalized_tags = {(t or '').strip().lower() for t in content_tags if t}
-    return len(user_keywords & normalized_tags)
+    tag_tokens: set[str] = set()
+    for tag in content_tags:
+        tag_tokens |= _tokenize(tag)
+    if not tag_tokens:
+        return 0
+    return sum(1 for kw in user_keywords if _tokenize(kw) & tag_tokens)
 
 
 def sort_by_match(
