@@ -1500,6 +1500,25 @@ grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스
   + `advice`/`readiness`/`roadmap`/`quick_questions` 빈 값. 표현은 프론트/LLM이 결정(#25 정신).
   - 현재 지원 직무는 `클라우드 개발자` 1종(시연 스코프). 직무 확장은 LLM 생성 도입 시점에 흡수.
 
+#### 5.3.9 교환학생·해외 인턴십 가이드 테마 상세 (#180)
+
+진로 테마 상세 화면("교환학생·해외 인턴십 가이드", Figma `221-6066`) 한 장을 단일 응답으로 제공한다.
+5.3.8 로드맵의 형제 화면이지만 **개인화 축이 다르다** — `target_job`이 아니라 **학년·학기(메인) + 관심사(보조)**.
+받쳐줄 추천 엔진이 없는 진로 판단 콘텐츠라 **규칙 기반 템플릿**(LLM 없음)으로 생성하며, 추후 LLM 생성으로
+교체할 수 있도록 신호 추출과 phrasing을 분리한다.
+
+- **② 띵똥이의 조언** (`advice.stage_message`): `(학년, 학기)` 8칸 템플릿 1문장. `이름`/`전공` 슬롯 치환.
+- **③ 나에게 필요한 선택일까** (`necessity`): `교환학생`/`해외 인턴십` 각 1~5 별점 + 한줄이유.
+  - 점수 = `(학년, 학기)` base. 관심사 `global` 신호 있으면 교환학생 +1(상한 5). `handson`은 **점수 미반영**.
+  - 한줄이유는 옵션별 × 점수밴드(4~5 / 2~3 / 1) 고정 문구.
+- **④ 판단 기준에 따른 평가** (`evaluation`): 학년 스테이지(`early`=1~2 / `mid`=3 / `late`=4)별 적합 조건(`fits`)
+  + `caveat`. 관심사 매칭 시 bullet 1개 + 안내 1줄 추가(`global`→교환, `handson`→해외인턴).
+- **⑤ 지금 시점 기준 추천** (`current_recommendation`): 학년 스테이지별 고정 1~3순위 `{rank, title, note}`.
+- **⑥ 띵똥이에게 물어보기** (`quick_questions`): 탭하면 챗으로 전송될 `{label, prompt}` 3개.
+  3번째는 `User.target_job` 있으면 그 직무 로드맵 동선, 없으면 일반 진로 칩.
+- **관심사 신호**: `InterestArea`(category + custom_text)를 한 텍스트로 합쳐 두 키워드 세트(`global`/`handson`)로 스캔.
+- **학년·학기는 온보딩 필수값** → 미입력 케이스 없음.
+
 ### 5.4 통합 정보 제공 - 공지사항 (notices)
 
 > **크롤링 출처 정책**: 명지대학교 자체 공지 게시판만 수집한다. 외부 사이트(링커리어/씽굿/위비티 등)는 후속 작업으로 보류.
@@ -1868,6 +1887,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | GET | `/api/v1/courses/recommend/next/?year=&semester=` | O | 다음학기 수강과목 추천 (쿼리 미지정 시 사용자 학기 기반 자동, spec 5.3.1, #36). semester ∉ {1,2,3,4} 또는 비숫자 → 400 |
 | GET | `/api/v1/courses/recommend/next/sections/?year=&semester=` | O | 수강신청 테마 상세 — 조언(`advice`) + 관심분야/지난학기 2섹션(`interest_courses`/`linked_courses`) + 질문칩(`quick_questions`) (spec 5.3.7, #164). 개설 데이터 없으면 작년 같은 학기 fallback |
 | GET | `/api/v1/courses/recommend/career/roadmap/?year=&semester=` | O | 취업·진로 로드맵 테마 상세 — 조언(`advice`) + 준비도(`readiness`) + STEP 1~6 로드맵(`roadmap`, STEP5는 5.3.1 추천 주입) + 질문칩(`quick_questions`) (spec 5.3.8, #171). 직무 미입력/미지원 시 `note` 머신 코드 |
+| GET | `/api/v1/courses/exchange-guide/` | O | 교환학생·해외 인턴십 가이드 테마 상세 — 조언(`advice`) + 필요도 별점(`necessity`) + 판단기준(`evaluation`) + 시점추천(`current_recommendation`) + 질문칩(`quick_questions`) (spec 5.3.9, #180). 학년·학기 메인 + 관심사 보조, 규칙 기반 |
 | POST | `/api/v1/courses/recommend/curriculum/` | O | 전체 커리큘럼 추천 (body 노브, spec 5.3.2) |
 | GET | `/api/v1/courses/status/` | O | 이수현황 분석 |
 | GET | `/api/v1/courses/` | O | 과목 검색 (쿼리 파라미터) |

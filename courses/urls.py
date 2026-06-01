@@ -11,5 +11,6 @@ urlpatterns = [
     path('recommend/next/', views.NextSemesterRecommendView.as_view(), name='recommend-next'),
     path('recommend/next/sections/', views.NextSemesterSectionsView.as_view(), name='recommend-next-sections'),
     path('recommend/career/roadmap/', views.CareerRoadmapView.as_view(), name='recommend-career-roadmap'),
+    path('exchange-guide/', views.ExchangeGuideView.as_view(), name='exchange-guide'),
     path('recommend/curriculum/', views.CurriculumRecommendView.as_view(), name='recommend-curriculum'),
 ]
