@@ -530,8 +530,11 @@ class InterestAreaViewSet(viewsets.ModelViewSet):
 # ─── 6.4 수강이력 / 현재수강 ───
 
 class CourseHistoryViewSet(viewsets.ModelViewSet):
+    """수강이력 CRUD. POST는 course_code 1개로 5개 필드 자동 hydrate (#151).
+    PUT/PATCH는 grade_received만 partial 수정 가능 (학기 종료 후 성적 입력).
+    """
     serializer_class = CourseHistorySerializer
-    http_method_names = ['get', 'post', 'put', 'delete']
+    http_method_names = ['get', 'post', 'put', 'patch', 'delete']
     queryset = CourseHistory.objects.all()  # drf-spectacular path param 추론용
 
     def get_queryset(self):
