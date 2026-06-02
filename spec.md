@@ -1894,7 +1894,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | POST | `/api/v1/courses/recommend/curriculum/` | O | 전체 커리큘럼 추천 (body 노브, spec 5.3.2) |
 | GET | `/api/v1/courses/status/` | O | 이수현황 분석 |
 | GET | `/api/v1/courses/` | O | 과목 검색 (쿼리 파라미터) |
-| GET | `/api/v1/courses/offerings/?query=&year=&semester=` | O | 분반 단위 강의 검색 (#149) — 카드 1개 = offering 1개. `id` 값을 그대로 `POST /accounts/current-courses/`의 `offering_id`로 전달 |
+| GET | `/api/v1/courses/offerings/?query=&year=&semester=` | O | 분반 단위 강의 검색 (#149) — 카드 1개 = offering 1개. 응답에 `offering_id`(= offering PK)를 포함하며, 그 값을 그대로 `POST /accounts/current-courses/`의 `offering_id`로 전달. (`id`도 동일 값으로 함께 제공 — 하위호환) |
 
 ### 6.7 공지사항 (notices)
 
