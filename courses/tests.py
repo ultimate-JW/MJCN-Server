@@ -1954,7 +1954,7 @@ class CourseOfferingSearchAPITests(APITestCase):
         items = res.data['results'] if isinstance(res.data, dict) else res.data
         self.assertGreater(len(items), 0)
         item = items[0]
-        for k in ('id', 'year', 'semester', 'section_no',
+        for k in ('id', 'offering_id', 'year', 'semester', 'section_no',
                   'course_code', 'name', 'college', 'department', 'major',
                   'category', 'credits', 'professor', 'schedules'):
             self.assertIn(k, item, msg=f'필드 누락: {k}')
@@ -1967,6 +1967,14 @@ class CourseOfferingSearchAPITests(APITestCase):
         sch = item['schedules'][0]
         for k in ('day_of_week', 'start_time', 'end_time', 'room'):
             self.assertIn(k, sch)
+
+    def test_offering_id_equals_pk_and_id(self):
+        # #187: offering_id = offering PK = id (current-courses POST에 그대로 전달용)
+        res = self.client.get(self.url, {'query': 'AI프로그래밍'})
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        item = next(i for i in items if i['course_code'] == 'ICTC202')
+        self.assertEqual(item['offering_id'], self.off_ai_1.id)
+        self.assertEqual(item['offering_id'], item['id'])
 
     def test_query_filter_matches_course_name(self):
         res = self.client.get(self.url, {'query': 'AI'})
