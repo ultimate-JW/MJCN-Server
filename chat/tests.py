@@ -743,6 +743,48 @@ class SearchInformationDispatcherTests(TestCase):
         self.assertEqual(out['results'][0]['title'], '개발 부트캠프 안내')
 
 
+class SearchInformationSynonymTests(TestCase):
+    """#217: 챗 공모전 검색 동의어 확장 — contest-guide와 매칭 기준 통일.
+
+    공모전 Information은 본문 없이 title+categories만 매칭 재료라, "AI"→"인공지능"
+    같은 어휘 격차를 SYNONYM_MAP으로 메운다. 챗 경로만 단순 icontains라 갈리던 결함 해소.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+        future = _date.today() + timedelta(days=20)
+        _Information.objects.create(
+            source='wevity', source_id='syn-ai', url='https://example.com/ai',
+            title='인공지능 아이디어 경진대회', categories=['공모전'], end_date=future,
+        )
+        _Information.objects.create(
+            source='wevity', source_id='syn-sec', url='https://example.com/sec',
+            title='정보보호 해커톤', categories=['공모전'], end_date=future,
+        )
+        _Information.objects.create(
+            source='wevity', source_id='syn-design', url='https://example.com/dz',
+            title='2026 디자인 공모전', categories=['공모전', '디자인'], end_date=future,
+        )
+
+    def test_AI_동의어로_인공지능_제목_매칭(self):
+        # "AI"가 "인공지능" 제목과 매칭돼야 함 (핵심 결함)
+        out = dispatch_tool_call(None, 'search_information', {'query': 'AI 공모전'})
+        titles = [r['title'] for r in out['results']]
+        self.assertIn('인공지능 아이디어 경진대회', titles)
+
+    def test_보안_동의어로_정보보호_매칭(self):
+        out = dispatch_tool_call(None, 'search_information', {'query': '보안 공모전'})
+        titles = [r['title'] for r in out['results']]
+        self.assertIn('정보보호 해커톤', titles)
+
+    def test_무관_키워드는_비매칭(self):
+        # 'AI'만 검색하면 디자인 공모전(ai/동의어 없음)은 안 나와야 함
+        out = dispatch_tool_call(None, 'search_information', {'query': 'AI'})
+        titles = [r['title'] for r in out['results']]
+        self.assertIn('인공지능 아이디어 경진대회', titles)
+        self.assertNotIn('2026 디자인 공모전', titles)
+
+
 class ChatSearchToolIntegrationTests(TestCase):
     """search_notices tool이 chat 흐름에서 정상 호출되는지 통합."""
 
