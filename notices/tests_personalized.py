@@ -43,21 +43,21 @@ class PersonalizedNoticeListTests(TestCase):
             tags=['음악', '미술'],  # 0점
         )
 
-    def test_personalized는_매칭된것만_점수순_174(self):
-        # #174: match_score>=1만 노출, 점수 내림차순 → 동점 시 최신순
+    def test_personalized는_매칭된것만_최신순_196(self):
+        # #196: match_score>=1만 노출, 정렬은 published_at 최신순(점수순 아님)
         res = self.client.get(self.URL, {'view': 'personalized'})
         self.assertEqual(res.status_code, 200)
         ids = [r['id'] for r in res.data['results']]
-        # n_zero(0점)는 제외 → n_high(3) > n_mid(1)
-        self.assertEqual(ids, [self.n_high.id, self.n_mid.id])
+        # n_zero(0점) 제외. 최신순 → n_mid(now) > n_high(-1d)
+        self.assertEqual(ids, [self.n_mid.id, self.n_high.id])
         self.assertNotIn(self.n_zero.id, ids)
 
-    def test_personalized_가_기본값_174(self):
-        # view 파라미터 없으면 personalized — 매칭된 것만, 최고 점수가 위
+    def test_personalized_가_기본값_196(self):
+        # view 파라미터 없으면 personalized — 매칭된 것만, 최신순
         res = self.client.get(self.URL)
         ids = [r['id'] for r in res.data['results']]
         self.assertEqual(res.data['count'], 2)  # 매칭 0인 n_zero 제외
-        self.assertEqual(ids[0], self.n_high.id)
+        self.assertEqual(ids[0], self.n_mid.id)  # 최신이 위
 
     def test_all은_최신순(self):
         res = self.client.get(self.URL, {'view': 'all'})
@@ -125,7 +125,8 @@ class PersonalizedNoticeListTests(TestCase):
         self.assertEqual(len(ids), 2)
 
 
-# #155에서 personalized를 최신순으로 통일했으나, #162에서 personalized는
-# match_score 내림차순 정렬로 복원(맞춤형 분리). view=all만 최신순 유지.
+# 정렬 정책 이력: #155 최신순 통일 → #162 점수순 → #174 매칭 필터+점수순 →
+# #196 매칭 필터는 유지하되 정렬은 최신순(점수는 필터 기준으로만). 즉 personalized·all
+# 둘 다 최신순이고, 차이는 personalized가 match_score>=1만 노출하는 필터뿐.
 # 학사공지 누락 방지는 PUSH fanout(#153)이 담당하며, view=all 탭에서 항상 열람 가능.
-# 정렬 회귀는 test_personalized는_점수_내림차순_162 / test_all은_최신순에서 검증.
+# 정렬 회귀는 test_personalized는_매칭된것만_최신순_196 / test_all은_최신순에서 검증.

@@ -4,17 +4,10 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 
-from common.matching import extract_user_keywords, score_match, sort_by_match
+from common.matching import extract_user_keywords, score_match
 
 from .models import Notice
 from .serializers import NoticeDetailSerializer, NoticeListSerializer
-
-
-def _published_key(notice):
-    """매칭 동점 시 2차 정렬 키 — 최신순(작을수록 위). published_at 없으면 최하위."""
-    if notice.published_at is None:
-        return float('inf')
-    return -notice.published_at.timestamp()
 
 
 @extend_schema(
@@ -73,28 +66,25 @@ class NoticeListView(ListAPIView):
     def list(self, request, *args, **kwargs):
         """view 파라미터에 따라 두 화면 분리 (spec 5.4.2).
 
-        - 'personalized' (기본): match_score 내림차순 → 동점 시 최신순 정렬 (맞춤형)
-        - 'all': published_at 최신순 (전체보기)
+        - 'personalized' (기본): match_score>=1 매칭된 공지만 필터, published_at 최신순
+        - 'all': 전체, published_at 최신순
 
-        match_score는 두 view 모두 실제 계산해 응답에 노출한다 (#162).
+        두 view 모두 최신순 정렬. match_score는 실제 계산해 응답에 노출하되,
+        personalized의 필터 기준으로만 쓰고 정렬 키로는 사용하지 않는다 (#196).
         """
         view_mode = request.query_params.get('view', 'personalized')
         queryset = self.filter_queryset(self.get_queryset())  # published_at 최신순
         user_keywords = extract_user_keywords(request.user)
 
+        items = list(queryset)
+        for item in items:
+            item.match_score = score_match(user_keywords, item.tags or [])
+
         if view_mode == 'personalized':
-            # 매칭된 공지만(match_score>=1) 필터 → 점수 내림차순 → 동점 시 최신순 (#174).
+            # 매칭된 공지만(match_score>=1) 노출, 정렬은 queryset의 최신순 유지 (#196).
             # 관심사 미설정 사용자는 빈 결과 (온보딩에서 관심사 설정 강제).
-            scored = sort_by_match(
-                list(queryset), user_keywords,
-                tags_attr='tags', secondary_key=_published_key,
-            )
-            sorted_items = [it for it in scored if it.match_score >= 1]
-        else:
-            # view=all — 최신순 그대로 유지, match_score는 정보로 계산해 노출
-            sorted_items = list(queryset)
-            for item in sorted_items:
-                item.match_score = score_match(user_keywords, item.tags or [])
+            items = [it for it in items if it.match_score >= 1]
+        sorted_items = items
 
         page = self.paginate_queryset(sorted_items)
         if page is not None:
