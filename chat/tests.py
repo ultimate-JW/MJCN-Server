@@ -2059,6 +2059,26 @@ class LookupCourseDispatcherTests(TestCase):
         out = self._lookup('데이터베이스')
         self.assertIn('강의평', out['note'])
 
+    def test_선수과목_노출(self):
+        # "듣기 전에 뭐 필요해?" 응답용 — prerequisites 노출 (#8)
+        from courses.models import CoursePrerequisite
+        prereq = _Course.objects.create(
+            course_code='컴정400', name='데이터베이스기초', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        CoursePrerequisite.objects.create(course=self.course, prerequisite=prereq)
+        out = self._lookup('데이터베이스')
+        c = next(c for c in out['courses'] if c['course_code'] == '컴정500')
+        self.assertIn('prerequisites', c)
+        codes = {p['course_code'] for p in c['prerequisites']}
+        self.assertIn('컴정400', codes)
+
+    def test_선수과목_없으면_빈배열(self):
+        out = self._lookup('데이터베이스')
+        c = next(c for c in out['courses'] if c['course_code'] == '컴정500')
+        self.assertEqual(c['prerequisites'], [])
+
     def test_요청학기_데이터없으면_작년학기로_fallback(self):
         from datetime import time
         # 2025-2에만 개설된 과목 → 2026-2 요청 시 fallback (그 학기 전체 개설 데이터 없음)

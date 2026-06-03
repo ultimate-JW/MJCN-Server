@@ -652,6 +652,7 @@ def _lookup_course(user, args: dict[str, Any]) -> dict[str, Any]:
     matched = list(
         Course.objects
         .filter(Q(course_code__icontains=query) | Q(name__icontains=query))
+        .prefetch_related('prerequisites__prerequisite')  # "듣기 전에 뭐 필요?" 응답용 (#8)
         .order_by('course_code')[:MAX_LOOKUP_COURSES + 1]
     )
     truncated = len(matched) > MAX_LOOKUP_COURSES
@@ -674,13 +675,20 @@ def _lookup_course(user, args: dict[str, Any]) -> dict[str, Any]:
             'department': c.department,
             # 해당 학기에 실제 개설(분반 존재) 여부 — False면 "그 학기엔 개설 안 됨".
             'offered_in_term': bool(offerings),
+            # 선수과목 — "이 과목 듣기 전에 뭐 들어야 해?" 응답용 (#8). 없으면 [].
+            'prerequisites': [
+                {'course_code': p.prerequisite.course_code, 'name': p.prerequisite.name}
+                for p in c.prerequisites.all()
+            ],
             'offerings': offerings,
         })
 
     note = (
         '특정 과목 조회 결과. offered_in_term=해당 학기 개설 여부(false면 그 학기엔 개설 안 됨), '
         'offerings=분반 목록(section_no=강좌번호, professor=교수, schedules=요일·시간·강의실, '
-        'capacity=제한인원[실시간 여석 아님]). 교수 비교/분반 안내 시 이 데이터만 쓸 것. '
+        'capacity=제한인원[실시간 여석 아님]). prerequisites=선수과목(이 과목 듣기 전에 들어야 하는 '
+        '과목, 없으면 빈 배열) — "듣기 전에 뭐 필요해?"엔 이걸로 답할 것. '
+        '교수 비교/분반 안내 시 이 데이터만 쓸 것. '
         '강의평·난이도·수강 경쟁률 같은 정보는 없으니 지어내지 말 것. '
         f'조회 학기는 {target_year}-{target_semester}학기 기준이다. '
         'match_count=0이면 그 이름/번호의 과목을 찾지 못했다고 안내할 것.'
