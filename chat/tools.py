@@ -163,9 +163,14 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
         if target_semester is None:
             target_semester = auto_sem
 
+    # 사용자 관점의 '다음 학기'는 fallback 전 학기(예: 2026-2)다. _resolve_offering_term이
+    # target_year/semester를 fallback 값(2025-2)으로 덮어쓰기 때문에, 덮어쓰기 전에 보존한다.
+    # 이게 빠져서 AI가 fallback 학기(2025-2)를 '다음 학기'로 잘못 안내하던 버그가 있었다 (#205).
+    requested_year, requested_semester = target_year, target_semester
+
     # 다음 학기 개설 정보가 아직 없으면 작년 같은 학기로 fallback (#193 — 섹션 경로와 동일).
     # 챗 경로엔 그동안 이게 빠져 빈 추천만 나왔음. fallback 학기로 실제 과목을 주고,
-    # AI가 "○-○학기 기준" 안내를 하도록 note에 명시한다.
+    # AI가 "다음 학기는 ○-○지만 ○-○ 기준" 안내를 하도록 note에 명시한다.
     target_year, target_semester, is_fallback_term = _resolve_offering_term(
         target_year, target_semester,
     )
@@ -188,14 +193,24 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
         '시간표를 짤 때는 한 과목당 분반 하나만 골라 그 분반의 schedules만 사용할 것. '
         '서로 다른 분반의 시간을 한 과목으로 섞으면 실재하지 않는 시간표가 됨.'
     )
-    # fallback이면 AI가 사용자에게 기준 학기를 안내하도록 지시 문구를 덧붙임
+    # fallback이면 AI가 사용자에게 기준 학기를 안내하도록 지시 문구를 덧붙임.
+    # 핵심: 사용자의 '다음 학기'는 requested(2026-2)이고, 추천 데이터는 target(2025-2)이다.
+    # 둘을 반드시 구분해 안내하게 한다 — fallback 학기를 '다음 학기'로 표기하면 안 됨 (#205).
     if is_fallback_term:
         note += (
-            f' 단, 요청 학기에 개설 정보가 아직 없어 {target_year}-{target_semester}학기 '
-            '개설 과목을 기준으로 추천한 것임. 사용자에게 이 학기 기준임을 안내할 것.'
+            f' 단, 사용자의 다음 학기는 {requested_year}-{requested_semester}학기인데 '
+            f'아직 수강신청/개설 정보가 올라오지 않았다. 그래서 작년 같은 학기인 '
+            f'{target_year}-{target_semester}학기 개설 과목을 기준으로 추천한 것이다. '
+            f'사용자에게 "다음 학기({requested_year}-{requested_semester})는 아직 개설 정보가 없어 '
+            f'{target_year}-{target_semester}학기 기준으로 추천한다"는 점을 반드시 명확히 안내할 것. '
+            f'{target_year}-{target_semester}학기를 "다음 학기"라고 부르지 말 것.'
         )
 
     return {
+        # 사용자 관점의 다음 학기 (fallback 전). AI가 "다음 학기" 표기에 이 값을 쓰게 함.
+        'requested_year': requested_year,
+        'requested_semester': requested_semester,
+        # 추천 데이터의 실제 출처 학기 (fallback 시 작년 같은 학기).
         'target_year': target_year,
         'target_semester': target_semester,
         'fallback_term': is_fallback_term,
