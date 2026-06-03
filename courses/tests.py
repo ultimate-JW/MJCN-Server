@@ -2582,3 +2582,61 @@ class ExchangeGuideAPITests(APITestCase):
         self.assertIsNotNone(intern_eval['interest_note'])
         intern_score = next(i for i in res.data['necessity'] if i['option'] == '해외 인턴십')
         self.assertEqual(intern_score['score'], 4)  # handson은 별점 불변 (3-1 인턴 4)
+
+
+class StudyTipsTemplateTests(SimpleTestCase):
+    """학업 스트레스 & 시간관리 꿀팁 콘텐츠 조립 (정적, DB 불필요, #190)."""
+
+    def test_조립_구조(self):
+        from courses.study_tips import build_study_tips
+        data = build_study_tips()
+        self.assertEqual(set(data.keys()), {'advice', 'sections', 'quick_questions'})
+        self.assertTrue(data['advice'])
+        self.assertEqual([s['title'] for s in data['sections']],
+                         ['마음 관리 꿀팁', '시간 관리 꿀팁'])
+
+    def test_섹션별_카드_3개_emoji_title_body(self):
+        from courses.study_tips import build_study_tips
+        data = build_study_tips()
+        for section in data['sections']:
+            self.assertEqual(len(section['tips']), 3)
+            for tip in section['tips']:
+                self.assertEqual(set(tip.keys()), {'emoji', 'title', 'body'})
+                self.assertTrue(tip['emoji'] and tip['title'] and tip['body'])
+
+    def test_질문칩_3개_label_prompt(self):
+        from courses.study_tips import build_study_tips
+        chips = build_study_tips()['quick_questions']
+        self.assertEqual(len(chips), 3)
+        for chip in chips:
+            self.assertEqual(set(chip.keys()), {'label', 'prompt'})
+
+    def test_정적_콘텐츠_원본_불변(self):
+        # 반환 dict를 변형해도 상수 원본 SECTIONS가 오염되지 않아야 함 (얕은 복사 보장)
+        from courses import study_tips
+        study_tips.build_study_tips()['sections'][0]['tips'][0]['title'] = 'X'
+        self.assertEqual(study_tips.SECTIONS[0]['tips'][0]['title'], '완벽보다 완성')
+
+
+class StudyTipsAPITests(APITestCase):
+    """학업 스트레스 & 시간관리 꿀팁 API (#190)."""
+    url = '/api/v1/courses/study-tips/'
+
+    def test_인증_없으면_401(self):
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_정상_응답_스키마(self):
+        self.client.force_authenticate(user=_make_user())
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(res.data.keys()), {'advice', 'sections', 'quick_questions'})
+        self.assertEqual(len(res.data['sections']), 2)
+        self.assertEqual(len(res.data['quick_questions']), 3)
+
+    def test_개인화_없음_누구나_동일(self):
+        # 학년·학기가 달라도 응답이 동일해야 함 (정적 콘텐츠)
+        self.client.force_authenticate(user=_make_user(email='a@mju.ac.kr', grade=1, semester=1))
+        res_a = self.client.get(self.url)
+        self.client.force_authenticate(user=_make_user(email='b@mju.ac.kr', grade=4, semester=2))
+        res_b = self.client.get(self.url)
+        self.assertEqual(res_a.data, res_b.data)
