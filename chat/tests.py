@@ -921,6 +921,34 @@ class ResponseFormatGuideTests(TestCase):
         self.assertIn('**', sys_msg['content'])
 
 
+# ─── #229: 시간표/과목 추천 텍스트 출력 위계 ──────────────────────────
+
+class TimetableTextHierarchyGuideTests(TestCase):
+    """CHAT_SYSTEM에 시간표/과목 추천 출력 위계 규칙이 들어 있어야 함 (#229).
+
+    그동안 시간표 응답이 과목명·강의시간을 같은 레벨 불릿으로 나열해 가독성이 나빴음.
+    프롬프트만으로 "조합 요약 → 과목 번호목록 → 시간 bullet → 사이버강의 분리" 위계를 강제한다.
+    """
+
+    def test_timetable_format_hierarchy_markers(self):
+        from chat.prompts import CHAT_SYSTEM
+        for marker in ['시간표 조합', '총 학점', '번호 목록', '사이버강의']:
+            self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 시간표 위계 표식 "{marker}" 누락')
+
+    def test_no_markdown_table_for_timetable(self):
+        # 마크다운 표/그리드 미사용 지침이 명시돼야 함 (프론트 그리드 회피)
+        from chat.prompts import CHAT_SYSTEM
+        self.assertIn('마크다운 표', CHAT_SYSTEM)
+        self.assertIn('그리드', CHAT_SYSTEM)
+
+    def test_cyber_course_split_into_separate_section(self):
+        # 사이버강의는 별도 섹션 + 00:00 placeholder / is_online 감지 지침
+        from chat.prompts import CHAT_SYSTEM
+        self.assertIn('is_online', CHAT_SYSTEM)
+        self.assertIn('00:00~03:00', CHAT_SYSTEM)
+        self.assertIn('별도 섹션', CHAT_SYSTEM)
+
+
 # ─── #108: 검색 tool 의도 분류 (교내 vs 교외) ──────────────────────────
 
 class SearchToolIntentRoutingTests(TestCase):
