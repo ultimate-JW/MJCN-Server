@@ -185,7 +185,7 @@ class CollegeLifeGuideDetailTests(APITestCase):
         titles = [i['title'] for i in resp.data['items']]
         # 섹션 헤더 2개 + 카드 5개 = 7항목, 헤더가 카드 앞에
         self.assertEqual(titles[0], '대학생활 적응')
-        self.assertIn('학교 제도 익히기', titles)
+        self.assertIn('🏫 학교 제도 익히기', titles)
         self.assertIn('앞으로 준비하면 좋은 것', titles)
         self.assertEqual(len(resp.data['items']), 7)
         # 정적 item은 치환되어 사라져야 함
@@ -197,7 +197,7 @@ class CollegeLifeGuideDetailTests(APITestCase):
         titles = [i['title'] for i in resp.data['items']]
         self.assertEqual(titles[0], '졸업 준비')
         self.assertIn('마지막 체크포인트', titles)
-        self.assertIn('졸업요건 점검', titles)
+        self.assertIn('✅ 졸업요건 점검', titles)
 
     def test_grade_none_defaults_to_freshman(self):
         resp = self._get_career(None)

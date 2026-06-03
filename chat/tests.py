@@ -1475,3 +1475,55 @@ class NextSemesterOfferingGroupingTests(TestCase):
         )
         # AI가 분반을 섞지 않도록 안내 문구가 note에 있어야 함
         self.assertIn('분반', out['note'])
+
+
+# ─── #202: 챗 과목 추천 응답에 추천 이유(reason) 코드 노출 ──────────────
+class NextSemesterReasonsDispatcherTests(TestCase):
+    """챗 get_next_semester_courses 응답의 각 과목에 추천 이유 코드(reasons)가
+    실려야 한다 (#202). 점수·순위는 안 바꾸고 "왜 추천됐는지"만 노출.
+    """
+
+    def setUp(self):
+        self.user = make_user('reason@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.grade = 2
+        self.user.semester = 1
+        self.user.admission_year = 2024
+        self.user.save()
+        # 전공필수 과목 — major_required 이유가 걸려야 함
+        self.course = _Course.objects.create(
+            course_code='CSE2200', name='자료구조', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공필수', credits=3, year_open=2, semester_open=1,
+        )
+        _CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1,
+            section_no='01', professor='김교수',
+        )
+
+    def test_각_과목에_reasons_키_존재(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        self.assertGreaterEqual(out['count'], 1)
+        for c in out['courses']:
+            self.assertIn('reasons', c)
+            self.assertIsInstance(c['reasons'], list)
+
+    def test_전공필수는_major_required_이유(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        target = next(c for c in out['courses'] if c['course_code'] == 'CSE2200')
+        self.assertIn('major_required', target['reasons'])
+
+    def test_note에_reason_코드_해설_포함(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        # AI가 코드 의미를 알도록 note에 reasons 해설이 있어야 함
+        self.assertIn('reasons', out['note'])
+        self.assertIn('major_required', out['note'])

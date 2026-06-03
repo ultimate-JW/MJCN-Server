@@ -416,6 +416,67 @@ def calculate_recommendation_score(
     return score
 
 
+# 추천 이유 코드 — 챗/화면이 "왜 추천됐는지"를 자연어로 풀기 위한 머신 코드 (#202).
+# calculate_recommendation_score의 가산 분기를 그대로 미러링한다. 점수·순위는 안 바꾸고
+# 표시 전용 — score 함수의 가산 조건이 바뀌면 본 함수도 반드시 함께 갱신할 것.
+REASON_MAJOR_REQUIRED = 'major_required'              # 전공필수 (+25)
+REASON_DESIGNATED_REQUIRED = 'designated_required'    # 공통/핵심/학문기초 지정 영역 (+15)
+REASON_CATEGORY_SHORT = 'category_short'              # 졸업요건 부족 카테고리 (+15)
+REASON_INTEREST_MATCH = 'interest_match'              # 관심사 매칭 (+20)
+REASON_GRADE_SEMESTER_MATCH = 'grade_semester_match'  # 권장 학년·학기 일치 (+10)
+REASON_BACKLOG_REQUIRED = 'backlog_required'          # 밀린 필수 — 권장 학년 지남 (+10)
+
+
+def recommendation_reasons(
+    course,
+    *,
+    user_grade,
+    user_semester,
+    user_interest_categories,
+    short_categories,
+    course_tags=None,
+):
+    """한 과목이 추천된 이유 코드 리스트를 반환한다 (#202, 표시 전용).
+
+    calculate_recommendation_score와 같은 입력·같은 조건을 평가하되, 점수 대신
+    어떤 가산이 걸렸는지를 코드로 돌려준다. 순위·점수에는 영향 없음.
+    가산이 걸리는 양(+)의 신호만 반환 — 감점(PENALTY_GRADE_EXCEEDED)은 추천 이유가
+    아니므로 제외한다. score 함수의 가산 분기가 바뀌면 본 함수도 동기화할 것.
+
+    user_major / completed / prerequisite 인자는 점수식에서 hard filter 단계로 빠져
+    이유 노출에는 불필요 (선수 미이수 과목은 후보에서 이미 제외됨).
+    """
+    reasons = []
+
+    # 관심사 매칭 (+20) — course.tags ∩ 사용자 관심 카테고리
+    tags = list(course_tags) if course_tags else []
+    if tags and set(tags) & set(user_interest_categories or []):
+        reasons.append(REASON_INTEREST_MATCH)
+
+    # 졸업요건 부족 카테고리 (+15) — 키는 (category, liberal_subtype, core_area) 트리플
+    if (course.category, course.liberal_subtype, course.core_area) in short_categories:
+        reasons.append(REASON_CATEGORY_SHORT)
+
+    # 전공필수 (+25)
+    if course.category == '전공필수':
+        reasons.append(REASON_MAJOR_REQUIRED)
+
+    # 학칙 의무 영역(공통/핵심/학문기초) (+15)
+    if course.category in DESIGNATED_CATEGORIES:
+        reasons.append(REASON_DESIGNATED_REQUIRED)
+
+    # 학년/학기 적합성 — year_open=0(전학년 sentinel)은 학년 분기 전부 skip (score 함수와 동일)
+    if user_grade is not None and course.year_open != 0:
+        # 권장 학년·학기와 정확히 일치 (+10)
+        if user_semester is not None and course.year_open == user_grade and course.semester_open == user_semester:
+            reasons.append(REASON_GRADE_SEMESTER_MATCH)
+        # 권장 학년이 지난 필수 영역 — 밀린 필수 (+10)
+        if course.year_open < user_grade and course.category in BACKLOG_REQUIRED_CATEGORIES:
+            reasons.append(REASON_BACKLOG_REQUIRED)
+
+    return reasons
+
+
 def _apply_free_election_overflow(taken_credits_by_key, requirements):
     """카테고리별 required 초과분을 자유선택 completed에 자동 합산 (graduation_requirements.md §6).
 
@@ -590,6 +651,16 @@ def recommend_next_semester_courses(user, *, target_year=None, target_semester=N
             short_categories=short_categories,
             completed_course_ids=completed_course_ids,
             course_prerequisite_ids=prereq_ids,
+            course_tags=course.tags,
+        )
+        # 추천 이유 코드를 course에 부착 (#202) — 반환 타입(list[(score, course)])은 그대로 두고
+        # 표시가 필요한 호출자(챗 tool)만 course.recommend_reasons를 읽는다. 점수·순위 영향 없음.
+        course.recommend_reasons = recommendation_reasons(
+            course,
+            user_grade=user.grade,
+            user_semester=user.semester,
+            user_interest_categories=user_interest_categories,
+            short_categories=short_categories,
             course_tags=course.tags,
         )
         scored.append((score, course))

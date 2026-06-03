@@ -176,9 +176,14 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
     top = results[:MAX_RECOMMEND_COURSES]
 
     note = (
-        '관련도 상위 N개만 반환 (전체 결과 중 일부). '
+        '관련도 상위 N개만 반환 (전체 결과 중 일부, score 내림차순 = 추천 우선순위). '
         'category는 학칙 7분류(전공필수/전공선택/공통교양/핵심교양/'
         '학문기초교양/일반교양/자유선택) 기반. '
+        'reasons는 추천 이유 코드 — major_required(전공필수), '
+        'designated_required(졸업 필수 교양 영역: 공통/핵심/학문기초), '
+        'category_short(졸업요건상 부족한 영역 보완), interest_match(관심분야 매칭), '
+        'grade_semester_match(권장 학년·학기 과목), backlog_required(아직 안 들은 밀린 필수). '
+        '이 코드를 자연어로 풀어 과목마다 추천 이유를 설명할 것. '
         '각 과목의 offerings는 교수·시간이 다른 분반(section_no) 목록임. '
         '시간표를 짤 때는 한 과목당 분반 하나만 골라 그 분반의 schedules만 사용할 것. '
         '서로 다른 분반의 시간을 한 과목으로 섞으면 실재하지 않는 시간표가 됨.'
@@ -199,6 +204,9 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
         'courses': [
             {
                 'score': score,
+                # 추천 이유 머신 코드 (#202) — recommend_next_semester_courses가 course에 부착.
+                # AI가 이 코드를 자연어로 풀어 "왜 추천됐는지" 설명 (점수·순위와 무관, 표시용).
+                'reasons': getattr(c, 'recommend_reasons', []),
                 'course_code': c.course_code,
                 'name': c.name,
                 'category': c.category,
