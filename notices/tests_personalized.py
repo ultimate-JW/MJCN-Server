@@ -69,7 +69,8 @@ class PersonalizedNoticeListTests(TestCase):
         res = self.client.get(self.URL, {'view': 'personalized'})
         scores = {r['id']: r['match_score'] for r in res.data['results']}
         self.assertEqual(scores[self.n_high.id], 3)
-        self.assertEqual(scores[self.n_mid.id], 1)
+        # n_mid(tags=['AI'])는 IT/개발 카테고리(동의어 AI 확장)+custom 'AI' 둘 다 매칭 → 2 (#207)
+        self.assertEqual(scores[self.n_mid.id], 2)
         # n_zero(0점)는 personalized에서 제외됨
         self.assertNotIn(self.n_zero.id, scores)
 
@@ -80,7 +81,7 @@ class PersonalizedNoticeListTests(TestCase):
         self.assertEqual(ids, [self.n_mid.id, self.n_high.id, self.n_zero.id])
         scores = {r['id']: r['match_score'] for r in res.data['results']}
         self.assertEqual(scores[self.n_high.id], 3)
-        self.assertEqual(scores[self.n_mid.id], 1)
+        self.assertEqual(scores[self.n_mid.id], 2)  # IT/개발 동의어(AI)+custom 'AI' (#207)
         self.assertEqual(scores[self.n_zero.id], 0)
 
     def test_관심사_없는_사용자는_personalized_빈결과_174(self):

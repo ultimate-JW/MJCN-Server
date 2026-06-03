@@ -78,6 +78,28 @@ def _normalize(keywords: set[str]) -> set[str]:
     return {k.lower() for k in keywords if k}
 
 
+# InterestArea 12개 고정 카테고리(소문자 라벨) → 도메인 동의어 토큰 집합 (spec 5.10.3).
+# 굵은 카테고리 라벨('IT/개발')과 LLM이 뽑는 세밀 도메인 태그('AI') 사이 어휘 격차를
+# 메운다. 카테고리 라벨에만 적용 — 전공명·custom_text 자유 텍스트는 확장하지 않음.
+# 값은 _tokenize 결과 토큰과 비교되므로 모두 소문자 단일 토큰. 항목은 이 파일에서 관리.
+CATEGORY_SYNONYMS: dict[str, set[str]] = {
+    'it/개발': {'ai', '인공지능', '머신러닝', '딥러닝', '데이터', '빅데이터', '소프트웨어',
+               'sw', '개발', '개발자', '프로그래밍', '코딩', '백엔드', '프론트엔드',
+               '웹', '앱', '클라우드', '보안', 'it'},
+    '디자인': {'ux', 'ui', '그래픽', 'bx', '브랜딩', '시각디자인', '영상', '디자인'},
+    '마케팅/광고': {'마케팅', '광고', '브랜드', 'sns', '퍼포먼스', '홍보'},
+    '금융/회계': {'금융', '회계', '재무', '투자', '핀테크', '세무'},
+    '교육': {'교육', '강의', '멘토링', '진로체험', '교직'},
+    '공기업/공공기관': {'공기업', '공공기관', '공무원', '행정', '정부', '공공'},
+    '의료/바이오': {'의료', '바이오', '제약', '헬스케어', '간호', '생명', '의학'},
+    '미디어/콘텐츠': {'미디어', '콘텐츠', '영상', '방송', '크리에이터', '유튜브'},
+    '건축/공간': {'건축', '공간', '인테리어', '도시', '설계', '조경'},
+    '스포츠/예술': {'스포츠', '예술', '체육', '음악', '미술', '공연'},
+    '연구/r&d': {'연구', 'r&d', '논문', '실험', '연구원', '학술'},
+    '기타': set(),
+}
+
+
 def score_match(user_keywords: set[str], content_tags: Iterable[str]) -> int:
     """토큰 단위로 매칭된 관심사 수 = 점수 (spec 5.10.3).
 
@@ -103,7 +125,15 @@ def score_match(user_keywords: set[str], content_tags: Iterable[str]) -> int:
         tag_tokens |= _tokenize(tag)
     if not tag_tokens:
         return 0
-    return sum(1 for kw in user_keywords if _tokenize(kw) & tag_tokens)
+    score = 0
+    for kw in user_keywords:
+        eff = _tokenize(kw)
+        # kw가 12개 고정 카테고리 라벨이면 도메인 동의어로 확장 (spec 5.10.3).
+        # 전공명·custom_text 등 비카테고리 키워드는 확장 안 됨(정확 토큰 유지).
+        eff |= CATEGORY_SYNONYMS.get(kw, set())
+        if eff & tag_tokens:
+            score += 1
+    return score
 
 
 # 관심사 토큰 → 콘텐츠 제목에 실제 등장하는 표현으로 확장하는 동의어 맵 (spec 5.10.4).
