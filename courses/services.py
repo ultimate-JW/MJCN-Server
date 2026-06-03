@@ -826,7 +826,11 @@ def build_next_semester_sections(user, *, target_year=None, target_semester=None
 
     # ② 띵똥이의 조언 — 추천 신호 기반 (파트1) + 학년/학기 고정 멘트 (파트2) + fallback 안내
     signals = _recommendation_signals(user, pool_courses)
-    advice = build_advice(user, signals, is_fallback_term=is_fallback_term)
+    # fallback 시 target_year/target_semester는 이미 치환된 학기 → 안내 문구에 그대로 명시 (#192)
+    advice = build_advice(
+        user, signals, is_fallback_term=is_fallback_term,
+        fallback_year=target_year, fallback_semester=target_semester,
+    )
 
     return {
         'target_year': target_year,
