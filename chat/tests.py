@@ -1391,6 +1391,92 @@ class NextSemesterFallbackDispatcherTests(TestCase):
         self.assertNotIn('기준으로 추천한 것임', out['note'])
 
 
+# ─── #199: 챗 다음학기 추천 — 분반(Offering) 단위 시간표 그룹화 ──────────
+from courses.models import CourseSchedule as _CourseSchedule  # noqa: E402
+
+
+class NextSemesterOfferingGroupingTests(TestCase):
+    """챗 get_next_semester_courses — 한 과목의 여러 분반 시간이 course 단위로
+    평탄화되지 않고 분반(Offering)별로 그룹화돼 나와야 한다 (#199).
+
+    버그 전: c.schedules.all()로 전체 분반 schedule을 한 배열에 합쳐, 서로 다른
+    분반의 시간이 한 과목으로 섞임(예: 0693 조세형 화요일 + 0694 현상원 월/수요일)
+    → 실재할 수 없는 시간표. 분반 경계를 유지해 AI가 분반 하나를 통째로 고르게 한다.
+    """
+
+    def setUp(self):
+        from datetime import time
+        self.user = make_user('og@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.grade = 2
+        self.user.semester = 1
+        self.user.admission_year = 2024
+        self.user.save()
+        self.course = _Course.objects.create(
+            course_code='CSE2100', name='객체지향프로그래밍1', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        # 분반 A(0693 조세형) — 화 09:00~11:50
+        off_a = _CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1,
+            section_no='0693', professor='조세형',
+        )
+        _CourseSchedule.objects.create(
+            course=self.course, offering=off_a,
+            day_of_week='화', start_time=time(9, 0), end_time=time(11, 50),
+        )
+        # 분반 B(0694 현상원) — 월 11:00~11:50, 수 13:00~14:50
+        off_b = _CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1,
+            section_no='0694', professor='현상원',
+        )
+        _CourseSchedule.objects.create(
+            course=self.course, offering=off_b,
+            day_of_week='월', start_time=time(11, 0), end_time=time(11, 50),
+        )
+        _CourseSchedule.objects.create(
+            course=self.course, offering=off_b,
+            day_of_week='수', start_time=time(13, 0), end_time=time(14, 50),
+        )
+
+    def _find_course(self, out):
+        for c in out['courses']:
+            if c['course_code'] == 'CSE2100':
+                return c
+        self.fail('CSE2100 추천에 없음')
+
+    def test_분반별로_offerings_그룹화되고_시간이_안섞임(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        c = self._find_course(out)
+        # course 단위 평탄화 키는 더 이상 없음 (분반 경계 깨짐 방지)
+        self.assertNotIn('schedules', c)
+        self.assertNotIn('professor', c)
+        # 분반 2개가 각각 분리돼 나옴
+        self.assertEqual(len(c['offerings']), 2)
+        by_sec = {o['section_no']: o for o in c['offerings']}
+        self.assertEqual(set(by_sec), {'0693', '0694'})
+        # 분반 A: 교수·시간이 자기 것(화요일)만
+        a = by_sec['0693']
+        self.assertEqual(a['professor'], '조세형')
+        self.assertEqual({s['day_of_week'] for s in a['schedules']}, {'화'})
+        # 분반 B: 월/수만, 분반 A의 화요일이 섞이지 않음
+        b = by_sec['0694']
+        self.assertEqual(b['professor'], '현상원')
+        self.assertEqual({s['day_of_week'] for s in b['schedules']}, {'월', '수'})
+
+    def test_note에_분반_하나만_고르라는_지침_포함(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        # AI가 분반을 섞지 않도록 안내 문구가 note에 있어야 함
+        self.assertIn('분반', out['note'])
+
+
 # ─── #202: 챗 과목 추천 응답에 추천 이유(reason) 코드 노출 ──────────────
 class NextSemesterReasonsDispatcherTests(TestCase):
     """챗 get_next_semester_courses 응답의 각 과목에 추천 이유 코드(reasons)가
