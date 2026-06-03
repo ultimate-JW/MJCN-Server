@@ -831,6 +831,39 @@ class CurrentCourseHydrateTests(TestCase):
         self.assertEqual(res.data['professor'], '박정민')
         self.assertEqual(res.data['room'], 'Y5420')
 
+    def test_post_multiday_offering_combines_day_of_week(self):
+        """월수 분반(CourseSchedule 2행) → day_of_week='월수' 단일 행 (#215)."""
+        from datetime import time
+
+        from courses.models import Course, CourseOffering, CourseSchedule
+        from accounts.models import CurrentCourse
+
+        c = Course.objects.create(
+            course_code='컴공101', name='객체지향프로그래밍1',
+            category='전공필수', credits=3, year_open=1, semester_open=1,
+        )
+        o = CourseOffering.objects.create(
+            course=c, year=2026, semester=1, section_no='0693',
+            professor='조세형', capacity=40,
+        )
+        # 요일 역순(수→월)으로 생성해 정렬 키가 실제로 동작하는지도 검증
+        CourseSchedule.objects.create(
+            course=c, offering=o, day_of_week='수',
+            start_time=time(9, 0), end_time=time(10, 50), room='Y2510',
+        )
+        CourseSchedule.objects.create(
+            course=c, offering=o, day_of_week='월',
+            start_time=time(9, 0), end_time=time(10, 50), room='Y2510',
+        )
+        res = self.client.post(self.url, {'offering_id': o.id}, format='json')
+        self.assertEqual(res.status_code, 201, msg=res.data)
+        self.assertEqual(res.data['day_of_week'], '월수')  # 월화수목금 순 합본
+        self.assertEqual(res.data['start_time'], '09:00:00')
+        # 단일 행만 생성 (요일별 분리 X)
+        self.assertEqual(
+            CurrentCourse.objects.filter(user=self.user, course_code='컴공101').count(), 1,
+        )
+
     def test_post_nonexistent_offering_id_returns_400(self):
         res = self.client.post(self.url, {'offering_id': 99999}, format='json')
         self.assertEqual(res.status_code, 400)

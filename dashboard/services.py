@@ -55,9 +55,11 @@ def build_dashboard(user) -> dict:
     weekday = _WEEKDAY_KO[today.weekday()]
     user_keywords = extract_user_keywords(user)
 
-    # 오늘 요일 수강과목 — 시작 시간순
+    # 오늘 요일 수강과목 — 시작 시간순.
+    # day_of_week는 복수 요일이면 합본("월수")이라 정확 일치 대신 __contains (#215).
+    # 요일 글자(월화수목금)끼리 substring 관계가 없어 오매칭 없음.
     today_courses = list(
-        user.current_courses.filter(day_of_week=weekday).order_by('start_time')
+        user.current_courses.filter(day_of_week__contains=weekday).order_by('start_time')
     )
 
     # 공지: 모든 공지를 published_at 최신순으로 단일 정렬 (#155).

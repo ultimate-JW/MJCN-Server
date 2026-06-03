@@ -89,6 +89,25 @@ class DashboardAPITests(APITestCase):
         self.assertEqual([c['course_name'] for c in schedule], ['운영체제', '자료구조'])
         self.assertEqual(res.data['greeting']['today_class_count'], 2)
 
+    def test_today_schedule_합본요일_오늘포함시_노출(self):
+        """복수 요일 합본("월수")이 오늘을 포함하면 노출, 미포함이면 숨김 (#215)."""
+        today = _today_kr()
+        with_today = today + _other_kr()                              # 오늘 포함 합본
+        without_today = ''.join(d for d in _WEEKDAY_KO if d != today)[:2]  # 오늘 미포함 합본
+        CurrentCourse.objects.create(
+            user=self.user, course_name='객체지향', course_code='C1',
+            day_of_week=with_today, start_time=time(9, 0), end_time=time(10, 50),
+        )
+        CurrentCourse.objects.create(
+            user=self.user, course_name='네트워크', course_code='C2',
+            day_of_week=without_today, start_time=time(9, 0), end_time=time(10, 50),
+        )
+        res = self.client.get(self.url)
+        names = [c['course_name'] for c in res.data['today_schedule']]
+        self.assertIn('객체지향', names)       # 합본에 오늘 포함 → 노출
+        self.assertNotIn('네트워크', names)     # 합본에 오늘 미포함 → 숨김
+        self.assertEqual(res.data['greeting']['today_class_count'], 1)
+
     # --- notices ---
 
     def test_notices_단순_최신순_정렬_155(self):
