@@ -556,14 +556,26 @@ def _get_graduation_progress(user) -> dict[str, Any]:
     }
 
 
-def _compact_status(user) -> dict[str, Any]:
+def _compact_status(user) -> dict[str, Any] | None:
     """build_completion_status 결과를 추천 응답에 끼울 슬림 버전으로 축약.
 
     추천 tool은 과목 풀까지 함께 실어 토큰 압박이 있으므로, 브리핑에 필요한 핵심만 남긴다 —
     카테고리별 (completed/required/remaining) + 총계 + 채플. 영역(areas)·필수과목(required_courses)
     상세는 제외 (그 디테일은 독립 tool get_completion_status에서 full로 제공).
+
+    브리핑은 추천에 곁들이는 부가 정보다 — 집계가 실패해도 추천 자체는 살아야 한다.
+    그래서 best-effort로 처리하고 실패 시 None을 반환한다 (status 부가 집계 하나가 추천
+    응답 전체를 죽이던 회귀 차단, #224). 프롬프트는 status 부재 시 브리핑을 생략하도록
+    이미 지시돼 있으므로 None이어도 안전하다.
     """
-    full = build_completion_status(user)
+    try:
+        full = build_completion_status(user)
+    except Exception:
+        logger.exception(
+            '추천 브리핑용 이수현황 집계 실패 — status 생략 (user=%s)',
+            getattr(user, 'id', None),
+        )
+        return None
     return {
         'categories': [
             {

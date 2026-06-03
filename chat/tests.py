@@ -1730,6 +1730,61 @@ class NextSemesterStatusBriefingTests(TestCase):
         self.assertIn('브리핑', out['note'])
 
 
+class NextSemesterStatusResilienceTests(TestCase):
+    """브리핑용 status 집계가 실패해도 추천 자체는 살아야 한다 (#224).
+
+    #209에서 추천 응답에 status(build_completion_status)를 인라인으로 끼웠는데, 그 부가
+    집계가 던지면 이미 계산된 추천까지 통째로 예외가 되어 dispatcher가 {'error': ...}를
+    반환 → AI가 "추천에 문제가 발생했습니다" 사과만 내보내던 회귀. status는 best-effort라
+    실패 시 None으로 떨어지고 courses는 그대로 반환돼야 한다.
+    """
+
+    def setUp(self):
+        self.user = make_user('resilient@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.grade = 2
+        self.user.semester = 1
+        self.user.admission_year = 2024
+        self.user.save()
+        self.course = _Course.objects.create(
+            course_code='CSE2300', name='자료구조', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공필수', credits=3, year_open=2, semester_open=1,
+        )
+        _CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1,
+            section_no='01', professor='김교수',
+        )
+
+    def test_status_집계_실패해도_추천_courses_반환(self):
+        with patch(
+            'chat.tools.build_completion_status',
+            side_effect=RuntimeError('집계 폭발'),
+        ):
+            out = dispatch_tool_call(
+                self.user, 'get_next_semester_courses',
+                {'target_year': 2026, 'target_semester': 1},
+            )
+        # dispatcher가 {'error': ...}로 죽지 않고 정상 추천 응답을 줘야 함
+        self.assertNotIn('error', out)
+        self.assertIsNone(out['status'])
+        self.assertGreaterEqual(out['count'], 1)
+        names = [c['name'] for c in out['courses']]
+        self.assertIn('자료구조', names)
+
+    def test_시간표_tool도_status_실패에_탄력적(self):
+        with patch(
+            'chat.tools.build_completion_status',
+            side_effect=RuntimeError('집계 폭발'),
+        ):
+            out = dispatch_tool_call(
+                self.user, 'get_timetable_recommendations',
+                {'target_year': 2026, 'target_semester': 1},
+            )
+        self.assertNotIn('error', out)
+        self.assertIsNone(out['status'])
+
+
 class CompletionStatusDispatcherTests(TestCase):
     """챗 독립 tool get_completion_status — 학점 이수현황 full 반환."""
 
