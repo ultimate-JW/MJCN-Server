@@ -328,6 +328,32 @@ class ExchangeGuideSerializer(serializers.Serializer):
     quick_questions = QuickQuestionSerializer(many=True)            # ⑥ 물어보기
 
 
+class StudyTipSerializer(serializers.Serializer):
+    """③④ 꿀팁 카드 1개 — 섹션 안의 제목+내용 (학업 스트레스 & 시간관리 꿀팁, #190).
+
+    emoji: 카드 머리 아이콘 / title: 카드 제목 / body: 1~2줄 설명.
+    """
+    emoji = serializers.CharField()
+    title = serializers.CharField()
+    body = serializers.CharField()
+
+
+class StudyTipSectionSerializer(serializers.Serializer):
+    """③④ 꿀팁 섹션 1개 — 섹션 제목 + 카드 목록 (Figma 221-5848 "단계별 로드맵" 형태)."""
+    title = serializers.CharField()
+    tips = StudyTipSerializer(many=True)
+
+
+class StudyTipsSerializer(serializers.Serializer):
+    """학업 스트레스 & 시간관리 꿀팁 테마 상세 응답 (Figma 119-1036 카드 진입, #190).
+
+    전부 정적 콘텐츠 (개인화·LLM 없음). 누구에게나 동일.
+    """
+    advice = serializers.CharField()                       # ② 띵똥이의 한마디
+    sections = StudyTipSectionSerializer(many=True)        # ③④ 꿀팁 섹션
+    quick_questions = QuickQuestionSerializer(many=True)   # ⑤ 질문칩
+
+
 class SemesterPlanSerializer(serializers.Serializer):
     """학기 1개 응답 — 학칙 7분류로 분리 (spec 5.3.2, #47 Phase 3).
 

@@ -24,8 +24,10 @@ from .serializers import (
     CareerRoadmapSerializer,
     ExchangeGuideSerializer,
     RecommendationSectionsSerializer,
+    StudyTipsSerializer,
 )
 from .exchange_guide import build_exchange_guide
+from .study_tips import build_study_tips
 from .services import (
     build_career_roadmap_sections,
     build_next_semester_sections,
@@ -480,6 +482,23 @@ class ExchangeGuideView(APIView):
     def get(self, request):
         data = build_exchange_guide(request.user)
         return Response(ExchangeGuideSerializer(data).data)
+
+
+class StudyTipsView(APIView):
+    """GET /api/v1/courses/study-tips/ — 학업 스트레스 & 시간관리 꿀팁 테마 상세 (#190).
+
+    Figma 119-1036 "학업 스트레스 & 시간관리 꿀팁" 카드 진입 화면. 받쳐줄 추천 엔진도,
+    개인화 축도 없는 보편 조언 콘텐츠라 정적 상수를 그대로 내보낸다 (LLM·요청별 분기 없음).
+    인증만 요구하고 사용자 신호는 쓰지 않음.
+
+    응답: {advice, sections, quick_questions}.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: StudyTipsSerializer})
+    def get(self, request):
+        data = build_study_tips()
+        return Response(StudyTipsSerializer(data).data)
 
 
 # 카테고리 → 응답 키 매핑 (spec 5.3.2 4키 분리, #25)

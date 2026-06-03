@@ -1520,6 +1520,18 @@ grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스
 - **관심사 신호**: `InterestArea`(category + custom_text)를 한 텍스트로 합쳐 두 키워드 세트(`global`/`handson`)로 스캔.
 - **학년·학기는 온보딩 필수값** → 미입력 케이스 없음.
 
+#### 5.3.10 학업 스트레스 & 시간관리 꿀팁 테마 상세 (#190)
+
+테마 상세 화면("학업 스트레스 & 시간관리 꿀팁", Figma `119-1036` 카드 진입) 한 장을 단일 응답으로 제공한다.
+5.3.8 / 5.3.9의 형제 화면이지만 **받쳐줄 추천 엔진(DB 그라운딩)도, 개인화 축도 없다** — 대학생 누구에게나
+동일한 보편 멘탈·시간관리 조언 콘텐츠다. 따라서 사용자 신호를 받지 않고 **정적 콘텐츠**를 그대로 반환한다
+(LLM·요청별 분기 없음). phrasing을 상수로 분리해 추후 LLM 생성으로 교체할 수 있게 둔다.
+
+- **② 띵똥이의 한마디** (`advice`): 공감 인트로 1문단(고정).
+- **③④ 꿀팁 섹션** (`sections`): `{title, tips[]}` 목록. `tips[]`는 `{emoji, title, body}` 카드. 현재 `마음 관리 꿀팁`/`시간 관리 꿀팁` 두 섹션, 각 카드 3개.
+- **⑤ 질문칩** (`quick_questions`): 탭하면 챗으로 전송될 `{label, prompt}` 3개(고정).
+- **개인화 없음** → 학년·학기·관심사 등 어떤 사용자 신호도 받지 않으며, 모든 사용자에게 동일 응답.
+
 ### 5.4 통합 정보 제공 - 공지사항 (notices)
 
 > **크롤링 출처 정책**: 명지대학교 자체 공지 게시판만 수집한다. 외부 사이트(링커리어/씽굿/위비티 등)는 후속 작업으로 보류.
@@ -1891,6 +1903,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | GET | `/api/v1/courses/recommend/next/sections/?year=&semester=` | O | 수강신청 테마 상세 — 조언(`advice`) + 관심분야/지난학기 2섹션(`interest_courses`/`linked_courses`) + 질문칩(`quick_questions`) (spec 5.3.7, #164). 개설 데이터 없으면 작년 같은 학기 fallback |
 | GET | `/api/v1/courses/recommend/career/roadmap/?year=&semester=` | O | 취업·진로 로드맵 테마 상세 — 조언(`advice`) + 준비도(`readiness`) + STEP 1~6 로드맵(`roadmap`, STEP5는 5.3.1 추천 주입) + 질문칩(`quick_questions`) (spec 5.3.8, #171). 직무 미입력/미지원 시 `note` 머신 코드 |
 | GET | `/api/v1/courses/exchange-guide/` | O | 교환학생·해외 인턴십 가이드 테마 상세 — 조언(`advice`) + 필요도 별점(`necessity`) + 판단기준(`evaluation`) + 시점추천(`current_recommendation`) + 질문칩(`quick_questions`) (spec 5.3.9, #180). 학년·학기 메인 + 관심사 보조, 규칙 기반 |
+| GET | `/api/v1/courses/study-tips/` | O | 학업 스트레스 & 시간관리 꿀팁 테마 상세 — 조언(`advice`) + 꿀팁 섹션(`sections`, 마음/시간 관리 카드) + 질문칩(`quick_questions`) (spec 5.3.10, #190). 개인화·LLM 없는 정적 콘텐츠 |
 | POST | `/api/v1/courses/recommend/curriculum/` | O | 전체 커리큘럼 추천 (body 노브, spec 5.3.2) |
 | GET | `/api/v1/courses/status/` | O | 이수현황 분석 |
 | GET | `/api/v1/courses/` | O | 과목 검색 (쿼리 파라미터) |
