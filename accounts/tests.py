@@ -991,3 +991,107 @@ class CurrentCourseHydrateTests(TestCase):
         self.assertEqual(len(cc_list), 1)
         self.assertIn('offering_id', cc_list[0])
         self.assertEqual(cc_list[0]['offering_id'], self.offering.id)
+
+
+# ─── #230: offering_id backfill 명령 ─────────────────────────────────
+
+class BackfillCurrentCourseOfferingIdTests(TestCase):
+    """`backfill_current_course_offering_id` 명령 — 기존 NULL row를 매칭으로 채움."""
+
+    def setUp(self):
+        from datetime import time
+
+        from courses.models import Course, CourseOffering, CourseSchedule
+        from accounts.models import CurrentCourse
+
+        self.user = User.objects.create_user(email='bf@mju.ac.kr', password=VALID_PWD)
+        self.user.is_email_verified = True
+        self.user.save(update_fields=['is_email_verified'])
+
+        # 카탈로그 — 2025-2 분반과 2026-1 분반 두 학기
+        course = Course.objects.create(
+            course_code='컴공296', name='컴퓨터하드웨어',
+            college='반도체·ICT대학', department='컴퓨터정보통신공학부',
+            major='컴퓨터공학전공',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        # 가장 최근 학기 (우선 매칭 대상)
+        self.recent_offering = CourseOffering.objects.create(
+            course=course, year=2026, semester=1, section_no='0729',
+            professor='박정민',
+        )
+        CourseSchedule.objects.create(
+            course=course, offering=self.recent_offering,
+            day_of_week='화', start_time=time(14, 0), end_time=time(16, 50),
+            building='', room='Y5420',
+        )
+        # 옛 학기 (먼저 매칭되면 안 됨)
+        old = CourseOffering.objects.create(
+            course=course, year=2025, semester=2, section_no='0501',
+            professor='이교수',
+        )
+        CourseSchedule.objects.create(
+            course=course, offering=old,
+            day_of_week='화', start_time=time(14, 0), end_time=time(16, 50),
+            building='', room='Y5301',
+        )
+
+        # 기존 row (마이그 직후 상태 모사 — offering_id NULL)
+        self.cc_null = CurrentCourse.objects.create(
+            user=self.user,
+            course_name='컴퓨터하드웨어', course_code='컴공296',
+            day_of_week='화', start_time=time(14, 0), end_time=time(16, 50),
+            professor='박정민', room='Y5420',
+            # offering_id 미설정 → NULL
+        )
+
+    def _run(self, *flags):
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        call_command('backfill_current_course_offering_id', *flags, stdout=out)
+        return out.getvalue()
+
+    def test_매칭_성공시_offering_id_채움_가장_최근학기_우선(self):
+        out = self._run()
+        self.cc_null.refresh_from_db()
+        self.assertEqual(self.cc_null.offering_id, self.recent_offering.id)
+        self.assertIn('매칭 1건', out)
+
+    def test_dry_run은_DB_변경_없음(self):
+        out = self._run('--dry-run')
+        self.cc_null.refresh_from_db()
+        self.assertIsNone(self.cc_null.offering_id)
+        self.assertIn('dry-run', out)
+
+    def test_매칭_안되는_row는_NULL_유지(self):
+        from datetime import time
+
+        from accounts.models import CurrentCourse
+
+        # 카탈로그에 없는 course_code
+        no_match = CurrentCourse.objects.create(
+            user=self.user,
+            course_name='없는과목', course_code='UNKNOWN001',
+            day_of_week='월', start_time=time(9, 0), end_time=time(10, 30),
+            professor='', room='',
+        )
+        self._run()
+        no_match.refresh_from_db()
+        self.assertIsNone(no_match.offering_id)
+
+    def test_이미_채워진_row는_안_건드림_멱등(self):
+        from accounts.models import CurrentCourse
+
+        self.cc_null.offering_id = 99999  # 임의 값
+        self.cc_null.save(update_fields=['offering_id'])
+        self._run()
+        self.cc_null.refresh_from_db()
+        self.assertEqual(self.cc_null.offering_id, 99999)  # 그대로
+
+    def test_NULL_row_없으면_조용히_종료(self):
+        from accounts.models import CurrentCourse
+        CurrentCourse.objects.all().update(offering_id=1)  # 모두 채운 상태
+        out = self._run()
+        self.assertIn('NULL row 없음', out)
