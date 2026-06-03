@@ -25,7 +25,7 @@ from courses.services import (
     calc_graduation_progress,
     recommend_next_semester_courses,
 )
-from common.matching import SYNONYM_MAP, _contains_term
+from common.matching import SYNONYM_MAP, _contains_term, score_combined
 from courses.models import Course, CourseOffering
 from information.models import Information
 from notices.models import Notice
@@ -917,9 +917,17 @@ def _search_information(args: dict[str, Any]) -> dict[str, Any]:
         # 의도 질문 — 마감 임박 N건 fallback (#131)
         return _recent_information_fallback(query)
 
+    # 동의어 확장 (#217) — contest-guide와 매칭 기준 통일. 공모전 Information은 본문이 없어
+    # title+categories만 매칭 재료라, "AI"→"인공지능" 같은 어휘 격차를 동의어로 메운다.
+    token_set = set(tokens)
+    expanded = set(token_set)
+    for t in token_set:
+        expanded |= SYNONYM_MAP.get(t, set())
+
+    # DB 프리필터 — 확장 검색어 중 하나라도 title에 부분일치 (synonym-only 매칭도 후보에 포함).
     title_q = Q()
-    for t in tokens:
-        title_q |= Q(title__icontains=t)
+    for term in expanded:
+        title_q |= Q(title__icontains=term)
 
     # 만료된 정보는 제외 (end_date 지남)
     today = date.today()
@@ -931,12 +939,12 @@ def _search_information(args: dict[str, Any]) -> dict[str, Any]:
     )
 
     scored = []
-    token_set = set(tokens)
     for info in qs:
-        cats_set = {c.lower() for c in (info.categories or [])}
-        cat_hits = len(token_set & cats_set)
-        title_hits = sum(1 for t in tokens if t in (info.title or '').lower())
-        scored.append((cat_hits * 2 + title_hits, info))
+        # 키워드당 1점 캡 — categories 토큰 완전일치 OR title 동의어 부분일치 (common.matching 재사용).
+        # contest-guide(score_combined)와 동일 기준 → 진입점별 매칭 불일치 해소.
+        score = score_combined(token_set, info.categories or [], info.title or '')
+        if score:   # DB icontains 프리필터가 통과시킨 latin 오매칭(_contains_term 미통과)은 0점 → 제외
+            scored.append((score, info))
 
     # 점수 DESC, 마감 임박 우선
     scored.sort(key=lambda x: (
@@ -948,6 +956,6 @@ def _search_information(args: dict[str, Any]) -> dict[str, Any]:
     return {
         'count': len(top),
         'query': query,
-        'note': '교내외 정보 검색 결과 (마감 미경과만). URL은 원문 링크.',
+        'note': '교내외 정보 검색 결과 (마감 미경과만, 관심 키워드 동의어 확장 매칭). URL은 원문 링크.',
         'results': [_information_to_payload(i) for i in top],
     }
