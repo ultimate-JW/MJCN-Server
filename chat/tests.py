@@ -1725,3 +1725,295 @@ class CourseHistoryDispatcherTests(TestCase):
         names = [c['course_name'] for c in out['courses']]
         self.assertNotIn('타인과목', names)
         self.assertEqual(out['count'], 2)
+
+
+# ─── #1: 챗 시간표 조합 추천 — timetables 충돌검사 엔진 연결 ──────────────
+from timetables.models import UserPreference as _UserPreference  # noqa: E402
+
+
+def _schedules_overlap(s1: dict, s2: dict) -> bool:
+    """두 schedule dict(day/start/end isoformat)가 같은 요일에 시간 겹치면 True."""
+    if s1['day_of_week'] != s2['day_of_week']:
+        return False
+    # isoformat 'HH:MM:SS' 문자열은 사전식 비교 = 시각 비교 (동일 포맷이라 안전)
+    return s1['start_time'] < s2['end_time'] and s2['start_time'] < s1['end_time']
+
+
+class TimetableRecommendDispatcherTests(TestCase):
+    """챗 get_timetable_recommendations — timetables 엔진(충돌검사+다양성) 결과를
+    챗 tool로 노출 (#1).
+
+    기존엔 raw offering을 LLM에 던져 직접 조합시켜 충돌 시간표가 나올 수 있었음.
+    이제 엔진이 충돌검사·prefs·다양성까지 끝낸 plan을 줘 그대로 제시한다.
+    """
+
+    def setUp(self):
+        from datetime import time
+        self.user = make_user('tt@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.grade = 2
+        self.user.semester = 1
+        self.user.admission_year = 2024
+        self.user.save()
+
+        # 과목 A — 2개 분반: 01(월 9-10) / 02(화 9-10)
+        self.course_a = _Course.objects.create(
+            course_code='CSE3001', name='운영체제', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        a1 = _CourseOffering.objects.create(
+            course=self.course_a, year=2026, semester=1,
+            section_no='01', professor='김교수',
+        )
+        _CourseSchedule.objects.create(
+            course=self.course_a, offering=a1,
+            day_of_week='월', start_time=time(9, 0), end_time=time(9, 50),
+        )
+        a2 = _CourseOffering.objects.create(
+            course=self.course_a, year=2026, semester=1,
+            section_no='02', professor='이교수',
+        )
+        _CourseSchedule.objects.create(
+            course=self.course_a, offering=a2,
+            day_of_week='화', start_time=time(9, 0), end_time=time(9, 50),
+        )
+
+        # 과목 B — 2개 분반: 03(월 9-10, A.01과 충돌) / 04(수 9-10)
+        # 분반번호는 학기 내 전역 유일(year,semester,section_no) — A와 안 겹치게 03/04.
+        self.course_b = _Course.objects.create(
+            course_code='CSE3002', name='네트워크', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        b1 = _CourseOffering.objects.create(
+            course=self.course_b, year=2026, semester=1,
+            section_no='03', professor='박교수',
+        )
+        _CourseSchedule.objects.create(
+            course=self.course_b, offering=b1,
+            day_of_week='월', start_time=time(9, 0), end_time=time(9, 50),
+        )
+        b2 = _CourseOffering.objects.create(
+            course=self.course_b, year=2026, semester=1,
+            section_no='04', professor='최교수',
+        )
+        _CourseSchedule.objects.create(
+            course=self.course_b, offering=b2,
+            day_of_week='수', start_time=time(9, 0), end_time=time(9, 50),
+        )
+
+    def test_plan_응답_스키마(self):
+        out = dispatch_tool_call(
+            self.user, 'get_timetable_recommendations',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        self.assertEqual((out['requested_year'], out['requested_semester']), (2026, 1))
+        self.assertEqual((out['target_year'], out['target_semester']), (2026, 1))
+        self.assertFalse(out['fallback_term'])
+        self.assertIn('status', out)          # 브리핑용 이수현황 동봉
+        self.assertGreaterEqual(out['plan_count'], 1)
+        plan = out['plans'][0]
+        for key in ('total_credits', 'credits_by_category', 'reason_codes', 'offerings'):
+            self.assertIn(key, plan)
+        off = plan['offerings'][0]
+        for key in ('course_code', 'name', 'category', 'credits', 'section_no',
+                    'professor', 'schedules'):
+            self.assertIn(key, off)
+
+    def test_plan은_시간충돌_없는_조합만(self):
+        # 핵심 회귀 — 엔진이 충돌(A.01 월9 + B.01 월9) 조합을 절대 반환하면 안 됨.
+        out = dispatch_tool_call(
+            self.user, 'get_timetable_recommendations',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        self.assertGreaterEqual(out['plan_count'], 1)
+        for plan in out['plans']:
+            scheds = [s for o in plan['offerings'] for s in o['schedules']]
+            for i in range(len(scheds)):
+                for j in range(i + 1, len(scheds)):
+                    self.assertFalse(
+                        _schedules_overlap(scheds[i], scheds[j]),
+                        f'plan에 충돌 schedule 존재: {scheds[i]} vs {scheds[j]}',
+                    )
+
+    def test_note에_충돌검증_및_분반_지침_포함(self):
+        out = dispatch_tool_call(
+            self.user, 'get_timetable_recommendations',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        self.assertIn('충돌', out['note'])
+        self.assertIn('reason_codes', out['note'])
+
+    def test_prefs_override는_DB에_저장되지_않음(self):
+        # max_credits=21을 넘겨도 UserPreference DB row 기본값(18)은 안 바뀐다 (응답 1회용).
+        dispatch_tool_call(
+            self.user, 'get_timetable_recommendations',
+            {'target_year': 2026, 'target_semester': 1, 'max_credits': 21},
+        )
+        pref = _UserPreference.objects.get(user=self.user)
+        self.assertEqual(pref.max_credits, 18)
+
+    def test_요청학기_데이터없으면_작년학기로_fallback(self):
+        from datetime import time
+        # setUp이 2026-1을 채우므로 빈 학기(2026-2)를 요청 → 작년 같은 학기(2025-2)로 fallback.
+        fb_user = make_user('ttfb@mju.ac.kr')
+        fb_user.major = '컴퓨터공학'
+        fb_user.grade = 2
+        fb_user.semester = 1
+        fb_user.admission_year = 2024
+        fb_user.save()
+        c = _Course.objects.create(
+            course_code='CSE3100', name='컴파일러', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=2,
+        )
+        off = _CourseOffering.objects.create(
+            course=c, year=2025, semester=2, section_no='90', professor='김교수',
+        )
+        _CourseSchedule.objects.create(
+            course=c, offering=off,
+            day_of_week='월', start_time=time(10, 0), end_time=time(10, 50),
+        )
+        out = dispatch_tool_call(
+            fb_user, 'get_timetable_recommendations',
+            {'target_year': 2026, 'target_semester': 2},  # 개설 데이터 없는 학기
+        )
+        self.assertTrue(out['fallback_term'])
+        self.assertEqual((out['requested_year'], out['requested_semester']), (2026, 2))
+        self.assertEqual((out['target_year'], out['target_semester']), (2025, 2))
+        # note는 두 학기를 모두 담고 fallback 학기를 '다음 학기'라 부르지 말라고 지시
+        self.assertIn('2026-2학기', out['note'])
+        self.assertIn('2025-2학기', out['note'])
+        self.assertIn('"다음 학기"라고 부르지 말 것', out['note'])
+
+
+# ─── #2: 챗 특정 과목 조회 — lookup_course (개설/분반/교수/시간) ──────────
+class LookupCourseDispatcherTests(TestCase):
+    """챗 lookup_course — 추천 풀과 무관하게 임의 과목을 이름/번호로 조회해
+    개설 여부·분반·교수·시간을 반환 (#2).
+
+    그동안 챗엔 임의 과목 조회 수단이 없어, 추천 top-N 밖 과목의 "개설됐어?/누가
+    가르쳐?" 질문에 환각 위험이 있었음. lookup_course가 그 데이터 소스다.
+    """
+
+    def setUp(self):
+        from datetime import time
+        self.user = make_user('look@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.grade = 2
+        self.user.semester = 1
+        self.user.admission_year = 2024
+        self.user.save()
+
+        # 조회 대상 — 2026-1에 2개 분반(교수 다름) 개설
+        self.course = _Course.objects.create(
+            course_code='컴정500', name='데이터베이스', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        s50 = _CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1,
+            section_no='50', professor='김교수', capacity=40,
+        )
+        _CourseSchedule.objects.create(
+            course=self.course, offering=s50,
+            day_of_week='월', start_time=time(9, 0), end_time=time(10, 50),
+            building='S관', room='S501',
+        )
+        s51 = _CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1,
+            section_no='51', professor='이교수', capacity=35,
+        )
+        _CourseSchedule.objects.create(
+            course=self.course, offering=s51,
+            day_of_week='화', start_time=time(13, 0), end_time=time(14, 50),
+        )
+
+        # 2026-1엔 개설 안 된 과목 (2024-1에만)
+        self.old_course = _Course.objects.create(
+            course_code='컴정501', name='운영체제특론', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        _CourseOffering.objects.create(
+            course=self.old_course, year=2024, semester=1,
+            section_no='60', professor='박교수',
+        )
+
+    def _lookup(self, query, year=2026, semester=1):
+        return dispatch_tool_call(
+            self.user, 'lookup_course',
+            {'query': query, 'target_year': year, 'target_semester': semester},
+        )
+
+    def test_과목명으로_조회시_분반_교수_시간_반환(self):
+        out = self._lookup('데이터베이스')
+        self.assertGreaterEqual(out['match_count'], 1)
+        c = next(c for c in out['courses'] if c['course_code'] == '컴정500')
+        self.assertTrue(c['offered_in_term'])
+        self.assertEqual(len(c['offerings']), 2)
+        profs = {o['professor'] for o in c['offerings']}
+        self.assertEqual(profs, {'김교수', '이교수'})
+        # 분반마다 시간·강의실·제한인원 키 존재
+        for o in c['offerings']:
+            self.assertIn('schedules', o)
+            self.assertIn('capacity', o)
+            self.assertIn('section_no', o)
+
+    def test_과목번호로_조회(self):
+        out = self._lookup('컴정500')
+        codes = [c['course_code'] for c in out['courses']]
+        self.assertIn('컴정500', codes)
+
+    def test_해당학기_미개설이면_offered_false(self):
+        out = self._lookup('운영체제특론')  # 2024-1에만 있고 2026-1엔 없음
+        c = next(c for c in out['courses'] if c['course_code'] == '컴정501')
+        self.assertFalse(c['offered_in_term'])
+        self.assertEqual(c['offerings'], [])
+
+    def test_매칭_없으면_빈_결과(self):
+        out = self._lookup('존재하지않는과목ZZZ')
+        self.assertEqual(out['match_count'], 0)
+        self.assertEqual(out['courses'], [])
+
+    def test_query_없으면_error(self):
+        out = dispatch_tool_call(self.user, 'lookup_course', {})
+        self.assertIn('error', out)
+
+    def test_capacity_제한인원_노출(self):
+        out = self._lookup('데이터베이스')
+        c = next(c for c in out['courses'] if c['course_code'] == '컴정500')
+        by_sec = {o['section_no']: o for o in c['offerings']}
+        self.assertEqual(by_sec['50']['capacity'], 40)
+        self.assertEqual(by_sec['51']['capacity'], 35)
+
+    def test_note에_강의평_없음_안내(self):
+        out = self._lookup('데이터베이스')
+        self.assertIn('강의평', out['note'])
+
+    def test_요청학기_데이터없으면_작년학기로_fallback(self):
+        from datetime import time
+        # 2025-2에만 개설된 과목 → 2026-2 요청 시 fallback (그 학기 전체 개설 데이터 없음)
+        c = _Course.objects.create(
+            course_code='컴정502', name='분산시스템', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=2,
+        )
+        off = _CourseOffering.objects.create(
+            course=c, year=2025, semester=2, section_no='70', professor='최교수',
+        )
+        _CourseSchedule.objects.create(
+            course=c, offering=off,
+            day_of_week='수', start_time=time(10, 0), end_time=time(11, 50),
+        )
+        out = dispatch_tool_call(
+            self.user, 'lookup_course',
+            {'query': '분산시스템', 'target_year': 2026, 'target_semester': 2},
+        )
+        self.assertTrue(out['fallback_term'])
+        self.assertEqual((out['requested_year'], out['requested_semester']), (2026, 2))
+        self.assertEqual((out['target_year'], out['target_semester']), (2025, 2))
+        # fallback 학기(2025-2)에서 분반을 찾아 개설로 보여줌
+        looked = next(c for c in out['courses'] if c['course_code'] == '컴정502')
+        self.assertTrue(looked['offered_in_term'])
