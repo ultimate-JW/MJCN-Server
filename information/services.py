@@ -16,7 +16,7 @@ from django.utils import timezone
 
 from common.matching import extract_user_keywords, matched_keywords
 
-from .advice import build_contest_advice
+from .advice import build_contest_advice, build_contest_quick_questions
 from .models import Information
 
 # 노출 개수 경계 (확정 2026-06-02). 후보가 MIN 미만이면 있는 만큼만 — 빈 화면보다 우선.
@@ -109,5 +109,6 @@ def build_contest_guide(user) -> dict:
         'advice': advice,
         'cards': selected,            # Information 인스턴스 (dday 속성 부여됨)
         'priority': priority,
+        'quick_questions': build_contest_quick_questions(user),  # ⑥ 띵똥이 물어보기 칩
         'note': 'no_match' if state == 'no_match' else None,
     }

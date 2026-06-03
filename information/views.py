@@ -164,7 +164,8 @@ class InformationDetailView(RetrieveAPIView):
 class ContestGuideView(APIView):
     """GET /api/v1/information/contest-guide/ — 공모전 추천 테마 상세 (이슈 #184).
 
-    응답: { state, advice:{line1,line2}, cards:[{...,dday}], priority:[{rank,card_id,reasons}], note }
+    응답: { state, advice:{line1,line2}, cards:[{...,dday}], priority:[{rank,card_id,reasons}],
+            quick_questions:[{label,prompt}], note }
     추천 로직은 services.build_contest_guide. 카드만 직렬화하고 나머지는 머신 친화 dict 그대로.
     """
 
@@ -175,5 +176,6 @@ class ContestGuideView(APIView):
             'advice': guide['advice'],
             'cards': ContestCardSerializer(guide['cards'], many=True).data,
             'priority': guide['priority'],
+            'quick_questions': guide['quick_questions'],
             'note': guide['note'],
         })

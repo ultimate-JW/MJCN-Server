@@ -1640,10 +1640,11 @@ grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스
 - **후보**: 모집 중(활성 + 마감 안 지남) + `categories`에 `공모전`. 매칭 텍스트 = `title + organizer`.
 - **노출 개수**: 최소 3 ~ 최대 5. 매칭 공모전 우선 + 부족분은 일반 공모전(마감 임박순) backfill. **빈 화면 금지**(후보가 3 미만이면 있는 만큼).
 - **state**: `matched`(매칭 ≥3) / `partial_match`(1~2) / `no_match`(0, 마감일순). 매칭 0건도 추천 실패 아님.
-- **응답**: `{ state, advice:{line1,line2}, cards:[{id,title,organizer,categories,end_date,dday,url}], priority:[{rank,card_id,reasons:[{code,meta}]}], note }`
+- **응답**: `{ state, advice:{line1,line2}, cards:[{id,title,organizer,categories,end_date,dday,url}], priority:[{rank,card_id,reasons:[{code,meta}]}], quick_questions:[{label,prompt}], note }`
   - `dday`는 서버 계산. `priority`는 카드 정보 중복 없이 `card_id` 참조.
   - 배지(reasons) 머신코드: `interest_match`(meta.interest) / `deadline_soon`(meta.dday).
-- 조언/우선순위 문구·배지는 규칙 기반(LLM 없음). `note`는 `no_match`일 때만.
+  - **⑥ 띵똥이에게 물어보기** (`quick_questions`): 탭하면 챗으로 전송될 `{label, prompt}` 3개 (#164 패턴). 1번 칩은 관심분야 키워드 치환(없으면 일반 문구). 발견/준비/마감 3축.
+- 조언/우선순위 문구·배지·질문칩은 규칙 기반(LLM 없음). `note`는 `no_match`일 때만.
 
 ### 5.6 채팅방 보관함 (chat)
 

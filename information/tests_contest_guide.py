@@ -173,9 +173,33 @@ class ContestGuideAPITests(TestCase):
     def test_GET_200_스키마(self):
         res = self.client.get(self.URL)
         self.assertEqual(res.status_code, 200)
-        for key in ('state', 'advice', 'cards', 'priority', 'note'):
+        for key in ('state', 'advice', 'cards', 'priority', 'quick_questions', 'note'):
             self.assertIn(key, res.data)
         self.assertIn('line1', res.data['advice'])
         card = res.data['cards'][0]
         for key in ('id', 'title', 'organizer', 'categories', 'end_date', 'dday', 'url'):
             self.assertIn(key, card)
+
+    def test_quick_questions_칩_3개_label_prompt(self):
+        res = self.client.get(self.URL)
+        chips = res.data['quick_questions']
+        self.assertEqual(len(chips), 3)
+        for chip in chips:
+            self.assertIn('label', chip)
+            self.assertIn('prompt', chip)
+
+    def test_quick_questions_관심분야_치환(self):
+        # 관심분야 '게임' → 1번 칩에 키워드 치환
+        res = self.client.get(self.URL)
+        first = res.data['quick_questions'][0]
+        self.assertIn('게임', first['label'])
+        self.assertIn('게임', first['prompt'])
+
+    def test_quick_questions_관심사_없으면_fallback(self):
+        u = make_user('noint@mju.ac.kr')
+        client = APIClient()
+        client.force_authenticate(u)
+        res = client.get(self.URL)
+        first = res.data['quick_questions'][0]
+        # 키워드 없으면 일반 문구 (특정 관심사 미치환)
+        self.assertEqual(first['label'], '관심분야 공모전 더 추천')
