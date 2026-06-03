@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from courses.models import Course, CourseOffering
+from courses.models import Course, CourseOffering, TIMETABLE_DAY_IDX
 
 from .fields import ASCIIEmailField
 from .models import InterestArea, CourseHistory, CurrentCourse, Bookmark, PendingSignup
@@ -246,12 +246,13 @@ class CurrentCourseSerializer(serializers.ModelSerializer):
         offering = getattr(self, '_offering', None)
         if offering is None:
             return data
-        schedule = offering.schedules.first()
+        # create()와 동일 스냅샷으로 합본 day_of_week 기준 체크 — DB unique 제약과 일관 (#215)
+        snapshot = self._snapshot(offering)
         user = self.context['request'].user
         qs = CurrentCourse.objects.filter(
             user=user,
-            day_of_week=schedule.day_of_week,
-            start_time=schedule.start_time,
+            day_of_week=snapshot['day_of_week'],
+            start_time=snapshot['start_time'],
         )
         if self.instance is not None:
             qs = qs.exclude(pk=self.instance.pk)
@@ -262,16 +263,27 @@ class CurrentCourseSerializer(serializers.ModelSerializer):
         return data
 
     def _snapshot(self, offering: CourseOffering) -> dict:
-        # 분반당 schedule은 보통 1건. 둘 이상이면 첫 건 사용 (자동 매칭 단순화).
-        schedule = offering.schedules.first()
+        # 복수 요일 분반(월수 등)은 CourseSchedule이 요일당 1행 → 모든 요일을
+        # 월화수목금 순으로 합본("월수")해 저장 (#215). 한 요일만 박으면 메인
+        # '오늘 수업'(day_of_week__contains 필터)에서 나머지 요일이 누락됨.
+        schedules = sorted(
+            offering.schedules.all(),
+            key=lambda s: TIMETABLE_DAY_IDX.get(s.day_of_week, 99),  # 요일 정렬 키 (월=0)
+        )
+        # 시간·강의실은 요일 공통 가정 → 가장 이른 요일 행 기준 (B안 한계: 요일별 상이 시 손실)
+        base = schedules[0]
+        days = ''
+        for sch in schedules:
+            if sch.day_of_week not in days:  # 같은 요일 중복 행 방지("월월" 차단)
+                days += sch.day_of_week
         return {
             'course_name': offering.course.name,
             'course_code': offering.course.course_code,
-            'day_of_week': schedule.day_of_week,
-            'start_time': schedule.start_time,
-            'end_time': schedule.end_time,
+            'day_of_week': days,
+            'start_time': base.start_time,
+            'end_time': base.end_time,
             'professor': offering.professor or offering.course.professor or '',
-            'room': schedule.room or '',
+            'room': base.room or '',
         }
 
     def create(self, validated_data):
