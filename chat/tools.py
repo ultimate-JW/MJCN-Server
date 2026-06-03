@@ -25,8 +25,11 @@ from courses.services import (
     calc_graduation_progress,
     recommend_next_semester_courses,
 )
+from common.matching import SYNONYM_MAP, _contains_term
+from courses.models import Course, CourseOffering
 from information.models import Information
 from notices.models import Notice
+from timetables.services.pipeline import PREFERENCE_FIELDS, recommend_timetables
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,11 @@ logger = logging.getLogger(__name__)
 MAX_RECOMMEND_COURSES = MAX_NEXT_SEMESTER_RECOMMENDATIONS
 # Step 3 — Notice/Information 검색 결과 상한
 MAX_SEARCH_RESULTS = 5
+# 과목 조회(lookup_course) 상한 — 매칭 과목 수 / 과목당 분반 수 (토큰 가드).
+MAX_LOOKUP_COURSES = 5
+MAX_LOOKUP_SECTIONS = 10
+# 분야 과목 탐색(find_courses_by_topic) 상한 — 한 분야 트랙이 길 수 있어 넉넉히.
+MAX_TOPIC_COURSES = 15
 
 
 # ─── OpenAI tools 스키마 ──────────────────────────────────────────────
@@ -46,9 +54,11 @@ TOOLS_SCHEMA = [
         'function': {
             'name': 'get_next_semester_courses',
             'description': (
-                '사용자의 다음 학기(또는 지정된 학기) 추천 수강과목 목록을 반환한다. '
-                '시간표·시간표 추천·다음 학기 수강·과목 추천 류 질문에서 호출. '
-                '명지대 실제 개설 과목·시간·교수 데이터 기반.'
+                '사용자의 다음 학기(또는 지정된 학기) 추천 수강과목 **목록**을 반환한다. '
+                '"뭐 들어야 해", "다음 학기 과목 추천", "전공 추천" 처럼 들을 과목을 '
+                '나열·추천하는 질문에서 호출. 명지대 실제 개설 과목·시간·교수 데이터 기반. '
+                '주의: "시간표 짜줘/추천"처럼 충돌 없는 시간표 조합을 원하면 이 tool이 아니라 '
+                'get_timetable_recommendations를 쓴다 (이 tool 결과로 분반을 직접 조합하지 말 것).'
             ),
             'parameters': {
                 'type': 'object',
@@ -61,6 +71,67 @@ TOOLS_SCHEMA = [
                         'type': 'integer',
                         'enum': [1, 2],
                         'description': '추천 대상 학기 (1=1학기, 2=2학기). 미지정 시 자동.',
+                    },
+                },
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'get_timetable_recommendations',
+            'description': (
+                '충돌 검사·사용자 선호·다양성까지 모두 적용된 **시간표 조합 추천 top-3**를 반환한다. '
+                '"시간표 짜줘", "시간표 추천", "21학점으로 시간표", "아침 수업 빼고 짜줘" 처럼 '
+                '실제로 들고 다닐 수 있는 한 학기 시간표(조합)를 원하는 질문에서 호출. '
+                '각 plan의 과목들은 **시간 충돌이 이미 검증된 조합**이므로 그대로 제시하면 된다 — '
+                '분반·시간을 임의로 다시 섞지 말 것. 단순히 들을 과목만 나열하면 '
+                'get_next_semester_courses를 쓴다.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'target_year': {
+                        'type': 'integer',
+                        'description': '대상 학년도 (예: 2026). 미지정 시 사용자 현재 학기 기반 자동 결정.',
+                    },
+                    'target_semester': {
+                        'type': 'integer',
+                        'enum': [1, 2],
+                        'description': '대상 학기 (1=1학기, 2=2학기). 미지정 시 자동.',
+                    },
+                    # 아래는 사용자가 자연어로 요구한 선호만 채워 보낸다 (미지정 키는 DB 기본값 유지).
+                    # 챗에서 받은 값은 응답 1회용 — DB에 저장하지 않는다.
+                    'max_credits': {
+                        'type': 'integer',
+                        'description': '학기당 최대 학점. "21학점으로/빡세게" 같은 요구 시 설정.',
+                    },
+                    'min_credits': {
+                        'type': 'integer',
+                        'description': '학기당 최소 학점. "여유있게/적게" 같은 요구 시 설정.',
+                    },
+                    'no_morning': {
+                        'type': 'boolean',
+                        'description': '1교시(오전 이른 시간) 수업 제외. "아침 빼줘" 등.',
+                    },
+                    'no_evening': {
+                        'type': 'boolean',
+                        'description': '야간(18시 이후) 수업 제외. "저녁 수업 빼줘" 등.',
+                    },
+                    'lunch_break': {
+                        'type': 'boolean',
+                        'description': '점심시간(12~14시) 공강 선호. "점심 비워줘" 등.',
+                    },
+                    'prefer_off_days': {
+                        'type': 'array',
+                        'items': {'type': 'string', 'enum': ['월', '화', '수', '목', '금']},
+                        'description': '공강(수업 없는 날)으로 원하는 요일. "금요일 공강" → ["금"].',
+                    },
+                    'banned_days': {
+                        'type': 'array',
+                        'items': {'type': 'string', 'enum': ['월', '화', '수', '목', '금']},
+                        'description': '아예 수업을 넣지 않을 요일. "월요일엔 수업 싫어" → ["월"].',
                     },
                 },
                 'required': [],
@@ -92,6 +163,79 @@ TOOLS_SCHEMA = [
                 '날짜 기준 진척도(%)는 get_graduation_progress로 별도.'
             ),
             'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'get_course_history',
+            'description': (
+                '사용자가 **이미 수강한(들은) 과목 목록**을 연도·학기 순으로 반환한다. '
+                '과목명·과목번호·이수구분·학점·취득성적 포함. '
+                '"내가 들은 과목", "수강한 과목 보여줘", "지금까지 들은 거", "전에 뭐 들었지" 류 '
+                '**과거 수강이력** 질문에서 호출. '
+                '다음 학기 추천(get_next_semester_courses)·학점 집계(get_completion_status)와 구분 — '
+                '이건 실제로 들은 과목 "목록"이다. '
+                '(현재 수강 중인 과목은 이 tool 범위 밖이다.)'
+            ),
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'lookup_course',
+            'description': (
+                '**특정 과목**을 이름이나 과목번호로 조회해 해당 학기 개설 여부와 분반 정보'
+                '(교수·강의시간·강의실·제한인원)를 반환한다. 추천 풀과 무관하게 임의의 과목을 찾는다. '
+                '"객체지향 개설됐어?", "데이터베이스 누가 가르쳐?", "이 과목 분반 뭐 있어?", '
+                '"A교수랑 B교수 시간 비교" 처럼 **특정 과목의 개설/분반/교수/시간**을 묻는 질문에서 호출. '
+                '들을 과목을 추천받는 게(get_next_semester_courses) 아니라, 콕 집은 과목을 조회하는 것이다. '
+                '강의평·난이도 같은 데이터는 없다.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {
+                        'type': 'string',
+                        'description': '조회할 과목명 또는 과목번호 (예: "객체지향프로그래밍", "컴정102").',
+                    },
+                    'target_year': {
+                        'type': 'integer',
+                        'description': '조회 대상 학년도. 미지정 시 사용자 다음 학기 기준 자동 결정.',
+                    },
+                    'target_semester': {
+                        'type': 'integer',
+                        'enum': [1, 2],
+                        'description': '조회 대상 학기 (1=1학기, 2=2학기). 미지정 시 자동.',
+                    },
+                },
+                'required': ['query'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'find_courses_by_topic',
+            'description': (
+                '특정 **분야·진로 키워드**(보안/AI/게임/클라우드/데이터분석/웹 등)와 관련된 '
+                '명지대 실제 과목을 찾아 선수과목·권장 학년과 함께 반환한다. '
+                '"보안 쪽 가려면 뭐 들어야 해?", "AI 관련 과목 뭐 있어?", "게임 개발 트랙 추천" 처럼 '
+                '**관심 분야로 진입하기 위한 과목/순서**를 묻는 질문에서 호출. '
+                '동의어로 확장해(예: 보안→정보보호/사이버) 과목명·태그를 매칭한다. '
+                '다음 학기 개인 추천(get_next_semester_courses)과 달리, 분야 기준으로 커리큘럼을 탐색한다.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'topic': {
+                        'type': 'string',
+                        'description': '분야/진로 키워드 (예: "보안", "인공지능", "게임", "클라우드").',
+                    },
+                },
+                'required': ['topic'],
+            },
         },
     },
     {
@@ -155,10 +299,18 @@ def dispatch_tool_call(user, name: str, arguments: dict[str, Any]) -> dict[str, 
     try:
         if name == 'get_next_semester_courses':
             return _get_next_semester_courses(user, arguments)
+        if name == 'get_timetable_recommendations':
+            return _get_timetable_recommendations(user, arguments)
         if name == 'get_graduation_progress':
             return _get_graduation_progress(user)
         if name == 'get_completion_status':
             return _get_completion_status(user)
+        if name == 'get_course_history':
+            return _get_course_history(user)
+        if name == 'lookup_course':
+            return _lookup_course(user, arguments)
+        if name == 'find_courses_by_topic':
+            return _find_courses_by_topic(user, arguments)
         if name == 'search_notices':
             return _search_notices(arguments)
         if name == 'search_information':
@@ -169,7 +321,18 @@ def dispatch_tool_call(user, name: str, arguments: dict[str, Any]) -> dict[str, 
     return {'error': f'알 수 없는 tool: {name}'}
 
 
-def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
+# get_timetable_recommendations가 payload로 넘길 prefs 키 — timetables 엔진과 동기화.
+_TIMETABLE_PREF_KEYS = frozenset(PREFERENCE_FIELDS)
+
+
+def _resolve_term(user, args: dict[str, Any]):
+    """args의 target_year/semester를 확정하고 fallback 학기까지 해석 (#205 일관 처리).
+
+    반환: (requested_year, requested_semester, target_year, target_semester, is_fallback_term)
+      - requested_*: 사용자 관점의 '다음 학기' (fallback 전, 안내 표기용)
+      - target_*: 추천 데이터의 실제 출처 학기 (개설 정보 없으면 작년 같은 학기로 fallback)
+    get_next_semester_courses / get_timetable_recommendations 공유.
+    """
     target_year = args.get('target_year')
     target_semester = args.get('target_semester')
 
@@ -188,11 +351,121 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
     requested_year, requested_semester = target_year, target_semester
 
     # 다음 학기 개설 정보가 아직 없으면 작년 같은 학기로 fallback (#193 — 섹션 경로와 동일).
-    # 챗 경로엔 그동안 이게 빠져 빈 추천만 나왔음. fallback 학기로 실제 과목을 주고,
-    # AI가 "다음 학기는 ○-○지만 ○-○ 기준" 안내를 하도록 note에 명시한다.
     target_year, target_semester, is_fallback_term = _resolve_offering_term(
         target_year, target_semester,
     )
+    return requested_year, requested_semester, target_year, target_semester, is_fallback_term
+
+
+def _offering_payload(o) -> dict[str, Any]:
+    """CourseOffering 한 분반 → JSON dict (section_no/professor/schedules).
+
+    한 과목엔 교수·시간이 다른 여러 분반이 있고 학생은 그중 하나만 듣는다. offering 경계를
+    유지해 서로 다른 분반의 시간이 한 과목으로 섞이지 않게 한다 (#199).
+    """
+    return {
+        'section_no': o.section_no,        # 강좌번호 — 학기 안 분반 유일 식별자
+        'professor': o.professor,          # 교수는 분반 속성 (Course.professor 아님)
+        'capacity': o.capacity,            # 제한인원 (실시간 여석 아님, None 가능)
+        'offering_note': o.note or '',     # 비고 (예: 'IPP 우선수강')
+        'schedules': [
+            {
+                'day_of_week': s.day_of_week,
+                'start_time': s.start_time.isoformat() if s.start_time else None,
+                'end_time': s.end_time.isoformat() if s.end_time else None,
+                'building': s.building,
+                'room': s.room,
+            }
+            for s in o.schedules.all()
+        ],
+    }
+
+
+def _get_timetable_recommendations(user, args: dict[str, Any]) -> dict[str, Any]:
+    """5.3.6 시간표 조합 추천 top-3 — timetables 엔진(충돌검사+다양성) 결과를 챗에 노출 (#1).
+
+    raw offering을 LLM에 던져 직접 조합시키던 방식(시간 충돌 위험)을 대체. recommend_timetables가
+    bitmap 충돌검사·prefs hard filter·Jaccard 다양성까지 끝낸 plan을 준다. 학기 fallback은
+    엔진이 안 하므로 get_next_semester_courses와 동일하게 챗 tool이 책임진다.
+    """
+    (requested_year, requested_semester,
+     target_year, target_semester, is_fallback_term) = _resolve_term(user, args)
+
+    # 사용자가 자연어로 명시한 선호만 payload로 — 미지정 키는 엔진 merge_prefs가 DB값 유지.
+    # 챗에서 받은 값은 DB에 저장하지 않음 (응답 1회용 override).
+    payload = {k: args[k] for k in _TIMETABLE_PREF_KEYS if k in args}
+
+    result = recommend_timetables(user, target_year, target_semester, payload)
+    plans = result.get('plans', [])
+
+    note = (
+        '각 plan은 시간 충돌이 이미 검증된 시간표 조합이다 — 그대로 제시하고 분반·시간을 다시 '
+        '섞지 말 것. plans는 점수순 top-3(서로 다른 조합). total_credits=조합 총학점, '
+        'credits_by_category=카테고리별 학점. reason_codes는 이 조합이 좋은 이유 코드 — '
+        'covers_required_major(전공필수 포함), covers_short_categories(부족 카테고리 보완), '
+        'includes_backlog_required(밀린 필수 포함), off_day_satisfied(원하는 공강 요일 확보), '
+        'no_morning_satisfied(오전 수업 없음), no_evening_satisfied(야간 없음), '
+        'lunch_break_satisfied(점심 공강 확보), credits_in_target_range(목표 학점 범위 내), '
+        'matches_interest_areas(관심분야 과목 포함), credits_below_target(목표 학점 미달). '
+        '이 코드를 자연어로 풀어 plan마다 왜 추천했는지 1~2줄로 설명할 것. '
+        'status는 현재 졸업요건 이수현황 — 시간표 제시 전 현재 상황을 1~2줄 브리핑하는 데 쓰고 '
+        'status에 있는 값만 말하며 없는 수치는 지어내지 말 것.'
+    )
+    # 엔진 fallback note(머신 코드) 해설 — plan이 부족한 이유를 AI가 안내하게 함.
+    engine_note = result.get('note')
+    if engine_note == 'insufficient_candidates':
+        note += ' 단, 개설/후보 과목이 부족해 충분한 조합을 만들지 못했다. 만든 만큼만 안내할 것.'
+    elif engine_note == 'low_diversity_pool':
+        note += ' 단, 서로 충분히 다른 조합이 부족해 3개 미만만 나왔다. 있는 만큼만 안내할 것.'
+
+    # fallback 학기면 requested(다음 학기) vs target(작년 같은 학기)을 반드시 구분 안내 (#205).
+    if is_fallback_term:
+        note += (
+            f' 또한 사용자의 다음 학기는 {requested_year}-{requested_semester}학기인데 아직 개설 '
+            f'정보가 없어, 작년 같은 학기인 {target_year}-{target_semester}학기 개설 과목으로 시간표를 '
+            f'짰다. 사용자에게 "다음 학기({requested_year}-{requested_semester})는 아직 개설 정보가 없어 '
+            f'{target_year}-{target_semester}학기 기준으로 짠다"고 명확히 안내하고, '
+            f'{target_year}-{target_semester}학기를 "다음 학기"라고 부르지 말 것.'
+        )
+
+    return {
+        # 사용자 관점의 다음 학기 (fallback 전). AI가 "다음 학기" 표기에 이 값을 쓰게 함.
+        'requested_year': requested_year,
+        'requested_semester': requested_semester,
+        # 시간표를 짠 실제 출처 학기 (fallback 시 작년 같은 학기).
+        'target_year': target_year,
+        'target_semester': target_semester,
+        'fallback_term': is_fallback_term,
+        'plan_count': len(plans),
+        'engine_note': engine_note,
+        'note': note,
+        # 현재 졸업요건 이수현황 — 시간표 제시 전 "현재 상황" 브리핑용 (목록 tool과 동일 정신).
+        'status': _compact_status(user),
+        'plans': [
+            {
+                'total_credits': p['total_credits'],
+                'credits_by_category': p['credits_by_category'],
+                'reason_codes': p['reason_codes'],
+                # plan 안 offering은 충돌검사 통과한 분반 하나로 이미 확정 — 그대로 직렬화.
+                'offerings': [
+                    {
+                        'course_code': o.course.course_code,
+                        'name': o.course.name,
+                        'category': o.course.category,
+                        'credits': o.course.credits,
+                        **_offering_payload(o),
+                    }
+                    for o in p['offerings']
+                ],
+            }
+            for p in plans
+        ],
+    }
+
+
+def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
+    (requested_year, requested_semester,
+     target_year, target_semester, is_fallback_term) = _resolve_term(user, args)
 
     results = recommend_next_semester_courses(
         user, target_year=target_year, target_semester=target_semester,
@@ -253,27 +526,11 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
                 'category': c.category,
                 'credits': c.credits,
                 # 분반(Offering) 단위로 묶는다 — 한 과목엔 교수·시간이 다른 여러 분반이 있고
-                # 학생은 그중 하나만 수강한다. course 단위로 schedule을 평탄화하면(c.schedules.all())
-                # 서로 다른 분반의 시간이 한 과목으로 섞여, 실재하지 않는 시간표가 나온다 (#199).
-                # offering 경계를 유지해 AI가 분반 하나를 통째로 고르게 한다.
-                'offerings': [
-                    {
-                        'section_no': o.section_no,        # 강좌번호 — 학기 안 분반 유일 식별자
-                        'professor': o.professor,          # 교수는 분반 속성 (Course.professor 아님)
-                        'schedules': [
-                            {
-                                'day_of_week': s.day_of_week,
-                                'start_time': s.start_time.isoformat() if s.start_time else None,
-                                'end_time': s.end_time.isoformat() if s.end_time else None,
-                                'building': s.building,
-                                'room': s.room,
-                            }
-                            for s in o.schedules.all()
-                        ],
-                    }
-                    # services가 target 학기로 필터·prefetch한 offerings (추가 쿼리 없음)
-                    for o in c.offerings.all()
-                ],
+                # 학생은 그중 하나만 수강한다. offering 경계를 유지해 AI가 분반 하나를 통째로
+                # 고르게 한다 (섞으면 실재하지 않는 시간표가 됨, #199). 충돌 없는 조합 자체가
+                # 필요하면 get_timetable_recommendations 사용.
+                # services가 target 학기로 필터·prefetch한 offerings (추가 쿼리 없음).
+                'offerings': [_offering_payload(o) for o in c.offerings.all()],
             }
             for score, c in top
         ],
@@ -318,9 +575,216 @@ def _get_completion_status(user) -> dict[str, Any]:
     result['note'] = (
         '졸업요건 대비 학점 이수현황 (학칙 7분류). categories[].remaining이 남은 학점, '
         'areas는 공통/핵심교양 영역별 분해, required_courses는 전공필수/학문기초 필수과목 이수 여부. '
-        'chapel은 채플 이수 회수. 사용자에게 잔여 위주로 간결히 안내할 것.'
+        'chapel은 채플 이수 회수. 사용자에게 잔여 위주로 간결히 안내할 것. '
+        # 졸업 가능 판정 (#5) — "졸업 가능해?" 류 질문은 이 feasibility로 답할 것.
+        'feasibility는 졸업 가능 판정: on_track=true면 남은 학기(remaining_semesters) 안에 '
+        '남은 학점을 채울 수 있다(학기당 최대 per_semester_cap학점 가정). on_track=false면 일정상 '
+        '추가 학기가 필요하다. on_track=null이면 학년/학기 미입력으로 일정 판정 불가. '
+        'blockers는 졸업을 막는 요인 — credits_over_capacity(남은 학기로 학점 부족), '
+        'unmet_required_courses(미이수 전공필수/학문기초 과목, meta.courses), chapel_short(채플 부족). '
+        '"졸업 가능해?"엔 on_track + blockers를 근거로 답하고, blockers의 수치/과목만 말하며 '
+        '없는 근거(남은 학기·상한 등)를 지어내지 말 것. on_track=null이면 학년·학기 입력을 권할 것.'
     )
     return result
+
+
+def _get_course_history(user) -> dict[str, Any]:
+    """사용자가 이미 수강한(들은) 과목 목록 — CourseHistory를 연도·학기순으로 반환 (#211).
+
+    "내가 들은 과목" 류 질문 전용. get_completion_status는 카테고리별 집계 학점만 주고
+    과목 '목록'은 안 주므로, 실제 이수 과목을 나열할 데이터가 챗에 없었다 — LLM이 추천/현재
+    과목을 '들은 과목'으로 오라벨하던 원인. 현재 수강 중(CurrentCourse)은 범위 밖 (후속).
+    """
+    from accounts.models import CourseHistory
+
+    rows = (
+        CourseHistory.objects
+        .filter(user=user)
+        .order_by('year', 'semester', 'course_code')
+    )
+    courses = [
+        {
+            'course_name': h.course_name,
+            'course_code': h.course_code,
+            'year': h.year,
+            'semester': h.semester,        # 1=1학기 / 2=2학기
+            'category': h.category,        # 학칙 7분류 이수구분
+            'credits': h.credits,
+            'grade_received': h.grade_received or None,  # 성적 미입력이면 None
+        }
+        for h in rows
+    ]
+    return {
+        'count': len(courses),
+        'note': (
+            '사용자가 이미 수강 완료한(들은) 과목 목록 — 연도·학기 오름차순. '
+            'semester는 1=1학기 / 2=2학기. 추천·현재 수강 과목이 아니라 과거 이수 과목임. '
+            '0건이면 등록된 수강이력이 없다고 안내할 것. 데이터에 없는 과목·성적은 지어내지 말 것.'
+        ),
+        'courses': courses,
+    }
+
+
+def _lookup_course(user, args: dict[str, Any]) -> dict[str, Any]:
+    """특정 과목 조회 — 이름/과목번호로 찾아 해당 학기 개설·분반 정보를 반환 (#2).
+
+    추천 풀(get_next_semester_courses의 상위 N개)에 없는 임의 과목도 조회 가능. "개설됐어?",
+    "누가 가르쳐?", "분반 뭐 있어?", 교수 비교 류 질문의 데이터 소스. 그동안 챗엔 임의 과목
+    조회 수단이 없어 추천 풀 밖 과목은 환각 위험이 있었다.
+    """
+    query = (args.get('query') or '').strip()
+    if not query:
+        return {'error': '조회할 과목명 또는 과목번호(query)가 필요합니다.'}
+
+    # 개설 여부를 판단할 학기 — 다음학기 추천과 동일 규칙(자동결정 + fallback)으로 일관 (#205).
+    (requested_year, requested_semester,
+     target_year, target_semester, is_fallback_term) = _resolve_term(user, args)
+
+    # 과목번호/이름 부분일치. 매칭 과다 시 상한으로 자름 (토큰 가드).
+    matched = list(
+        Course.objects
+        .filter(Q(course_code__icontains=query) | Q(name__icontains=query))
+        .order_by('course_code')[:MAX_LOOKUP_COURSES + 1]
+    )
+    truncated = len(matched) > MAX_LOOKUP_COURSES
+    matched = matched[:MAX_LOOKUP_COURSES]
+
+    courses_payload = []
+    for c in matched:
+        offs = (
+            CourseOffering.objects
+            .filter(course=c, year=target_year, semester=target_semester)
+            .prefetch_related('schedules')
+            .order_by('section_no')[:MAX_LOOKUP_SECTIONS]
+        )
+        offerings = [_offering_payload(o) for o in offs]
+        courses_payload.append({
+            'course_code': c.course_code,
+            'name': c.name,
+            'category': c.category,
+            'credits': c.credits,
+            'department': c.department,
+            # 해당 학기에 실제 개설(분반 존재) 여부 — False면 "그 학기엔 개설 안 됨".
+            'offered_in_term': bool(offerings),
+            'offerings': offerings,
+        })
+
+    note = (
+        '특정 과목 조회 결과. offered_in_term=해당 학기 개설 여부(false면 그 학기엔 개설 안 됨), '
+        'offerings=분반 목록(section_no=강좌번호, professor=교수, schedules=요일·시간·강의실, '
+        'capacity=제한인원[실시간 여석 아님]). 교수 비교/분반 안내 시 이 데이터만 쓸 것. '
+        '강의평·난이도·수강 경쟁률 같은 정보는 없으니 지어내지 말 것. '
+        f'조회 학기는 {target_year}-{target_semester}학기 기준이다. '
+        'match_count=0이면 그 이름/번호의 과목을 찾지 못했다고 안내할 것.'
+    )
+    if truncated:
+        note += f' 매칭 과목이 많아 {MAX_LOOKUP_COURSES}개만 반환했다 — 더 구체적인 과목명/번호를 요청할 것.'
+    if is_fallback_term:
+        # 다음 학기 개설 정보가 아직 없어 작년 같은 학기로 조회한 경우 (#205 표기 구분).
+        note += (
+            f' 단, 사용자의 다음 학기는 {requested_year}-{requested_semester}학기인데 아직 개설 정보가 '
+            f'없어 작년 같은 학기인 {target_year}-{target_semester}학기 개설 정보로 조회했다. '
+            f'{target_year}-{target_semester}학기를 "다음 학기"라고 부르지 말 것.'
+        )
+
+    return {
+        'query': query,
+        'requested_year': requested_year,
+        'requested_semester': requested_semester,
+        'target_year': target_year,
+        'target_semester': target_semester,
+        'fallback_term': is_fallback_term,
+        'match_count': len(courses_payload),
+        'note': note,
+        'courses': courses_payload,
+    }
+
+
+# 분야 키워드 토큰 분리 — common.matching과 동일 구분자(콤마/공백/슬래시/가운뎃점).
+_TOPIC_SPLIT_RE = re.compile(r'[\s,/·]+')
+
+
+def _expand_topic_terms(topic: str) -> set[str]:
+    """분야 키워드를 토큰화 + 동의어 확장 (보안→정보보호/사이버 등, common.SYNONYM_MAP 재사용)."""
+    raw = {t for t in _TOPIC_SPLIT_RE.split(topic.lower()) if t}
+    terms = set(raw)
+    for tok in raw:
+        terms |= SYNONYM_MAP.get(tok, set())
+    return terms
+
+
+def _find_courses_by_topic(user, args: dict[str, Any]) -> dict[str, Any]:
+    """분야·진로 키워드로 명지대 실제 과목 탐색 — grounded 트랙 제안용 (#4).
+
+    "보안 가려면 뭐 들어?" 류에서 LLM이 명지대 실커리큘럼과 무관한 과목 시퀀스를 지어내던
+    위험 해소. 동의어 확장(common.SYNONYM_MAP) 후 Course.name/tags 매칭, 선수과목·권장학년
+    동봉 → LLM이 데이터 위에서 순서를 제안하게 한다. 개설학기·교수는 lookup_course로 별도.
+    """
+    topic = (args.get('topic') or '').strip()
+    if not topic:
+        return {'error': '조회할 분야/키워드(topic)가 필요합니다.'}
+
+    terms = _expand_topic_terms(topic)
+    if not terms:
+        return {'topic': topic, 'matched_terms': [], 'count': 0,
+                'note': '유효한 키워드가 없습니다.', 'courses': []}
+
+    # 후보 수집 — 이름 부분일치(DB icontains 프리필터) ∪ 태그 토큰 매칭(파이썬, 대소문자 무관).
+    # 태그는 JSONField라 DB 측 매칭이 대소문자·백엔드 의존이라 파이썬에서 토큰 비교한다.
+    name_q = Q()
+    for term in terms:
+        name_q |= Q(name__icontains=term)
+    candidate_ids = set(Course.objects.filter(name_q).values_list('id', flat=True))
+    for cid, tags in (
+        Course.objects.exclude(tags=[]).exclude(tags__isnull=True)
+        .values_list('id', 'tags')
+    ):
+        if {str(t).lower() for t in (tags or [])} & terms:
+            candidate_ids.add(cid)
+
+    courses = (
+        Course.objects.filter(id__in=candidate_ids)
+        .prefetch_related('prerequisites__prerequisite')
+        # 권장 학년 → 카테고리 → 과목번호 순 = 자연스러운 수강 순서 힌트
+        .order_by('year_open', 'category', 'course_code')
+    )
+
+    matched = []
+    for c in courses:
+        name_l = (c.name or '').lower()
+        tag_toks = {str(t).lower() for t in (c.tags or [])}
+        # DB 프리필터(icontains)를 _contains_term으로 재검증 — 짧은 영문 오매칭(ai⊂brain) 제거.
+        hit = sorted({t for t in terms if (t in tag_toks) or _contains_term(name_l, t)})
+        if not hit:
+            continue
+        matched.append({
+            'course_code': c.course_code,
+            'name': c.name,
+            'category': c.category,
+            'credits': c.credits,
+            'recommended_grade': c.year_open,   # 권장 학년 (0=학년 무관)
+            'matched_terms': hit,               # 어떤 키워드로 걸렸는지 (투명성)
+            'prerequisites': [
+                {'course_code': p.prerequisite.course_code, 'name': p.prerequisite.name}
+                for p in c.prerequisites.all()
+            ],
+        })
+        if len(matched) >= MAX_TOPIC_COURSES:
+            break
+
+    return {
+        'topic': topic,
+        'matched_terms': sorted(terms),   # 동의어 확장된 검색어 전체
+        'count': len(matched),
+        'note': (
+            '분야 키워드를 동의어 확장해 명지대 실제 과목 중 이름/태그가 맞는 것만 반환(grounded). '
+            'recommended_grade=권장 학년(0=무관), prerequisites=선수과목 목록. '
+            '듣는 순서는 prerequisites(먼저 들어야 하는 과목)와 recommended_grade를 근거로 제안할 것. '
+            '이 목록에 없는 과목명을 지어내지 말 것. 특정 과목의 개설 학기·교수·시간이 필요하면 '
+            'lookup_course로 이어서 확인. count=0이면 해당 분야 매칭 과목을 못 찾았다고 안내할 것.'
+        ),
+        'courses': matched,
+    }
 
 
 def serialize_tool_result(result: dict[str, Any]) -> str:

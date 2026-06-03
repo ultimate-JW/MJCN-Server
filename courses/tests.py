@@ -2714,3 +2714,102 @@ class StudyTipsAPITests(APITestCase):
         self.client.force_authenticate(user=_make_user(email='b@mju.ac.kr', grade=4, semester=2))
         res_b = self.client.get(self.url)
         self.assertEqual(res_a.data, res_b.data)
+
+
+# ─── #5: 졸업 가능 판정 (feasibility) ─────────────────────────────────
+class GraduationFeasibilityTests(TestCase):
+    """compute_graduation_feasibility — 남은 학점 + 남은 학기 × 상한 + 게이트 판정 (#5).
+
+    남은 학점만으로 "졸업 가능?"을 답할 수 없던 결함 해소. 단위 테스트는 합성 status로
+    각 분기를 결정적으로 검증한다.
+    """
+
+    @staticmethod
+    def _status(total_remaining, *, categories=None, chapel_remaining=0):
+        return {
+            'categories': categories or [],
+            'chapel': {'completed': 0, 'required': chapel_remaining,
+                       'remaining': chapel_remaining},
+            'total_completed': 0,
+            'total_required': 130,
+            'total_remaining': total_remaining,
+        }
+
+    def _feasibility(self, total_remaining, *, grade=2, semester=1,
+                     categories=None, chapel_remaining=0):
+        from courses.services import compute_graduation_feasibility
+        user = _make_user(
+            email=f'feas{grade}{semester}@mju.ac.kr', grade=grade, semester=semester,
+        )
+        status_dict = self._status(
+            total_remaining, categories=categories, chapel_remaining=chapel_remaining,
+        )
+        return compute_graduation_feasibility(user, status_dict)
+
+    def test_남은학기로_충분하면_on_track_true(self):
+        # 1학년 1학기: R=(4-1)*2+(2-1)=7, max=7*21=147 ≥ 100 → on_track
+        f = self._feasibility(100, grade=1, semester=1)
+        self.assertEqual(f['remaining_semesters'], 7)
+        self.assertEqual(f['per_semester_cap'], 21)
+        self.assertEqual(f['max_attainable_credits'], 147)
+        self.assertTrue(f['on_track'])
+        codes = {b['code'] for b in f['blockers']}
+        self.assertNotIn('credits_over_capacity', codes)
+
+    def test_초과학기_학점부족이면_on_track_false_blocker(self):
+        # 4학년 2학기: R=0, max=0 인데 30학점 남음 → 추가 학기 필요
+        f = self._feasibility(30, grade=4, semester=2)
+        self.assertEqual(f['remaining_semesters'], 0)
+        self.assertFalse(f['on_track'])
+        blocker = next(b for b in f['blockers'] if b['code'] == 'credits_over_capacity')
+        self.assertEqual(blocker['meta']['remaining_credits'], 30)
+        self.assertEqual(blocker['meta']['remaining_semesters'], 0)
+        self.assertEqual(blocker['meta']['max_attainable'], 0)
+
+    def test_학년학기_없으면_판정불가_null(self):
+        f = self._feasibility(50, grade=None, semester=None)
+        self.assertIsNone(f['remaining_semesters'])
+        self.assertIsNone(f['max_attainable_credits'])
+        self.assertIsNone(f['on_track'])
+        # 일정 판정 불가여도 credits_over_capacity는 안 달림 (on_track is None)
+        codes = {b['code'] for b in f['blockers']}
+        self.assertNotIn('credits_over_capacity', codes)
+
+    def test_미이수_필수과목_blocker(self):
+        cats = [{
+            'category': '전공필수', 'completed': 0, 'required': 9, 'remaining': 9,
+            'areas': None,
+            'required_courses': [
+                {'name': '자료구조', 'completed': True},
+                {'name': '알고리즘', 'completed': False},
+            ],
+        }]
+        f = self._feasibility(9, grade=1, semester=1, categories=cats)
+        blocker = next(b for b in f['blockers'] if b['code'] == 'unmet_required_courses')
+        self.assertIn('알고리즘', blocker['meta']['courses'])
+        self.assertNotIn('자료구조', blocker['meta']['courses'])
+
+    def test_채플_부족_blocker(self):
+        f = self._feasibility(10, grade=1, semester=1, chapel_remaining=3)
+        blocker = next(b for b in f['blockers'] if b['code'] == 'chapel_short')
+        self.assertEqual(blocker['meta']['remaining'], 3)
+
+
+class GraduationFeasibilityAPITests(APITestCase):
+    """GET /api/v1/courses/status/ 응답에 feasibility가 직렬화돼 노출되는지 (#5)."""
+    url = '/api/v1/courses/status/'
+
+    def setUp(self):
+        GraduationRequirement.objects.create(
+            department='데이터테크놀로지전공', admission_year=2024,
+            category='전공필수', required_credits=42, total_required=130,
+        )
+
+    def test_응답에_feasibility_포함(self):
+        self.client.force_authenticate(user=_make_user())
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('feasibility', res.data)
+        for key in ('remaining_semesters', 'per_semester_cap',
+                    'max_attainable_credits', 'on_track', 'blockers'):
+            self.assertIn(key, res.data['feasibility'])
