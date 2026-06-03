@@ -97,6 +97,22 @@ TOOLS_SCHEMA = [
     {
         'type': 'function',
         'function': {
+            'name': 'get_course_history',
+            'description': (
+                '사용자가 **이미 수강한(들은) 과목 목록**을 연도·학기 순으로 반환한다. '
+                '과목명·과목번호·이수구분·학점·취득성적 포함. '
+                '"내가 들은 과목", "수강한 과목 보여줘", "지금까지 들은 거", "전에 뭐 들었지" 류 '
+                '**과거 수강이력** 질문에서 호출. '
+                '다음 학기 추천(get_next_semester_courses)·학점 집계(get_completion_status)와 구분 — '
+                '이건 실제로 들은 과목 "목록"이다. '
+                '(현재 수강 중인 과목은 이 tool 범위 밖이다.)'
+            ),
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
             'name': 'search_notices',
             'description': (
                 '명지대학교 **교내(자체)** 공지사항을 키워드로 검색해 상위 N건을 반환한다. '
@@ -159,6 +175,8 @@ def dispatch_tool_call(user, name: str, arguments: dict[str, Any]) -> dict[str, 
             return _get_graduation_progress(user)
         if name == 'get_completion_status':
             return _get_completion_status(user)
+        if name == 'get_course_history':
+            return _get_course_history(user)
         if name == 'search_notices':
             return _search_notices(arguments)
         if name == 'search_information':
@@ -321,6 +339,43 @@ def _get_completion_status(user) -> dict[str, Any]:
         'chapel은 채플 이수 회수. 사용자에게 잔여 위주로 간결히 안내할 것.'
     )
     return result
+
+
+def _get_course_history(user) -> dict[str, Any]:
+    """사용자가 이미 수강한(들은) 과목 목록 — CourseHistory를 연도·학기순으로 반환 (#211).
+
+    "내가 들은 과목" 류 질문 전용. get_completion_status는 카테고리별 집계 학점만 주고
+    과목 '목록'은 안 주므로, 실제 이수 과목을 나열할 데이터가 챗에 없었다 — LLM이 추천/현재
+    과목을 '들은 과목'으로 오라벨하던 원인. 현재 수강 중(CurrentCourse)은 범위 밖 (후속).
+    """
+    from accounts.models import CourseHistory
+
+    rows = (
+        CourseHistory.objects
+        .filter(user=user)
+        .order_by('year', 'semester', 'course_code')
+    )
+    courses = [
+        {
+            'course_name': h.course_name,
+            'course_code': h.course_code,
+            'year': h.year,
+            'semester': h.semester,        # 1=1학기 / 2=2학기
+            'category': h.category,        # 학칙 7분류 이수구분
+            'credits': h.credits,
+            'grade_received': h.grade_received or None,  # 성적 미입력이면 None
+        }
+        for h in rows
+    ]
+    return {
+        'count': len(courses),
+        'note': (
+            '사용자가 이미 수강 완료한(들은) 과목 목록 — 연도·학기 오름차순. '
+            'semester는 1=1학기 / 2=2학기. 추천·현재 수강 과목이 아니라 과거 이수 과목임. '
+            '0건이면 등록된 수강이력이 없다고 안내할 것. 데이터에 없는 과목·성적은 지어내지 말 것.'
+        ),
+        'courses': courses,
+    }
 
 
 def serialize_tool_result(result: dict[str, Any]) -> str:

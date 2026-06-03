@@ -1668,3 +1668,60 @@ class CompletionStatusDispatcherTests(TestCase):
         for c in out['categories']:
             self.assertIn('areas', c)
             self.assertIn('required_courses', c)
+
+
+class CourseHistoryDispatcherTests(TestCase):
+    """챗 get_course_history — 사용자가 들은(이수 완료) 과목 목록 반환 (#211).
+
+    "내가 들은 과목" 질문에 추천/현재 과목이 아니라 실제 수강이력을 줘야 한다.
+    """
+
+    def setUp(self):
+        self.user = make_user('history@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.admission_year = 2024
+        self.user.save()
+        # 일부러 역순 입력 — 응답은 연도·학기 오름차순으로 정렬돼야 함
+        _CourseHistory.objects.create(
+            user=self.user, course_name='자료구조', course_code='CSE2001',
+            year=2025, semester=1, grade_received='B+', category='전공필수', credits=3,
+        )
+        _CourseHistory.objects.create(
+            user=self.user, course_name='프로그래밍기초', course_code='CSE1001',
+            year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+        )
+
+    def test_들은_과목_목록_반환(self):
+        out = dispatch_tool_call(self.user, 'get_course_history', {})
+        self.assertEqual(out['count'], 2)
+        self.assertIn('note', out)
+        first = out['courses'][0]
+        for key in (
+            'course_name', 'course_code', 'year', 'semester',
+            'category', 'credits', 'grade_received',
+        ):
+            self.assertIn(key, first)
+
+    def test_연도_학기_오름차순_정렬(self):
+        out = dispatch_tool_call(self.user, 'get_course_history', {})
+        keys = [(c['year'], c['semester'], c['course_code']) for c in out['courses']]
+        self.assertEqual(keys, sorted(keys))
+        # 2024-1 프로그래밍기초가 2025-1 자료구조보다 앞
+        self.assertEqual(out['courses'][0]['course_name'], '프로그래밍기초')
+
+    def test_수강이력_없으면_빈_목록(self):
+        empty_user = make_user('empty@mju.ac.kr')
+        out = dispatch_tool_call(empty_user, 'get_course_history', {})
+        self.assertEqual(out['count'], 0)
+        self.assertEqual(out['courses'], [])
+
+    def test_다른_사용자_이력은_안_섞임(self):
+        other = make_user('other@mju.ac.kr')
+        _CourseHistory.objects.create(
+            user=other, course_name='타인과목', course_code='XXX9999',
+            year=2024, semester=1, grade_received='A', category='전공선택', credits=3,
+        )
+        out = dispatch_tool_call(self.user, 'get_course_history', {})
+        names = [c['course_name'] for c in out['courses']]
+        self.assertNotIn('타인과목', names)
+        self.assertEqual(out['count'], 2)
