@@ -1377,6 +1377,21 @@ class NextSemesterFallbackDispatcherTests(TestCase):
         # AI가 사용자에게 안내하도록 note에 기준 학기 명시
         self.assertIn('2025-2학기', out['note'])
 
+    def test_fallback시_다음학기는_요청학기로_보존된다(self):
+        # #205: fallback 학기(2025-2)를 '다음 학기'로 잘못 안내하던 버그 회귀 방지.
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 2},  # 데이터 없는 학기
+        )
+        # 사용자 관점의 다음 학기(2026-2)는 fallback에 덮이지 않고 별도 보존됨
+        self.assertEqual((out['requested_year'], out['requested_semester']), (2026, 2))
+        # 추천 데이터 출처는 작년 같은 학기(2025-2)
+        self.assertEqual((out['target_year'], out['target_semester']), (2025, 2))
+        # note는 두 학기를 모두 담고, fallback 학기를 '다음 학기'라 부르지 말라고 지시
+        self.assertIn('2026-2학기', out['note'])
+        self.assertIn('2025-2학기', out['note'])
+        self.assertIn('"다음 학기"라고 부르지 말 것', out['note'])
+
     def test_요청학기_데이터있으면_fallback안함(self):
         _CourseOffering.objects.create(
             course=self.course, year=2026, semester=2,
@@ -1387,8 +1402,10 @@ class NextSemesterFallbackDispatcherTests(TestCase):
             {'target_year': 2026, 'target_semester': 2},
         )
         self.assertEqual((out['target_year'], out['target_semester']), (2026, 2))
+        # fallback 아니면 requested == target
+        self.assertEqual((out['requested_year'], out['requested_semester']), (2026, 2))
         self.assertFalse(out['fallback_term'])
-        self.assertNotIn('기준으로 추천한 것임', out['note'])
+        self.assertNotIn('기준으로 추천한 것이다', out['note'])
 
 
 # ─── #199: 챗 다음학기 추천 — 분반(Offering) 단위 시간표 그룹화 ──────────
