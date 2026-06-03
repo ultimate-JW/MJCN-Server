@@ -377,6 +377,31 @@ class SendMessageAttachmentTests(TestCase):
         # (setUp에서 만든 assistant 1개는 그대로)
 
 
+class ChatCategorySingleSourceTests(TestCase):
+    """#220 #10: 분류기 프롬프트 ↔ 모델 choices 카테고리 단일 출처 검증.
+
+    두 곳이 따로 관리되어 동기화 누락 위험이 있던 것을 chat.categories 단일 출처로 통합.
+    """
+
+    def test_프롬프트가_모든_카테고리_value_포함(self):
+        from chat.categories import CHAT_CATEGORIES
+        from chat.prompts import TITLE_CATEGORY_SYSTEM
+        for value, _ in CHAT_CATEGORIES:
+            self.assertIn(f'"{value}"', TITLE_CATEGORY_SYSTEM,
+                          f'분류기 프롬프트에 카테고리 "{value}" 누락')
+
+    def test_프롬프트_카테고리_개수가_일치(self):
+        from chat.categories import CHAT_CATEGORY_GUIDE
+        from chat.prompts import TITLE_CATEGORY_SYSTEM
+        self.assertIn(f'{len(CHAT_CATEGORY_GUIDE)}개 중 하나', TITLE_CATEGORY_SYSTEM)
+
+    def test_models_choices가_단일출처에서_파생(self):
+        # 기존 import 경로(chat.models.CHAT_CATEGORIES)가 categories와 동일해야 함
+        from chat.categories import CHAT_CATEGORIES as canonical
+        from chat.models import CHAT_CATEGORIES as via_models
+        self.assertEqual(via_models, canonical)
+
+
 class BuildUserContextTests(TestCase):
     """build_user_context 단위 테스트 (Step 1 / #98)."""
 
@@ -417,6 +442,18 @@ class BuildUserContextTests(TestCase):
         # name 입력 안 했으므로 "이름:" prefix는 없어야 함
         self.assertNotIn('이름:', ctx)
         self.assertNotIn('학년', ctx)
+
+    def test_custom_text_도_관심분야에_포함(self):
+        # category 라벨뿐 아니라 custom_text 자유 텍스트도 컨텍스트에 노출 (#9)
+        user = User.objects.create_user(email='ct@mju.ac.kr', password='Test1234@')
+        user.name = '홍길동'
+        user.save()
+        InterestArea.objects.create(user=user, category='IT/개발', custom_text='백엔드 개발')
+        InterestArea.objects.create(user=user, category='', custom_text='클라우드')
+        ctx = build_user_context(user)
+        self.assertIn('IT/개발', ctx)
+        self.assertIn('백엔드 개발', ctx)   # custom_text 노출
+        self.assertIn('클라우드', ctx)      # category 비어도 custom_text만으로 포함
 
 
 class SendMessageWithUserContextTests(TestCase):
@@ -2058,6 +2095,26 @@ class LookupCourseDispatcherTests(TestCase):
     def test_note에_강의평_없음_안내(self):
         out = self._lookup('데이터베이스')
         self.assertIn('강의평', out['note'])
+
+    def test_선수과목_노출(self):
+        # "듣기 전에 뭐 필요해?" 응답용 — prerequisites 노출 (#8)
+        from courses.models import CoursePrerequisite
+        prereq = _Course.objects.create(
+            course_code='컴정400', name='데이터베이스기초', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=1,
+        )
+        CoursePrerequisite.objects.create(course=self.course, prerequisite=prereq)
+        out = self._lookup('데이터베이스')
+        c = next(c for c in out['courses'] if c['course_code'] == '컴정500')
+        self.assertIn('prerequisites', c)
+        codes = {p['course_code'] for p in c['prerequisites']}
+        self.assertIn('컴정400', codes)
+
+    def test_선수과목_없으면_빈배열(self):
+        out = self._lookup('데이터베이스')
+        c = next(c for c in out['courses'] if c['course_code'] == '컴정500')
+        self.assertEqual(c['prerequisites'], [])
 
     def test_요청학기_데이터없으면_작년학기로_fallback(self):
         from datetime import time

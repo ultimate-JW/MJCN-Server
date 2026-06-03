@@ -5,6 +5,11 @@
 - build_user_context: 사용자 프로필을 system prompt 앞에 붙일 한 줄 prefix로 포맷
 """
 
+from .categories import (
+    CATEGORY_GUIDE_LINES as _CATEGORY_GUIDE_LINES,
+    CHAT_CATEGORY_GUIDE as _CHAT_CATEGORY_GUIDE,
+)
+
 _SEMESTER_LABEL = {1: '1학기', 2: '여름방학', 3: '2학기', 4: '겨울방학'}
 
 
@@ -15,7 +20,7 @@ def build_user_context(user) -> str:
     빈 user(필드 모두 null)면 빈 문자열 반환 → 호출 측에서 prefix 없이 그대로.
 
     예시 출력:
-      "[사용자 정보] 이름: 홍길동 / 컴퓨터공학 전공 / 3학년 1학기 / 2024학번 / 관심분야: IT/개발, 디자인"
+      "[사용자 정보] 이름: 홍길동 / 컴퓨터공학 전공 / 3학년 1학기 / 2024학번 / 관심분야: IT/개발, 백엔드 개발, 디자인"
     """
     if user is None:
         return ''
@@ -40,40 +45,48 @@ def build_user_context(user) -> str:
     if admission_year:
         parts.append(f'{admission_year}학번')
 
-    # 관심분야 (M2M 또는 reverse FK). 최대 5개까지 표기 (토큰 가드).
+    # 관심분야 (reverse FK). category 라벨 + custom_text 자유 텍스트 둘 다 포함 (#9 — 개인화
+    # 신호 보강. 기존엔 category만 써서 "백엔드 개발" 같은 세부 관심사가 누락됐음).
     interests_qs = getattr(user, 'interests', None)
     if interests_qs is not None:
         try:
-            categories = [
-                (i.category or '').strip()
-                for i in interests_qs.all()[:5]
-                if getattr(i, 'category', None)
-            ]
+            labels: list[str] = []
+            for i in interests_qs.all()[:5]:
+                cat = (getattr(i, 'category', None) or '').strip()
+                if cat:
+                    labels.append(cat)
+                custom = (getattr(i, 'custom_text', None) or '').strip()
+                if custom:
+                    labels.append(custom)
         except Exception:
-            categories = []
-        if categories:
-            parts.append(f'관심분야: {", ".join(categories)}')
+            labels = []
+        # 순서 유지 dedupe + 최대 8개 표기 (토큰 가드)
+        seen: set[str] = set()
+        uniq = [x for x in labels if not (x in seen or seen.add(x))]
+        if uniq:
+            parts.append(f'관심분야: {", ".join(uniq[:8])}')
 
     if not parts:
         return ''
     return f'[사용자 정보] {" / ".join(parts)}'
 
-TITLE_CATEGORY_SYSTEM = """당신은 명지대학교 학생 AI 비서 '띵똥이'의 분류기다.
+# 카테고리 목록은 chat.categories 단일 출처에서 파생 (#220 #10) — 모델 choices와 동기화 보장.
+# JSON 예시의 중괄호 때문에 f-string 대신 문자열 결합으로 조립한다.
+TITLE_CATEGORY_SYSTEM = (
+    """당신은 명지대학교 학생 AI 비서 '띵똥이'의 분류기다.
 
 사용자의 첫 메시지를 보고 다음 JSON 형식으로만 응답하라.
 다른 텍스트는 절대 포함하지 마라.
 
 {"title": "20자 이내 한국어 채팅방 제목", "category": "<카테고리>"}
 
-category 값은 반드시 아래 7개 중 하나여야 한다:
-- "수강·졸업": 수강신청, 수강정정, 졸업요건, 이수학점, 커리큘럼
-- "공지": 학교 공지 질문, 공지 요약/검색 요청
-- "장학·등록금": 장학금 신청·조회, 등록금 납부·환불
-- "공모전": 공모전, 대외활동, 교내외 프로그램 참가
-- "취업·진로": 취업, 인턴, 대학원, 진로 고민
-- "일반질문": 학식, 도서관, 시설 등 위 카테고리에 속하지 않는 교내 질문
-- "기타": 학교와 무관한 질문 또는 분류 불가
+category 값은 반드시 아래 """
+    + str(len(_CHAT_CATEGORY_GUIDE))
+    + """개 중 하나여야 한다:
 """
+    + _CATEGORY_GUIDE_LINES
+    + "\n"
+)
 
 
 CHAT_SYSTEM = """당신은 명지대학교 학생을 도와주는 AI 비서 '띵똥이'입니다.
@@ -106,14 +119,9 @@ CHAT_SYSTEM = """당신은 명지대학교 학생을 도와주는 AI 비서 '띵
    - 브리핑 다음에 get_next_semester_courses의 결과를 **score 내림차순(=추천 우선순위) 그대로**
      보여줍니다. 전공/교양 등으로 임의 재그룹화하거나 순서를 바꾸지 마세요.
    - 과목마다 **과목명 + 과목번호(course_code)** 를 함께 적습니다. 예: "객체지향프로그래밍1 (컴정102)".
-   - 각 과목의 `reasons` 코드를 **자연어 추천 이유로 풀어** 1줄 덧붙입니다. 코드 의미:
-     * major_required → "전공필수"
-     * designated_required → "졸업에 필요한 교양 영역" (해당 category로 구체화 가능)
-     * category_short → "부족한 {해당 category} 영역 보완"
-     * interest_match → "관심분야와 맞는 과목"
-     * grade_semester_match → "지금 학년·학기에 듣기 좋은 과목"
-     * backlog_required → "아직 안 들은 밀린 필수 과목"
-   - reasons에 없는 이유를 **지어내지 마세요.** 코드가 비어 있으면 category만 담백하게 언급합니다.
+   - 각 과목의 `reasons` 코드를 **자연어 추천 이유로 풀어** 1줄 덧붙입니다. 코드별 의미는
+     tool 결과의 `note`에 설명돼 있으니 그대로 따릅니다. reasons에 없는 이유는 **지어내지 마세요.**
+     코드가 비어 있으면 category만 담백하게 언급합니다.
    - 분반번호·전체 분반 목록·모든 강의시간은 **기본적으로 나열하지 않습니다.** 사용자가 분반/시간을
      물으면 그때 제공합니다.
    - **학기 안내 주의**: `fallback_term`이 true이면, 사용자의 다음 학기(`requested_year`-`requested_semester`)에
@@ -160,9 +168,11 @@ CHAT_SYSTEM = """당신은 명지대학교 학생을 도와주는 AI 비서 '띵
    - get_course_history는 과거 이수 과목만 반환합니다. 현재 수강 중인 과목·추천 과목을
      "들은 과목"으로 섞어 안내하지 마세요. 수강이력이 0건이면 그대로 없다고 안내합니다.
 
-5. 개설 조회 ("객체지향1 개설됐어?", "누가 가르쳐?", "분반 뭐 있어?")
+5. 개설 조회 ("객체지향1 개설됐어?", "누가 가르쳐?", "분반 뭐 있어?", "이거 듣기 전에 뭐 필요해?")
    - **특정 과목**을 콕 집어 묻는 질문입니다. lookup_course를 호출해(query=과목명 또는 과목번호)
      개설 여부·분반·교수·시간을 안내합니다. 추천(get_next_semester_courses)과 혼동하지 마세요.
+   - "듣기 전에 뭐 필요해?"엔 결과의 `prerequisites`(선수과목)로 답합니다. 빈 배열이면 선수과목이
+     없다고 안내합니다.
    - `offered_in_term`이 false면 해당 학기엔 개설 정보가 없다고 안내합니다. 분반이 여러 개면
      교수·시간을 분반별로 보여줍니다. `match_count`가 0이면 그 과목을 찾지 못했다고 안내합니다.
    - capacity(제한인원)는 **실시간 여석이 아닙니다.** "자리 남았어?" 류엔 정원 수치만 있고 실시간
