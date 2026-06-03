@@ -5,6 +5,11 @@
 - build_user_context: 사용자 프로필을 system prompt 앞에 붙일 한 줄 prefix로 포맷
 """
 
+from .categories import (
+    CATEGORY_GUIDE_LINES as _CATEGORY_GUIDE_LINES,
+    CHAT_CATEGORY_GUIDE as _CHAT_CATEGORY_GUIDE,
+)
+
 _SEMESTER_LABEL = {1: '1학기', 2: '여름방학', 3: '2학기', 4: '겨울방학'}
 
 
@@ -65,22 +70,23 @@ def build_user_context(user) -> str:
         return ''
     return f'[사용자 정보] {" / ".join(parts)}'
 
-TITLE_CATEGORY_SYSTEM = """당신은 명지대학교 학생 AI 비서 '띵똥이'의 분류기다.
+# 카테고리 목록은 chat.categories 단일 출처에서 파생 (#220 #10) — 모델 choices와 동기화 보장.
+# JSON 예시의 중괄호 때문에 f-string 대신 문자열 결합으로 조립한다.
+TITLE_CATEGORY_SYSTEM = (
+    """당신은 명지대학교 학생 AI 비서 '띵똥이'의 분류기다.
 
 사용자의 첫 메시지를 보고 다음 JSON 형식으로만 응답하라.
 다른 텍스트는 절대 포함하지 마라.
 
 {"title": "20자 이내 한국어 채팅방 제목", "category": "<카테고리>"}
 
-category 값은 반드시 아래 7개 중 하나여야 한다:
-- "수강·졸업": 수강신청, 수강정정, 졸업요건, 이수학점, 커리큘럼
-- "공지": 학교 공지 질문, 공지 요약/검색 요청
-- "장학·등록금": 장학금 신청·조회, 등록금 납부·환불
-- "공모전": 공모전, 대외활동, 교내외 프로그램 참가
-- "취업·진로": 취업, 인턴, 대학원, 진로 고민
-- "일반질문": 학식, 도서관, 시설 등 위 카테고리에 속하지 않는 교내 질문
-- "기타": 학교와 무관한 질문 또는 분류 불가
+category 값은 반드시 아래 """
+    + str(len(_CHAT_CATEGORY_GUIDE))
+    + """개 중 하나여야 한다:
 """
+    + _CATEGORY_GUIDE_LINES
+    + "\n"
+)
 
 
 CHAT_SYSTEM = """당신은 명지대학교 학생을 도와주는 AI 비서 '띵똥이'입니다.

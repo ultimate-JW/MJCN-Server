@@ -1,16 +1,9 @@
 from django.conf import settings
 from django.db import models
 
-
-CHAT_CATEGORIES = [
-    ('수강·졸업', '수강·졸업'),
-    ('공지', '공지'),
-    ('장학·등록금', '장학·등록금'),
-    ('공모전', '공모전'),
-    ('취업·진로', '취업·진로'),
-    ('일반질문', '일반질문'),
-    ('기타', '기타'),
-]
+# 단일 출처 — 분류기 프롬프트와 공유 (#220 #10). 기존 import 경로(chat.models.CHAT_CATEGORIES)
+# 유지를 위해 재노출한다.
+from .categories import CHAT_CATEGORIES
 
 
 class ChatRoom(models.Model):

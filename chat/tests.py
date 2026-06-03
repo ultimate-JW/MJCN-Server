@@ -377,6 +377,31 @@ class SendMessageAttachmentTests(TestCase):
         # (setUp에서 만든 assistant 1개는 그대로)
 
 
+class ChatCategorySingleSourceTests(TestCase):
+    """#220 #10: 분류기 프롬프트 ↔ 모델 choices 카테고리 단일 출처 검증.
+
+    두 곳이 따로 관리되어 동기화 누락 위험이 있던 것을 chat.categories 단일 출처로 통합.
+    """
+
+    def test_프롬프트가_모든_카테고리_value_포함(self):
+        from chat.categories import CHAT_CATEGORIES
+        from chat.prompts import TITLE_CATEGORY_SYSTEM
+        for value, _ in CHAT_CATEGORIES:
+            self.assertIn(f'"{value}"', TITLE_CATEGORY_SYSTEM,
+                          f'분류기 프롬프트에 카테고리 "{value}" 누락')
+
+    def test_프롬프트_카테고리_개수가_일치(self):
+        from chat.categories import CHAT_CATEGORY_GUIDE
+        from chat.prompts import TITLE_CATEGORY_SYSTEM
+        self.assertIn(f'{len(CHAT_CATEGORY_GUIDE)}개 중 하나', TITLE_CATEGORY_SYSTEM)
+
+    def test_models_choices가_단일출처에서_파생(self):
+        # 기존 import 경로(chat.models.CHAT_CATEGORIES)가 categories와 동일해야 함
+        from chat.categories import CHAT_CATEGORIES as canonical
+        from chat.models import CHAT_CATEGORIES as via_models
+        self.assertEqual(via_models, canonical)
+
+
 class BuildUserContextTests(TestCase):
     """build_user_context 단위 테스트 (Step 1 / #98)."""
 
