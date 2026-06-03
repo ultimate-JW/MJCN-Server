@@ -211,11 +211,11 @@ class CourseHistorySerializer(serializers.ModelSerializer):
 class CurrentCourseSerializer(serializers.ModelSerializer):
     """현재 수강과목 — `offering_id` 한 개로 7개 평문 필드 자동 hydrate (spec 4.2, #149).
 
-    POST·PUT·PATCH 모두 `offering_id` write-only 필드만 받음. 시리얼라이저가
+    POST·PUT·PATCH 모두 `offering_id` 필드를 받음 (양방향 — #226). 시리얼라이저가
     CourseOffering + 첫 schedule을 조회해 course_name·code·요일·시간·교수·강의실을 채움.
-    응답은 평문 필드 read-only로 노출 (snapshot).
+    응답에 `offering_id`도 노출 — 프론트가 분반 역추적·PUT 재전송용으로 사용.
     """
-    offering_id = serializers.IntegerField(write_only=True)
+    # offering_id는 모델 IntegerField가 자동 inferred — write·read 양방향 (#226).
 
     class Meta:
         model = CurrentCourse
@@ -223,6 +223,7 @@ class CurrentCourseSerializer(serializers.ModelSerializer):
                   'start_time', 'end_time', 'professor', 'room']
         read_only_fields = ['id', 'course_name', 'course_code', 'day_of_week',
                             'start_time', 'end_time', 'professor', 'room']
+        # offering_id는 read_only_fields에 없음 → write 가능
 
     def validate_offering_id(self, value):
         try:
@@ -289,14 +290,17 @@ class CurrentCourseSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         snapshot = self._snapshot(self._offering)
         return CurrentCourse.objects.create(
-            user=self.context['request'].user, **snapshot,
+            user=self.context['request'].user,
+            offering_id=self._offering.id,
+            **snapshot,
         )
 
     def update(self, instance, validated_data):
         snapshot = self._snapshot(self._offering)
         for field, value in snapshot.items():
             setattr(instance, field, value)
-        instance.save(update_fields=list(snapshot.keys()))
+        instance.offering_id = self._offering.id
+        instance.save(update_fields=list(snapshot.keys()) + ['offering_id'])
         return instance
 
 

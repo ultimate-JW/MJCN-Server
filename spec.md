@@ -169,6 +169,7 @@ erDiagram
     CurrentCourse {
         int id PK
         int user_id FK
+        int offering_id
         string course_name
         string course_code
         string day_of_week
@@ -409,6 +410,7 @@ User ||--o{ Bookmark : "has"
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | user | FK(User) | |
+| offering_id | IntegerField(null=True, db_index=True) | 등록 시점 `CourseOffering` PK — snapshot (#226). FK 아님: 카탈로그가 학기 지나 사라져도 사용자 시간표는 유지. 응답에 노출돼 프론트가 분반 역추적 / PUT 재전송에 활용. |
 | course_name | CharField | 과목명 (자동 채움) |
 | course_code | CharField | 과목번호 (자동 채움) |
 | day_of_week | CharField | 요일 (자동 채움) |
@@ -1911,7 +1913,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | PATCH | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 부분 수정 — `grade_received`만 partial 수정 가능 (학기 종료 후 성적 입력 케이스) |
 | DELETE | `/api/v1/accounts/course-history/<id>/` | O | 수강이력 삭제 |
 | GET | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 목록 |
-| POST | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 추가 — body `{offering_id}` 한 개로 7개 평문 필드 자동 hydrate (#149). 분반 검색은 `/api/v1/courses/offerings/` 사용 |
+| POST | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 추가 — body `{offering_id}` 한 개로 7개 평문 필드 자동 hydrate (#149). 분반 검색은 `/api/v1/courses/offerings/` 사용. 응답에 `offering_id` 포함 (#226) — 프론트가 PUT 재전송·분반 역추적용 |
 | PUT | `/api/v1/accounts/current-courses/<id>/` | O | 현재 수강과목 수정 |
 | DELETE | `/api/v1/accounts/current-courses/<id>/` | O | 현재 수강과목 삭제 |
 

@@ -148,6 +148,12 @@ class CurrentCourse(models.Model):
     학교 카탈로그가 학기 지나 갱신돼도 사용자 시간표는 그대로 유지.
     """
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='current_courses')
+    # 등록 시점 CourseOffering PK snapshot (#226). FK 아님: 카탈로그가 학기 지나
+    # 사라져도 사용자 시간표 유지. 응답에 노출돼 프론트가 분반 역추적·PUT 재전송에 사용.
+    offering_id = models.IntegerField(
+        null=True, blank=True, db_index=True,
+        verbose_name='분반 id (등록 시점 CourseOffering PK)',
+    )
     course_name = models.CharField(max_length=100, verbose_name='과목명')
     course_code = models.CharField(max_length=30, verbose_name='과목번호')
     day_of_week = models.CharField(max_length=5, verbose_name='요일')
