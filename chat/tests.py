@@ -418,6 +418,18 @@ class BuildUserContextTests(TestCase):
         self.assertNotIn('이름:', ctx)
         self.assertNotIn('학년', ctx)
 
+    def test_custom_text_도_관심분야에_포함(self):
+        # category 라벨뿐 아니라 custom_text 자유 텍스트도 컨텍스트에 노출 (#9)
+        user = User.objects.create_user(email='ct@mju.ac.kr', password='Test1234@')
+        user.name = '홍길동'
+        user.save()
+        InterestArea.objects.create(user=user, category='IT/개발', custom_text='백엔드 개발')
+        InterestArea.objects.create(user=user, category='', custom_text='클라우드')
+        ctx = build_user_context(user)
+        self.assertIn('IT/개발', ctx)
+        self.assertIn('백엔드 개발', ctx)   # custom_text 노출
+        self.assertIn('클라우드', ctx)      # category 비어도 custom_text만으로 포함
+
 
 class SendMessageWithUserContextTests(TestCase):
     """POST messages 시 system prompt에 user prefix가 들어가는지 검증 (Step 1)."""

@@ -15,7 +15,7 @@ def build_user_context(user) -> str:
     빈 user(필드 모두 null)면 빈 문자열 반환 → 호출 측에서 prefix 없이 그대로.
 
     예시 출력:
-      "[사용자 정보] 이름: 홍길동 / 컴퓨터공학 전공 / 3학년 1학기 / 2024학번 / 관심분야: IT/개발, 디자인"
+      "[사용자 정보] 이름: 홍길동 / 컴퓨터공학 전공 / 3학년 1학기 / 2024학번 / 관심분야: IT/개발, 백엔드 개발, 디자인"
     """
     if user is None:
         return ''
@@ -40,19 +40,26 @@ def build_user_context(user) -> str:
     if admission_year:
         parts.append(f'{admission_year}학번')
 
-    # 관심분야 (M2M 또는 reverse FK). 최대 5개까지 표기 (토큰 가드).
+    # 관심분야 (reverse FK). category 라벨 + custom_text 자유 텍스트 둘 다 포함 (#9 — 개인화
+    # 신호 보강. 기존엔 category만 써서 "백엔드 개발" 같은 세부 관심사가 누락됐음).
     interests_qs = getattr(user, 'interests', None)
     if interests_qs is not None:
         try:
-            categories = [
-                (i.category or '').strip()
-                for i in interests_qs.all()[:5]
-                if getattr(i, 'category', None)
-            ]
+            labels: list[str] = []
+            for i in interests_qs.all()[:5]:
+                cat = (getattr(i, 'category', None) or '').strip()
+                if cat:
+                    labels.append(cat)
+                custom = (getattr(i, 'custom_text', None) or '').strip()
+                if custom:
+                    labels.append(custom)
         except Exception:
-            categories = []
-        if categories:
-            parts.append(f'관심분야: {", ".join(categories)}')
+            labels = []
+        # 순서 유지 dedupe + 최대 8개 표기 (토큰 가드)
+        seen: set[str] = set()
+        uniq = [x for x in labels if not (x in seen or seen.add(x))]
+        if uniq:
+            parts.append(f'관심분야: {", ".join(uniq[:8])}')
 
     if not parts:
         return ''
