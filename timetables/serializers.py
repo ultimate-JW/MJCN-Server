@@ -61,9 +61,10 @@ class CourseOfferingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CourseOffering
+        # is_online=true면 사이버강의 — schedules가 비어 있고 시간영역에 "사이버강의"로 표기 (#222).
         fields = (
             'id', 'course_code', 'course_name', 'category',
-            'credit', 'section_no', 'professor', 'schedules',
+            'credit', 'section_no', 'professor', 'is_online', 'schedules',
         )
 
 

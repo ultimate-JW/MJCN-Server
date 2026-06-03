@@ -385,6 +385,7 @@ def _offering_payload(o) -> dict[str, Any]:
         'professor': o.professor,          # 교수는 분반 속성 (Course.professor 아님)
         'capacity': o.capacity,            # 제한인원 (실시간 여석 아님, None 가능)
         'offering_note': o.note or '',     # 비고 (예: 'IPP 우선수강')
+        'is_online': o.is_online,          # 사이버강의면 schedules 빈 배열 — 시간 무관 (#222)
         'schedules': [
             {
                 'day_of_week': s.day_of_week,
@@ -425,6 +426,8 @@ def _get_timetable_recommendations(user, args: dict[str, Any]) -> dict[str, Any]
         'lunch_break_satisfied(점심 공강 확보), credits_in_target_range(목표 학점 범위 내), '
         'matches_interest_areas(관심분야 과목 포함), credits_below_target(목표 학점 미달). '
         '이 코드를 자연어로 풀어 plan마다 왜 추천했는지 1~2줄로 설명할 것. '
+        'offering의 is_online=true면 사이버(원격)강의라 정해진 시간이 없다(schedules 빈 배열). '
+        '시간표에서 요일·시간 대신 "사이버강의"로 안내하고, 시간 충돌 없이 포함된 것임을 알릴 것. '
         'status는 현재 졸업요건 이수현황 — 시간표 제시 전 현재 상황을 1~2줄 브리핑하는 데 쓰고 '
         'status에 있는 값만 말하며 없는 수치는 지어내지 말 것.'
     )
@@ -686,7 +689,9 @@ def _lookup_course(user, args: dict[str, Any]) -> dict[str, Any]:
     note = (
         '특정 과목 조회 결과. offered_in_term=해당 학기 개설 여부(false면 그 학기엔 개설 안 됨), '
         'offerings=분반 목록(section_no=강좌번호, professor=교수, schedules=요일·시간·강의실, '
-        'capacity=제한인원[실시간 여석 아님]). prerequisites=선수과목(이 과목 듣기 전에 들어야 하는 '
+        'capacity=제한인원[실시간 여석 아님], is_online=사이버강의 여부). '
+        'is_online=true면 원격강의라 정해진 시간이 없으니(schedules 빈 배열) "사이버강의"로 안내할 것. '
+        'prerequisites=선수과목(이 과목 듣기 전에 들어야 하는 '
         '과목, 없으면 빈 배열) — "듣기 전에 뭐 필요해?"엔 이걸로 답할 것. '
         '교수 비교/분반 안내 시 이 데이터만 쓸 것. '
         '강의평·난이도·수강 경쟁률 같은 정보는 없으니 지어내지 말 것. '

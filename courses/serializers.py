@@ -69,10 +69,11 @@ class CourseOfferingListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CourseOffering
+        # is_online=true면 사이버강의 — schedules 비어 있고 시간영역에 "사이버강의" 표기 (#222).
         fields = [
             'id', 'offering_id', 'year', 'semester', 'section_no',
             'course_code', 'name', 'college', 'department', 'major',
-            'category', 'credits', 'professor', 'schedules',
+            'category', 'credits', 'professor', 'is_online', 'schedules',
         ]
 
 
@@ -169,6 +170,8 @@ class RecommendedOfferingSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     section_no = serializers.CharField()
     professor = serializers.CharField()
+    # 사이버강의면 schedules 비어 있음 — 프론트는 시간영역에 "사이버강의" 표기 (#222).
+    is_online = serializers.BooleanField()
     schedules = CourseScheduleSerializer(many=True)
 
 

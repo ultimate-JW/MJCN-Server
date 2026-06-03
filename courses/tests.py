@@ -2813,3 +2813,43 @@ class GraduationFeasibilityAPITests(APITestCase):
         for key in ('remaining_semesters', 'per_semester_cap',
                     'max_attainable_credits', 'on_track', 'blockers'):
             self.assertIn(key, res.data['feasibility'])
+
+
+# ─── #222: 온라인(사이버) 과목 — import 시 is_online + schedule skip ──────
+class ImportCyberCourseTests(TestCase):
+    """import_courses_from_xlsx — 00:00 placeholder(사이버강의) 행은 is_online=True +
+    CourseSchedule 미생성, 일반 행은 정상 schedule 생성 (#222)."""
+
+    def _run(self, rows):
+        from io import StringIO
+        from django.core.management import call_command
+        import csv as _csv, tempfile
+        header = ['학년', '교과목명', '과목코드', '학과코드', '과목번호', '학점', '시간',
+                  '담당교수', '강좌번호', '제한인원', '요일', '시작시간', '종료시간', '강의실', '비고']
+        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.csv',
+                                         encoding='utf-8-sig', newline='') as f:
+            w = _csv.writer(f)
+            w.writerow(header)
+            w.writerows(rows)
+            tmp = f.name
+        call_command('import_courses_from_xlsx', tmp,
+                     '--year', '2099', '--semester', '2',
+                     '--college', '테스트대학', '--category', '전공선택',
+                     stdout=StringIO())
+
+    def test_사이버강의_is_online_및_schedule_skip(self):
+        self._run([
+            ['1', '사이버교양', 'CYB100', '컴공', '100', '3', '3', '김교수', '9001', '50',
+             '금', '00:00', '03:00', 'S101', '온라인(원격수업)'],
+            ['1', '일반과목', 'NRM100', '컴공', '100', '3', '3', '박교수', '9002', '50',
+             '월', '09:00', '10:50', 'S102', ''],
+        ])
+        cyber = CourseOffering.objects.get(section_no='9001')
+        normal = CourseOffering.objects.get(section_no='9002')
+        # 사이버: is_online True, schedule 0개, 충돌 bitmap 0 (시간 무관)
+        self.assertTrue(cyber.is_online)
+        self.assertEqual(cyber.schedules.count(), 0)
+        self.assertEqual(cyber.time_bitmap, 0)
+        # 일반: is_online False, schedule 1개
+        self.assertFalse(normal.is_online)
+        self.assertEqual(normal.schedules.count(), 1)
