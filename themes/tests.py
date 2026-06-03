@@ -139,6 +139,90 @@ class ThemeDetailTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
 
+class CollegeLifeGuideDetailTests(APITestCase):
+    """career 테마(id=2) 상세가 학년별 대학생활 가이드로 치환되는지 (시연용 분기)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.career = Theme.objects.create(
+            title='졸업 후 진로 로드맵',
+            category=Theme.CATEGORY_CAREER,
+            description='정적 설명 (치환되어야 함)',
+            order=20,
+        )
+        # 정적 item — 치환되어 응답에 안 나와야 함
+        ThemeItem.objects.create(
+            theme=cls.career, title='정적 항목', item_type=ThemeItem.ITEM_TYPE_LINK,
+            external_url='https://example.com', order=10,
+        )
+        # career 아닌 테마 — 치환 안 됨(정적 그대로) 확인용
+        cls.exchange = Theme.objects.create(
+            title='교환학생 신청 안내', category=Theme.CATEGORY_EXCHANGE,
+            description='교환학생 절차', order=30,
+        )
+        ThemeItem.objects.create(
+            theme=cls.exchange, title='지원 자격', item_type=ThemeItem.ITEM_TYPE_GUIDE,
+            content='요건', order=10,
+        )
+
+    def _user(self, grade):
+        u = _make_user(email=f'g{grade}@mju.ac.kr')
+        u.grade = grade
+        u.save(update_fields=['grade'])
+        return u
+
+    def _get_career(self, grade):
+        return self.client.get(
+            reverse('themes:theme-detail', args=[self.career.id]),
+            **_auth_header(self._user(grade)),
+        )
+
+    def test_grade1_returns_freshman_guide(self):
+        resp = self._get_career(1)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['title'], '1학년 대학생활 가이드')
+        self.assertIn('처음부터 완벽하게', resp.data['description'])
+        titles = [i['title'] for i in resp.data['items']]
+        # 섹션 헤더 2개 + 카드 5개 = 7항목, 헤더가 카드 앞에
+        self.assertEqual(titles[0], '대학생활 적응')
+        self.assertIn('학교 제도 익히기', titles)
+        self.assertIn('앞으로 준비하면 좋은 것', titles)
+        self.assertEqual(len(resp.data['items']), 7)
+        # 정적 item은 치환되어 사라져야 함
+        self.assertNotIn('정적 항목', titles)
+
+    def test_grade4_returns_senior_guide(self):
+        resp = self._get_career(4)
+        self.assertEqual(resp.data['title'], '4학년 대학생활 가이드')
+        titles = [i['title'] for i in resp.data['items']]
+        self.assertEqual(titles[0], '졸업 준비')
+        self.assertIn('마지막 체크포인트', titles)
+        self.assertIn('졸업요건 점검', titles)
+
+    def test_grade_none_defaults_to_freshman(self):
+        resp = self._get_career(None)
+        self.assertEqual(resp.data['title'], '1학년 대학생활 가이드')
+
+    def test_grade_over_range_clamps_to_senior(self):
+        resp = self._get_career(7)
+        self.assertEqual(resp.data['title'], '4학년 대학생활 가이드')
+
+    def test_item_schema_unchanged(self):
+        # 응답 스키마(키 집합)는 기존 ThemeItem과 동일해야 함 (API 변경 없음)
+        resp = self._get_career(2)
+        first = resp.data['items'][0]
+        self.assertEqual(set(first.keys()),
+                         {'id', 'title', 'content', 'external_url', 'item_type', 'order'})
+
+    def test_non_career_theme_not_replaced(self):
+        resp = self.client.get(
+            reverse('themes:theme-detail', args=[self.exchange.id]),
+            **_auth_header(self._user(1)),
+        )
+        self.assertEqual(resp.data['title'], '교환학생 신청 안내')
+        self.assertEqual([i['title'] for i in resp.data['items']], ['지원 자격'])
+
+
 class SeedThemesCommandTests(APITestCase):
     def test_seed_command_creates_and_is_idempotent(self):
         from django.core.management import call_command

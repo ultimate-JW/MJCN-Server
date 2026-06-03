@@ -13,7 +13,8 @@ from themes.models import Theme, ThemeItem
 
 
 # (theme_defaults, [item_defaults, ...]) 튜플 리스트.
-# Theme key: (category, title) — 두 필드 unique 가정으로 update_or_create.
+# Theme key: category — 카테고리당 1 테마 전제(아래 5개 1:1). title은 defaults라 제목 변경 시
+#   새 row를 만들지 않고 기존 테마를 in-place 갱신한다 (프론트가 붙은 id 안정 유지).
 # ThemeItem key: (theme, title) — 같은 테마 안에서 title unique 가정.
 SEED_DATA = [
     (
@@ -47,8 +48,8 @@ SEED_DATA = [
     (
         {
             'category': Theme.CATEGORY_CAREER,
-            'title': '졸업 후 진로 로드맵',
-            'description': '학년별 취업 준비 단계와 학교 지원 제도.',
+            'title': '대학생활 가이드',
+            'description': '학년별로 지금 집중하면 좋은 것들을 정리한 대학생활 가이드.',
             'order': 20,
         },
         [
@@ -158,8 +159,8 @@ class Command(BaseCommand):
         for theme_defaults, item_specs in SEED_DATA:
             theme, _ = Theme.objects.update_or_create(
                 category=theme_defaults['category'],
-                title=theme_defaults['title'],
                 defaults={
+                    'title': theme_defaults['title'],
                     'description': theme_defaults.get('description', ''),
                     'order': theme_defaults.get('order', 0),
                     'is_active': True,
@@ -182,6 +183,6 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                f'시드 완료 — Theme {theme_count}개 / ThemeItem {item_count}개 (멱등).'
+                f'시드 완료 - Theme {theme_count}개 / ThemeItem {item_count}개 (멱등).'
             )
         )
