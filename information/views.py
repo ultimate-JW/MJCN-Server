@@ -7,11 +7,17 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from common.matching import extract_user_keywords, score_match, sort_by_match
 
 from .models import Information
-from .serializers import InformationDetailSerializer, InformationListSerializer
+from .serializers import (
+    ContestCardSerializer,
+    InformationDetailSerializer,
+    InformationListSerializer,
+)
+from .services import build_contest_guide
 
 
 # end_date secondary sort key — 빠른 순, NULL은 마지막 (timestamp 최대값으로)
@@ -145,3 +151,31 @@ class InformationDetailView(RetrieveAPIView):
 
     serializer_class = InformationDetailSerializer
     queryset = Information.objects.all()
+
+
+@extend_schema(
+    responses=OpenApiTypes.OBJECT,
+    description=(
+        '공모전 테마 상세 한 벌 (조언 + 카드 + 우선순위). spec 5.5 / 5.10.4. '
+        '관심사 매칭(동의어 확장) + fallback backfill로 항상 최소 3~최대 5개 노출. '
+        'state: matched(매칭 ≥3) / partial_match(1~2) / no_match(0).'
+    ),
+)
+class ContestGuideView(APIView):
+    """GET /api/v1/information/contest-guide/ — 공모전 추천 테마 상세 (이슈 #184).
+
+    응답: { state, advice:{line1,line2}, cards:[{...,dday}], priority:[{rank,card_id,reasons}],
+            quick_questions:[{label,prompt}], note }
+    추천 로직은 services.build_contest_guide. 카드만 직렬화하고 나머지는 머신 친화 dict 그대로.
+    """
+
+    def get(self, request, *args, **kwargs):
+        guide = build_contest_guide(request.user)
+        return Response({
+            'state': guide['state'],
+            'advice': guide['advice'],
+            'cards': ContestCardSerializer(guide['cards'], many=True).data,
+            'priority': guide['priority'],
+            'quick_questions': guide['quick_questions'],
+            'note': guide['note'],
+        })

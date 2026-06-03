@@ -106,11 +106,93 @@ def score_match(user_keywords: set[str], content_tags: Iterable[str]) -> int:
     return sum(1 for kw in user_keywords if _tokenize(kw) & tag_tokens)
 
 
+# 관심사 토큰 → 콘텐츠 제목에 실제 등장하는 표현으로 확장하는 동의어 맵 (spec 5.10.4).
+# 배경: 공모전(Information)은 크롤러가 본문을 저장하지 않아 매칭 재료가 'title'뿐인데,
+# title은 "OO 경진대회"처럼 포괄적이라 '데이터분석'·'클라우드' 같은 관심사가 거의 안 나온다.
+# LLM 태깅(공지가 쓰는 정규화)이 불가능하므로 이 맵이 그 역할을 대신한다.
+# 키·값 모두 소문자(_tokenize 결과 토큰과 매칭). 항목 변경은 이 파일에서만 — spec엔 추상만 기록.
+SYNONYM_MAP: dict[str, set[str]] = {
+    'ai': {'ai', '인공지능', '머신러닝', '딥러닝'},
+    '개발': {'개발', '코딩', '프로그래밍', '소프트웨어', 'sw'},
+    '게임': {'게임', 'game'},
+    '보안': {'보안', '정보보호', 'security', '사이버'},
+    '데이터분석': {'데이터', '분석', '빅데이터'},
+    '클라우드': {'클라우드', 'aws', 'azure', 'gcp'},
+}
+
+
+def _contains_term(text_lower: str, term: str) -> bool:
+    """term이 text_lower 안에 '독립적으로' 등장하면 True (부분일치 + 오매칭 가드).
+
+    앞뒤 문자가 라틴 알파벳이면 매칭 불인정 — 짧은 영문 토큰('it')이 더 긴
+    영단어('digital')에 박히는 오매칭을 막는다. 한글 토큰은 앞뒤가 한글이어도
+    통과해 부분일치가 유지되고('개발'→'개발자' OK), 영문이 한글에 붙어도 통과한다
+    ('ai'↔'제조ai' OK — 앞 '조'가 라틴 알파벳이 아님).
+    """
+    term = term.strip().lower()
+    if not term:
+        return False
+    # (?<![a-z]) 앞 / (?![a-z]) 뒤 — 인접 문자가 영문 알파벳이 아닐 때만 매칭 인정
+    return re.search(rf'(?<![a-z]){re.escape(term)}(?![a-z])', text_lower) is not None
+
+
+def matched_keywords(
+    user_keywords: set[str],
+    content_tags: Iterable[str],
+    text: str,
+    *,
+    synonyms: dict[str, set[str]] = SYNONYM_MAP,
+) -> list[str]:
+    """매칭된 관심사(user_keywords 원소) 리스트 — categories OR title 동의어 (spec 5.10.4).
+
+    각 관심사는 다음 둘 중 하나라도 충족하면 매칭으로 본다:
+      (1) 콘텐츠 태그(categories) 토큰과 완전일치 — score_match와 동일 기준
+      (2) 제목 등 자유 텍스트에 관심사의 동의어가 부분일치(_contains_term)
+    한 관심사는 두 경로에 모두 걸려도 한 번만 포함된다 → "관심사당 최대 1점" 캡.
+
+    공모전 배지(어떤 관심사로 매칭됐는지) 표기에 쓰려고 점수(개수)가 아니라
+    매칭된 관심사 자체를 반환한다.
+    """
+    if not user_keywords:
+        return []
+    tag_tokens: set[str] = set()
+    for tag in (content_tags or []):
+        tag_tokens |= _tokenize(tag)
+    text_lower = (text or '').lower()
+
+    matched: list[str] = []
+    for kw in user_keywords:
+        kw_tokens = _tokenize(kw)
+        # (1) categories 토큰 완전일치
+        if kw_tokens & tag_tokens:
+            matched.append(kw)
+            continue
+        # (2) title 동의어 부분일치 — 토큰을 동의어로 확장 후 하나라도 등장하면 매칭
+        candidates: set[str] = set()
+        for tok in kw_tokens:
+            candidates |= synonyms.get(tok, {tok})
+        if any(_contains_term(text_lower, c) for c in candidates):
+            matched.append(kw)
+    return matched
+
+
+def score_combined(
+    user_keywords: set[str],
+    content_tags: Iterable[str],
+    text: str,
+    *,
+    synonyms: dict[str, set[str]] = SYNONYM_MAP,
+) -> int:
+    """matched_keywords 개수 = 점수 (관심사당 최대 1점, categories+title 합산 캡 유지)."""
+    return len(matched_keywords(user_keywords, content_tags, text, synonyms=synonyms))
+
+
 def sort_by_match(
     items: list,
     user_keywords: set[str],
     tags_attr: str = 'tags',
     *,
+    text_attr: str | None = None,
     secondary_key: Callable | None = None,
 ) -> list:
     """match_score 부여 후 점수 내림차순 정렬.
@@ -119,6 +201,9 @@ def sort_by_match(
         items: list of model instances (각 instance에 tags_attr 필드 존재)
         user_keywords: extract_user_keywords() 결과
         tags_attr: 콘텐츠 태그 필드명 ('tags' 또는 'categories' 등)
+        text_attr: 지정 시 해당 자유 텍스트 필드(예: 공모전 title)도 동의어 부분일치로
+                   매칭에 합산 (score_combined, 관심사당 1점 캡). 미지정(None)이면
+                   기존 태그 완전일치만 — 공지(notices) 경로는 영향 없음.
         secondary_key: 동점일 때 사용할 정렬 키 (예: lambda x: -x.published_at.timestamp())
                        반환값이 작을수록 위로 (Python sorted 기본 동작과 일치)
 
@@ -129,7 +214,13 @@ def sort_by_match(
     scored = []
     for item in items:
         tags = getattr(item, tags_attr, None) or []
-        item.match_score = score_match(user_keywords, tags)
+        if text_attr:
+            # categories + 제목 동의어를 관심사당 1점으로 결합 (공모전용)
+            item.match_score = score_combined(
+                user_keywords, tags, getattr(item, text_attr, '') or ''
+            )
+        else:
+            item.match_score = score_match(user_keywords, tags)
         scored.append(item)
 
     # 정렬 키: (-점수, secondary_key)

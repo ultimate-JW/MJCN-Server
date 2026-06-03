@@ -1644,6 +1644,20 @@ grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스
 - 분류 기준: 공모전, 대외활동, 지원사업, 교육/강의, 부트캠프
 - Information 모델의 `categories` JSONField에 저장
 
+#### 5.5.5 공모전 테마 상세 (contest-guide)
+
+테마 상세 화면(조언 + 카드 + 우선순위)을 기존 `Information`(공모전) 위에 구성한다. 추천 엔진 신설이 아니라 동의어 확장 매칭(5.10.7) + fallback을 재구성하는 계층.
+
+- **엔드포인트**: `GET /api/v1/information/contest-guide/`
+- **후보**: 모집 중(활성 + 마감 안 지남) + `categories`에 `공모전`. 매칭 텍스트 = `title + organizer`.
+- **노출 개수**: 최소 3 ~ 최대 5. 매칭 공모전 우선 + 부족분은 일반 공모전(마감 임박순) backfill. **빈 화면 금지**(후보가 3 미만이면 있는 만큼).
+- **state**: `matched`(매칭 ≥3) / `partial_match`(1~2) / `no_match`(0, 마감일순). 매칭 0건도 추천 실패 아님.
+- **응답**: `{ state, advice:{line1,line2}, cards:[{id,title,organizer,categories,end_date,dday,url}], priority:[{rank,card_id,reasons:[{code,meta}]}], quick_questions:[{label,prompt}], note }`
+  - `dday`는 서버 계산. `priority`는 카드 정보 중복 없이 `card_id` 참조.
+  - 배지(reasons) 머신코드: `interest_match`(meta.interest) / `deadline_soon`(meta.dday).
+  - **⑥ 띵똥이에게 물어보기** (`quick_questions`): 탭하면 챗으로 전송될 `{label, prompt}` 3개 (#164 패턴). 1번 칩은 관심분야 키워드 치환(없으면 일반 문구). 발견/준비/마감 3축.
+- 조언/우선순위 문구·배지·질문칩은 규칙 기반(LLM 없음). `note`는 `no_match`일 때만.
+
 ### 5.6 채팅방 보관함 (chat)
 
 #### 5.6.1 전체 조회
@@ -1782,6 +1796,16 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | `GET /api/v1/information/?view=personalized` | InformationListView 동일 |
 | `GET /api/v1/dashboard/` (5.8) | "관심사 기반 최근 공지·정보 N개" 노출에 사용 |
 | `courses/services.py` 기존 코드 | 이미 자체 구현됨 (`BONUS_INTEREST_MATCH`). 추후 공통 모듈로 통합 검토 가능 |
+| `GET /api/v1/information/contest-guide/` (5.5.5) | 공모전 테마 상세 — 동의어 확장 매칭(5.10.7) 적용 |
+
+#### 5.10.7 동의어 확장 매칭 (제목 기반)
+
+공모전(Information)은 크롤러가 본문을 저장하지 않아 매칭 재료가 **제목 + 주최(title + organizer)** 뿐이다. 제목은 포괄적(“OO 경진대회”)이라 태그 완전일치(5.10.3)로는 거의 매칭되지 않으므로, 관심사 키워드를 **동의어로 확장해 제목에 부분일치**시킨다.
+
+- 관심사 토큰 → 동의어 집합으로 확장 후, 자유 텍스트(제목+주최)에 부분일치하면 매칭.
+- **짧은 영문 토큰 오매칭 가드**: 한글은 부분일치 허용, 2~3글자 영문은 앞뒤가 영문 알파벳이면 불인정(`it`↔`digital` 방지, `ai`↔`제조ai`는 인정).
+- **관심사당 최대 1점 캡 유지**: categories 토큰일치 OR 제목 동의어일치를 합쳐도 관심사 1개당 1점(5.10.3과 동일 원칙).
+- 동의어 **목록은 코드 상수**(`common/matching.py:SYNONYM_MAP`)로만 관리한다 — 항목이 자주 바뀌므로 spec에는 개별 목록을 박지 않는다.
 
 ---
 
@@ -1964,6 +1988,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | GET | `/api/v1/information/?view=personalized` | O | 명시적 맞춤형 보기 (5.10 매칭 로직 적용) |
 | GET | `/api/v1/information/?q=<검색어>` | O | 정보 검색 |
 | GET | `/api/v1/information/?category=공모전` | O | 카테고리 필터 |
+| GET | `/api/v1/information/contest-guide/` | O | 공모전 테마 상세 (조언+카드+우선순위, 5.5.5 / 5.10.7) |
 | GET | `/api/v1/information/<id>/` | O | 정보 상세 |
 
 응답에 `match_score: int` 필드 포함 (두 view 모두 실제 계산. `view=personalized`는 점수 내림차순 → D-day 순, `view=all`은 마감일 순). `?view=personalized&category=공모전` 같이 조합 가능.
