@@ -817,10 +817,10 @@ class CurrentCourseHydrateTests(TestCase):
     def test_post_offering_id_creates_currentcourse_with_hydration(self):
         res = self.client.post(self.url, {'offering_id': self.offering.id}, format='json')
         self.assertEqual(res.status_code, 201, msg=res.data)
-        # 응답 8키 (7 평문 + id) — building 없음
+        # 응답 9키 (7 평문 + id + offering_id #226) — building 없음
         self.assertEqual(
             set(res.data.keys()),
-            {'id', 'course_name', 'course_code', 'day_of_week',
+            {'id', 'offering_id', 'course_name', 'course_code', 'day_of_week',
              'start_time', 'end_time', 'professor', 'room'},
         )
         self.assertEqual(res.data['course_name'], '컴퓨터하드웨어')
@@ -830,6 +830,8 @@ class CurrentCourseHydrateTests(TestCase):
         self.assertEqual(res.data['end_time'], '16:50:00')
         self.assertEqual(res.data['professor'], '박정민')
         self.assertEqual(res.data['room'], 'Y5420')
+        # #226: 응답에 offering_id가 입력값과 동일하게 round-trip
+        self.assertEqual(res.data['offering_id'], self.offering.id)
 
     def test_post_nonexistent_offering_id_returns_400(self):
         res = self.client.post(self.url, {'offering_id': 99999}, format='json')
@@ -915,6 +917,8 @@ class CurrentCourseHydrateTests(TestCase):
         self.assertEqual(res2.data['course_name'], '운영체제')
         self.assertEqual(res2.data['day_of_week'], '목')
         self.assertEqual(res2.data['room'], 'Y5437')
+        # #226: offering_id도 새 값으로 갱신
+        self.assertEqual(res2.data['offering_id'], o2.id)
 
     def test_building_field_removed_from_model(self):
         """모델에서 building 필드가 실제로 제거됐는지 회귀 (#149)."""
@@ -922,3 +926,35 @@ class CurrentCourseHydrateTests(TestCase):
 
         field_names = {f.name for f in CurrentCourse._meta.get_fields()}
         self.assertNotIn('building', field_names)
+
+    # ─── #226: offering_id 응답·DB 노출 ─────────────────────────────────
+
+    def test_db_stores_offering_id_after_post(self):
+        """POST 후 DB row에 offering_id가 정상 저장됨 (#226)."""
+        from accounts.models import CurrentCourse
+        res = self.client.post(self.url, {'offering_id': self.offering.id}, format='json')
+        cc_id = res.data['id']
+        cc = CurrentCourse.objects.get(pk=cc_id)
+        self.assertEqual(cc.offering_id, self.offering.id)
+
+    def test_list_response_includes_offering_id(self):
+        """GET /current-courses/ 응답에 offering_id 노출 (#226)."""
+        self.client.post(self.url, {'offering_id': self.offering.id}, format='json')
+        res = self.client.get(self.url)
+        items = res.data['results'] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(items), 1)
+        self.assertIn('offering_id', items[0])
+        self.assertEqual(items[0]['offering_id'], self.offering.id)
+
+    def test_profile_response_includes_offering_id(self):
+        """GET /accounts/profile/ current_courses[]에 offering_id 노출 (#226).
+
+        프론트가 분반 역추적·PUT 재전송에 사용.
+        """
+        self.client.post(self.url, {'offering_id': self.offering.id}, format='json')
+        res = self.client.get('/api/v1/accounts/profile/')
+        self.assertEqual(res.status_code, 200, msg=res.data)
+        cc_list = res.data['current_courses']
+        self.assertEqual(len(cc_list), 1)
+        self.assertIn('offering_id', cc_list[0])
+        self.assertEqual(cc_list[0]['offering_id'], self.offering.id)
