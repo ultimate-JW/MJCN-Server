@@ -80,19 +80,27 @@ def _top_fragment(signals):
     return "여러 선택지가 열려 있는"
 
 
-# 다음학기 개설 정보가 아직 없어 직전 학기(작년 같은 학기) 데이터로 추천했을 때의 안내 (#164 발견1)
-FALLBACK_TERM_NOTE = "아직 다음 학기 개설 정보가 없어서, 작년 같은 학기 과목 데이터를 기준으로 추천했어요."
+# 다음학기 개설 정보가 아직 없어 직전 학기(작년 같은 학기) 데이터로 추천했을 때의 안내 (#164 발견1, #192)
+# fallback 대상 학기(year/semester)를 문구에 명시해 "무슨 기준으로 추천했는지"가 끊기지 않고 바로 이어지게 함.
+def fallback_term_note(year, semester):
+    """fallback 학기 기준 추천 안내 문구. year/semester가 없으면 학기 미명시 버전으로 폴백."""
+    if year is None or semester is None:
+        # 학기를 못 특정하는 예외 케이스 — 기존 톤 유지 (학기 숫자 없이)
+        return "아직 다음 학기 개설 정보가 없어서, 작년 같은 학기 과목 데이터를 기준으로 추천해드릴게요."
+    return f"아직 다음 학기 개설 정보가 없어서, {year}-{semester}학기 개설 과목을 기준으로 추천해드릴게요."
 
 
-def build_advice(user, signals, *, is_fallback_term=False):
+def build_advice(user, signals, *, is_fallback_term=False,
+                 fallback_year=None, fallback_semester=None):
     """② 조언 dict — user_insight(파트1) + stage_message(파트2) + term_note + 합친 text.
 
     text는 'OOO님, {파트1} {파트2} [{안내}]' 형식 — 프론트가 text 그대로 쓰거나 파트별로 렌더.
-    is_fallback_term=True면 마지막 줄에 작년 학기 데이터 기반 안내(term_note)를 덧붙인다.
+    is_fallback_term=True면 마지막 줄에 fallback 학기(fallback_year/semester) 기준 안내를 덧붙인다.
     """
     insight = build_user_insight(signals)
     stage = stage_message(getattr(user, 'grade', None), getattr(user, 'semester', None))
-    term_note = FALLBACK_TERM_NOTE if is_fallback_term else ''
+    # fallback 시 추천 기준 학기를 문구에 박아 안내가 추천으로 자연스럽게 이어지게 함 (#192)
+    term_note = fallback_term_note(fallback_year, fallback_semester) if is_fallback_term else ''
     name = (getattr(user, 'name', '') or '').strip()
     greeting = f"{name}님, " if name else ""
 

@@ -2261,10 +2261,10 @@ class SectionsTermFallbackAPITests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         # 작년 같은 학기(2025-2)로 fallback
         self.assertEqual((res.data['target_year'], res.data['target_semester']), (2025, 2))
-        # 마지막 줄 안내 문구 채워짐
+        # 마지막 줄 안내 문구 채워짐 — fallback 대상 학기(2025-2) 명시 (#192)
         self.assertTrue(res.data['advice']['term_note'])
-        self.assertIn('작년', res.data['advice']['term_note'])
-        self.assertIn('작년', res.data['advice']['text'])
+        self.assertIn('2025-2학기', res.data['advice']['term_note'])
+        self.assertIn('2025-2학기', res.data['advice']['text'])
         # 빈 추천 아님 — 실제 과목 노출
         codes = ([x['course_code'] for x in res.data['interest_courses']]
                  + [x['course_code'] for x in res.data['linked_courses']])
