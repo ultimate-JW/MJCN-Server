@@ -1327,3 +1327,65 @@ class ChatMessageReferencedItemsTests(TestCase):
         self.assertEqual(last_assistant['referenced_items'], [
             {'type': 'notice', 'title': 'GET 검증', 'url': 'https://mju.ac.kr/get-check'},
         ])
+
+
+# ─── #193: 챗 다음학기 추천 — 개설학기 fallback ──────────────────────
+from courses.models import (  # noqa: E402
+    Course as _Course,
+    CourseOffering as _CourseOffering,
+)
+
+
+class NextSemesterFallbackDispatcherTests(TestCase):
+    """챗 get_next_semester_courses — 요청 학기 개설 데이터 없으면 작년 같은 학기로
+    fallback해서 실제 과목을 주고, 응답에 기준 학기 + fallback 플래그를 싣는다 (#193).
+
+    그동안 챗 경로는 fallback이 없어 빈 추천만 반환했음. (섹션 경로엔 이미 있었음)
+    """
+
+    def setUp(self):
+        self.user = make_user('fb@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.grade = 2
+        self.user.semester = 1
+        self.user.admission_year = 2024
+        self.user.save()
+        # 2025-2 학기에만 개설된 과목 — 2026-2 요청 시 fallback 대상
+        self.course = _Course.objects.create(
+            course_code='CSE2050', name='자료구조', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공선택', credits=3, year_open=2, semester_open=2,
+        )
+        _CourseOffering.objects.create(
+            course=self.course, year=2025, semester=2,
+            section_no='01', professor='김교수',
+        )
+
+    def test_요청학기_데이터없으면_작년학기로_fallback하고_과목제공(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 2},  # 데이터 없는 학기
+        )
+        # 작년 같은 학기(2025-2)로 치환된 학기가 응답에 명시됨
+        self.assertEqual(out['target_year'], 2025)
+        self.assertEqual(out['target_semester'], 2)
+        self.assertTrue(out['fallback_term'])
+        # 빈 추천이 아니라 실제 과목이 나와야 함 (버그 핵심)
+        self.assertGreaterEqual(out['count'], 1)
+        codes = [c['course_code'] for c in out['courses']]
+        self.assertIn('CSE2050', codes)
+        # AI가 사용자에게 안내하도록 note에 기준 학기 명시
+        self.assertIn('2025-2학기', out['note'])
+
+    def test_요청학기_데이터있으면_fallback안함(self):
+        _CourseOffering.objects.create(
+            course=self.course, year=2026, semester=2,
+            section_no='02', professor='이교수',
+        )
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 2},
+        )
+        self.assertEqual((out['target_year'], out['target_semester']), (2026, 2))
+        self.assertFalse(out['fallback_term'])
+        self.assertNotIn('기준으로 추천한 것임', out['note'])

@@ -19,6 +19,8 @@ from django.db.models import Q
 
 from courses.services import (
     MAX_NEXT_SEMESTER_RECOMMENDATIONS,
+    _curriculum_first_slot,
+    _resolve_offering_term,
     calc_graduation_progress,
     recommend_next_semester_courses,
 )
@@ -152,20 +154,45 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
     target_year = args.get('target_year')
     target_semester = args.get('target_semester')
 
+    # 학기 미지정 시 자동 결정 (5.3.1과 동일). recommend_next_semester_courses 내부도
+    # 같은 보충을 하지만, fallback 판정·응답 명시를 위해 여기서 먼저 학기를 확정한다.
+    if target_year is None or target_semester is None:
+        auto_year, auto_sem = _curriculum_first_slot(user)
+        if target_year is None:
+            target_year = auto_year
+        if target_semester is None:
+            target_semester = auto_sem
+
+    # 다음 학기 개설 정보가 아직 없으면 작년 같은 학기로 fallback (#193 — 섹션 경로와 동일).
+    # 챗 경로엔 그동안 이게 빠져 빈 추천만 나왔음. fallback 학기로 실제 과목을 주고,
+    # AI가 "○-○학기 기준" 안내를 하도록 note에 명시한다.
+    target_year, target_semester, is_fallback_term = _resolve_offering_term(
+        target_year, target_semester,
+    )
+
     results = recommend_next_semester_courses(
         user, target_year=target_year, target_semester=target_semester,
     )
     top = results[:MAX_RECOMMEND_COURSES]
 
+    note = (
+        '관련도 상위 N개만 반환 (전체 결과 중 일부). '
+        'category는 학칙 7분류(전공필수/전공선택/공통교양/핵심교양/'
+        '학문기초교양/일반교양/자유선택) 기반.'
+    )
+    # fallback이면 AI가 사용자에게 기준 학기를 안내하도록 지시 문구를 덧붙임
+    if is_fallback_term:
+        note += (
+            f' 단, 요청 학기에 개설 정보가 아직 없어 {target_year}-{target_semester}학기 '
+            '개설 과목을 기준으로 추천한 것임. 사용자에게 이 학기 기준임을 안내할 것.'
+        )
+
     return {
         'target_year': target_year,
         'target_semester': target_semester,
+        'fallback_term': is_fallback_term,
         'count': len(top),
-        'note': (
-            '관련도 상위 N개만 반환 (전체 결과 중 일부). '
-            'category는 학칙 7분류(전공필수/전공선택/공통교양/핵심교양/'
-            '학문기초교양/일반교양/자유선택) 기반.'
-        ),
+        'note': note,
         'courses': [
             {
                 'score': score,
