@@ -25,6 +25,7 @@ from courses.services import (
     calc_graduation_progress,
     recommend_next_semester_courses,
 )
+from common.matching import SYNONYM_MAP, _contains_term
 from courses.models import Course, CourseOffering
 from information.models import Information
 from notices.models import Notice
@@ -41,6 +42,8 @@ MAX_SEARCH_RESULTS = 5
 # 과목 조회(lookup_course) 상한 — 매칭 과목 수 / 과목당 분반 수 (토큰 가드).
 MAX_LOOKUP_COURSES = 5
 MAX_LOOKUP_SECTIONS = 10
+# 분야 과목 탐색(find_courses_by_topic) 상한 — 한 분야 트랙이 길 수 있어 넉넉히.
+MAX_TOPIC_COURSES = 15
 
 
 # ─── OpenAI tools 스키마 ──────────────────────────────────────────────
@@ -214,6 +217,30 @@ TOOLS_SCHEMA = [
     {
         'type': 'function',
         'function': {
+            'name': 'find_courses_by_topic',
+            'description': (
+                '특정 **분야·진로 키워드**(보안/AI/게임/클라우드/데이터분석/웹 등)와 관련된 '
+                '명지대 실제 과목을 찾아 선수과목·권장 학년과 함께 반환한다. '
+                '"보안 쪽 가려면 뭐 들어야 해?", "AI 관련 과목 뭐 있어?", "게임 개발 트랙 추천" 처럼 '
+                '**관심 분야로 진입하기 위한 과목/순서**를 묻는 질문에서 호출. '
+                '동의어로 확장해(예: 보안→정보보호/사이버) 과목명·태그를 매칭한다. '
+                '다음 학기 개인 추천(get_next_semester_courses)과 달리, 분야 기준으로 커리큘럼을 탐색한다.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'topic': {
+                        'type': 'string',
+                        'description': '분야/진로 키워드 (예: "보안", "인공지능", "게임", "클라우드").',
+                    },
+                },
+                'required': ['topic'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
             'name': 'search_notices',
             'description': (
                 '명지대학교 **교내(자체)** 공지사항을 키워드로 검색해 상위 N건을 반환한다. '
@@ -282,6 +309,8 @@ def dispatch_tool_call(user, name: str, arguments: dict[str, Any]) -> dict[str, 
             return _get_course_history(user)
         if name == 'lookup_course':
             return _lookup_course(user, arguments)
+        if name == 'find_courses_by_topic':
+            return _find_courses_by_topic(user, arguments)
         if name == 'search_notices':
             return _search_notices(arguments)
         if name == 'search_information':
@@ -660,6 +689,93 @@ def _lookup_course(user, args: dict[str, Any]) -> dict[str, Any]:
         'match_count': len(courses_payload),
         'note': note,
         'courses': courses_payload,
+    }
+
+
+# 분야 키워드 토큰 분리 — common.matching과 동일 구분자(콤마/공백/슬래시/가운뎃점).
+_TOPIC_SPLIT_RE = re.compile(r'[\s,/·]+')
+
+
+def _expand_topic_terms(topic: str) -> set[str]:
+    """분야 키워드를 토큰화 + 동의어 확장 (보안→정보보호/사이버 등, common.SYNONYM_MAP 재사용)."""
+    raw = {t for t in _TOPIC_SPLIT_RE.split(topic.lower()) if t}
+    terms = set(raw)
+    for tok in raw:
+        terms |= SYNONYM_MAP.get(tok, set())
+    return terms
+
+
+def _find_courses_by_topic(user, args: dict[str, Any]) -> dict[str, Any]:
+    """분야·진로 키워드로 명지대 실제 과목 탐색 — grounded 트랙 제안용 (#4).
+
+    "보안 가려면 뭐 들어?" 류에서 LLM이 명지대 실커리큘럼과 무관한 과목 시퀀스를 지어내던
+    위험 해소. 동의어 확장(common.SYNONYM_MAP) 후 Course.name/tags 매칭, 선수과목·권장학년
+    동봉 → LLM이 데이터 위에서 순서를 제안하게 한다. 개설학기·교수는 lookup_course로 별도.
+    """
+    topic = (args.get('topic') or '').strip()
+    if not topic:
+        return {'error': '조회할 분야/키워드(topic)가 필요합니다.'}
+
+    terms = _expand_topic_terms(topic)
+    if not terms:
+        return {'topic': topic, 'matched_terms': [], 'count': 0,
+                'note': '유효한 키워드가 없습니다.', 'courses': []}
+
+    # 후보 수집 — 이름 부분일치(DB icontains 프리필터) ∪ 태그 토큰 매칭(파이썬, 대소문자 무관).
+    # 태그는 JSONField라 DB 측 매칭이 대소문자·백엔드 의존이라 파이썬에서 토큰 비교한다.
+    name_q = Q()
+    for term in terms:
+        name_q |= Q(name__icontains=term)
+    candidate_ids = set(Course.objects.filter(name_q).values_list('id', flat=True))
+    for cid, tags in (
+        Course.objects.exclude(tags=[]).exclude(tags__isnull=True)
+        .values_list('id', 'tags')
+    ):
+        if {str(t).lower() for t in (tags or [])} & terms:
+            candidate_ids.add(cid)
+
+    courses = (
+        Course.objects.filter(id__in=candidate_ids)
+        .prefetch_related('prerequisites__prerequisite')
+        # 권장 학년 → 카테고리 → 과목번호 순 = 자연스러운 수강 순서 힌트
+        .order_by('year_open', 'category', 'course_code')
+    )
+
+    matched = []
+    for c in courses:
+        name_l = (c.name or '').lower()
+        tag_toks = {str(t).lower() for t in (c.tags or [])}
+        # DB 프리필터(icontains)를 _contains_term으로 재검증 — 짧은 영문 오매칭(ai⊂brain) 제거.
+        hit = sorted({t for t in terms if (t in tag_toks) or _contains_term(name_l, t)})
+        if not hit:
+            continue
+        matched.append({
+            'course_code': c.course_code,
+            'name': c.name,
+            'category': c.category,
+            'credits': c.credits,
+            'recommended_grade': c.year_open,   # 권장 학년 (0=학년 무관)
+            'matched_terms': hit,               # 어떤 키워드로 걸렸는지 (투명성)
+            'prerequisites': [
+                {'course_code': p.prerequisite.course_code, 'name': p.prerequisite.name}
+                for p in c.prerequisites.all()
+            ],
+        })
+        if len(matched) >= MAX_TOPIC_COURSES:
+            break
+
+    return {
+        'topic': topic,
+        'matched_terms': sorted(terms),   # 동의어 확장된 검색어 전체
+        'count': len(matched),
+        'note': (
+            '분야 키워드를 동의어 확장해 명지대 실제 과목 중 이름/태그가 맞는 것만 반환(grounded). '
+            'recommended_grade=권장 학년(0=무관), prerequisites=선수과목 목록. '
+            '듣는 순서는 prerequisites(먼저 들어야 하는 과목)와 recommended_grade를 근거로 제안할 것. '
+            '이 목록에 없는 과목명을 지어내지 말 것. 특정 과목의 개설 학기·교수·시간이 필요하면 '
+            'lookup_course로 이어서 확인. count=0이면 해당 분야 매칭 과목을 못 찾았다고 안내할 것.'
+        ),
+        'courses': matched,
     }
 
 

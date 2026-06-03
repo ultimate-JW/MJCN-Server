@@ -2033,3 +2033,82 @@ class LookupCourseDispatcherTests(TestCase):
         # fallback 학기(2025-2)에서 분반을 찾아 개설로 보여줌
         looked = next(c for c in out['courses'] if c['course_code'] == '컴정502')
         self.assertTrue(looked['offered_in_term'])
+
+
+# ─── #4: 챗 분야·진로 과목 탐색 — find_courses_by_topic (grounded 트랙) ────
+class FindCoursesByTopicDispatcherTests(TestCase):
+    """챗 find_courses_by_topic — 분야 키워드를 동의어 확장해 명지대 실제 과목을 매칭,
+    선수과목·권장학년과 함께 반환 (#4).
+
+    "보안 가려면 뭐 들어?" 류에서 LLM이 실커리큘럼과 무관한 과목을 지어내던 위험 해소.
+    """
+
+    def setUp(self):
+        self.user = make_user('topic@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.save()
+
+        common = dict(
+            college='ICT융합대학', department='융합소프트웨어학부',
+            major='컴퓨터공학', category='전공선택', credits=3,
+        )
+        # 이름에 '정보보호' — '보안' 동의어로 매칭돼야 함
+        self.intro = _Course.objects.create(
+            course_code='SEC100', name='정보보호개론', year_open=2, semester_open=1, **common,
+        )
+        # 이름에 '보안' 직접 매칭 + intro를 선수과목으로
+        self.adv = _Course.objects.create(
+            course_code='SEC200', name='시스템보안', year_open=3, semester_open=1, **common,
+        )
+        from courses.models import CoursePrerequisite
+        CoursePrerequisite.objects.create(course=self.adv, prerequisite=self.intro)
+        # 태그로 매칭되는 과목 (이름엔 보안 없음)
+        self.tagged = _Course.objects.create(
+            course_code='SEC300', name='네트워크개론', year_open=2, semester_open=1,
+            tags=['보안', '네트워크'], **common,
+        )
+        # 무관 과목 — 매칭되면 안 됨
+        _Course.objects.create(
+            course_code='ART100', name='미술의이해', year_open=1, semester_open=1,
+            college='예술체육대학', department='미술학부', major='미술',
+            category='일반교양', credits=3,
+        )
+
+    def test_동의어_확장으로_분야_과목_매칭(self):
+        out = dispatch_tool_call(self.user, 'find_courses_by_topic', {'topic': '보안'})
+        codes = {c['course_code'] for c in out['courses']}
+        # 이름 직접(시스템보안) + 동의어(정보보호개론) + 태그(네트워크개론) 모두 매칭
+        self.assertIn('SEC200', codes)
+        self.assertIn('SEC100', codes)
+        self.assertIn('SEC300', codes)
+        # 무관 과목은 제외
+        self.assertNotIn('ART100', codes)
+        # 동의어 확장 검색어에 '정보보호' 포함
+        self.assertIn('정보보호', out['matched_terms'])
+
+    def test_선수과목_권장학년_반환(self):
+        out = dispatch_tool_call(self.user, 'find_courses_by_topic', {'topic': '보안'})
+        adv = next(c for c in out['courses'] if c['course_code'] == 'SEC200')
+        self.assertEqual(adv['recommended_grade'], 3)
+        prereq_codes = {p['course_code'] for p in adv['prerequisites']}
+        self.assertIn('SEC100', prereq_codes)
+
+    def test_권장학년_오름차순_정렬(self):
+        # 순서 힌트 — 권장 학년 낮은 과목(SEC100/300 = 2학년)이 SEC200(3학년)보다 앞
+        out = dispatch_tool_call(self.user, 'find_courses_by_topic', {'topic': '보안'})
+        grades = [c['recommended_grade'] for c in out['courses']]
+        self.assertEqual(grades, sorted(grades))
+
+    def test_매칭_없으면_빈_결과(self):
+        out = dispatch_tool_call(self.user, 'find_courses_by_topic', {'topic': '천문학우주탐사'})
+        self.assertEqual(out['count'], 0)
+        self.assertEqual(out['courses'], [])
+
+    def test_topic_없으면_error(self):
+        out = dispatch_tool_call(self.user, 'find_courses_by_topic', {})
+        self.assertIn('error', out)
+
+    def test_note에_grounded_지침(self):
+        out = dispatch_tool_call(self.user, 'find_courses_by_topic', {'topic': '보안'})
+        self.assertIn('prerequisites', out['note'])
+        self.assertIn('지어내지', out['note'])
