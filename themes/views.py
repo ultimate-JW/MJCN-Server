@@ -61,4 +61,5 @@ class ThemeDetailView(RetrieveAPIView):
             data['title'] = guide['title']
             data['description'] = guide['description']
             data['items'] = guide['items']
+            data['quick_questions'] = guide['quick_questions']  # 학년별 칩 (탭 시 챗 전송)
         return Response(data)

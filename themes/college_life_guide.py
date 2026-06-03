@@ -110,6 +110,32 @@ GRADE_GUIDES = {
 }
 
 
+# 학년별 질문칩 — 탭 시 prompt를 챗 엔드포인트(POST /api/v1/chat/rooms/{id}/messages/)로 전송
+# (#164/#171/study_tips 패턴). 칩에 보이는 텍스트(label)와 전송 텍스트(prompt)가 동일.
+QUICK_QUESTIONS = {
+    1: [
+        '대학생활 적응이 어려운데 어떻게 해야 해?',
+        '전공이 나와 맞는지 모르겠어',
+        '비교과 프로그램은 왜 참여하는 거야?',
+    ],
+    2: [
+        '프로젝트는 왜 중요한가요?',
+        '관심 분야를 정하는 방법이 궁금해',
+        '공모전은 언제부터 준비하면 좋을까?',
+    ],
+    3: [
+        '포트폴리오는 어떻게 만들까?',
+        '인턴은 언제 준비해야 해?',
+        '공모전 경험이 취업에 도움이 될까?',
+    ],
+    4: [
+        '졸업 전 꼭 확인해야 할 것은?',
+        '이력서와 포트폴리오는 어떻게 정리해?',
+        '취업 준비는 어디서부터 시작해야 해?',
+    ],
+}
+
+
 def _clamp_grade(grade):
     """grade를 1~4로 정규화. None·비정수·범위밖 방어 (grade는 nullable이라 항상 유효값 반환)."""
     try:
@@ -126,9 +152,10 @@ def _clamp_grade(grade):
 def build_college_life_guide(grade):
     """학년별 대학생활 가이드를 themes 상세 응답 형태로 조립한다.
 
-    반환: {title, description, items} — ThemeDetailView가 응답 dict의 동명 키를 이걸로 덮어씀.
-    items[]는 기존 ThemeItem 직렬화 스키마(id/title/content/external_url/item_type/order)와 동일.
-    섹션 제목은 content 빈 guide 아이템(헤더)으로 카드 앞에 끼운다.
+    반환: {title, description, items, quick_questions} — ThemeDetailView가 응답 dict의 동명 키를
+    이걸로 덮어씀. items[]는 기존 ThemeItem 직렬화 스키마(id/title/content/external_url/item_type/
+    order)와 동일. 섹션 제목은 content 빈 guide 아이템(헤더)으로 카드 앞에 끼운다.
+    quick_questions[]는 {label, prompt} — 탭 시 prompt를 챗으로 전송.
     """
     g = _clamp_grade(grade)
     guide = GRADE_GUIDES[g]
@@ -156,4 +183,6 @@ def build_college_life_guide(grade):
         'title': GUIDE_TITLE.format(grade=g),
         'description': guide['description'],
         'items': items,
+        # 칩 표시 텍스트(label)와 전송 텍스트(prompt) 동일 — 화면의 질문 그대로 챗에 전달
+        'quick_questions': [{'label': q, 'prompt': q} for q in QUICK_QUESTIONS[g]],
     }

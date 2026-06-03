@@ -222,6 +222,31 @@ class CollegeLifeGuideDetailTests(APITestCase):
         self.assertEqual(resp.data['title'], '교환학생 신청 안내')
         self.assertEqual([i['title'] for i in resp.data['items']], ['지원 자격'])
 
+    def test_career_returns_grade_quick_questions(self):
+        resp = self._get_career(2)
+        chips = resp.data['quick_questions']
+        self.assertEqual(len(chips), 3)
+        # {label, prompt} 형태 + 2학년 칩 내용
+        self.assertEqual(set(chips[0].keys()), {'label', 'prompt'})
+        self.assertEqual(chips[0]['label'], chips[0]['prompt'])  # 표시=전송 텍스트
+        labels = [c['label'] for c in chips]
+        self.assertIn('프로젝트는 왜 중요한가요?', labels)
+
+    def test_quick_questions_differ_by_grade(self):
+        g1 = [c['prompt'] for c in self._get_career(1).data['quick_questions']]
+        g4 = [c['prompt'] for c in self._get_career(4).data['quick_questions']]
+        self.assertIn('비교과 프로그램은 왜 참여하는 거야?', g1)
+        self.assertIn('취업 준비는 어디서부터 시작해야 해?', g4)
+        self.assertNotEqual(g1, g4)
+
+    def test_non_career_quick_questions_empty(self):
+        resp = self.client.get(
+            reverse('themes:theme-detail', args=[self.exchange.id]),
+            **_auth_header(self._user(1)),
+        )
+        # 다른 테마는 기본 빈 배열 (키는 항상 존재 — 균일 계약)
+        self.assertEqual(resp.data['quick_questions'], [])
+
 
 class SeedThemesCommandTests(APITestCase):
     def test_seed_command_creates_and_is_idempotent(self):
