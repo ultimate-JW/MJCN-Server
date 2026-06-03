@@ -357,6 +357,23 @@ def _resolve_term(user, args: dict[str, Any]):
     return requested_year, requested_semester, target_year, target_semester, is_fallback_term
 
 
+def _fallback_term_note(requested_year, requested_semester,
+                        target_year, target_semester, action: str) -> str:
+    """fallback 학기 안내 문구 — 추천/시간표/조회 tool 공유 (#7 중복 제거, #205 표기 구분).
+
+    사용자의 '다음 학기'(requested)와 데이터 출처 학기(target, 작년 같은 학기)를 구분해,
+    AI가 fallback 학기를 '다음 학기'로 잘못 부르지 않게 한다.
+    action: 동작 표현 (예: '추천한 것이다.' / '시간표를 짠 것이다.' / '조회한 것이다.').
+    """
+    return (
+        f' 단, 사용자의 다음 학기는 {requested_year}-{requested_semester}학기인데 아직 개설 정보가 '
+        f'없다. 그래서 작년 같은 학기인 {target_year}-{target_semester}학기 개설 과목으로 {action} '
+        f'사용자에게 "다음 학기({requested_year}-{requested_semester})는 아직 개설 정보가 없어 '
+        f'{target_year}-{target_semester}학기 기준"이라고 명확히 안내하고, '
+        f'{target_year}-{target_semester}학기를 "다음 학기"라고 부르지 말 것.'
+    )
+
+
 def _offering_payload(o) -> dict[str, Any]:
     """CourseOffering 한 분반 → JSON dict (section_no/professor/schedules).
 
@@ -418,14 +435,11 @@ def _get_timetable_recommendations(user, args: dict[str, Any]) -> dict[str, Any]
     elif engine_note == 'low_diversity_pool':
         note += ' 단, 서로 충분히 다른 조합이 부족해 3개 미만만 나왔다. 있는 만큼만 안내할 것.'
 
-    # fallback 학기면 requested(다음 학기) vs target(작년 같은 학기)을 반드시 구분 안내 (#205).
+    # fallback 학기면 requested(다음 학기) vs target(작년 같은 학기)을 반드시 구분 안내 (#205, #7 helper).
     if is_fallback_term:
-        note += (
-            f' 또한 사용자의 다음 학기는 {requested_year}-{requested_semester}학기인데 아직 개설 '
-            f'정보가 없어, 작년 같은 학기인 {target_year}-{target_semester}학기 개설 과목으로 시간표를 '
-            f'짰다. 사용자에게 "다음 학기({requested_year}-{requested_semester})는 아직 개설 정보가 없어 '
-            f'{target_year}-{target_semester}학기 기준으로 짠다"고 명확히 안내하고, '
-            f'{target_year}-{target_semester}학기를 "다음 학기"라고 부르지 말 것.'
+        note += _fallback_term_note(
+            requested_year, requested_semester, target_year, target_semester,
+            '시간표를 짠 것이다.',
         )
 
     return {
@@ -489,17 +503,11 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
         '(예: 학과·학년·학기, 이번 학기 제안 학점 합, 전공/교양 잔여 핵심). '
         'status에 있는 값만 말하고 없는 수치는 지어내지 말 것.'
     )
-    # fallback이면 AI가 사용자에게 기준 학기를 안내하도록 지시 문구를 덧붙임.
-    # 핵심: 사용자의 '다음 학기'는 requested(2026-2)이고, 추천 데이터는 target(2025-2)이다.
-    # 둘을 반드시 구분해 안내하게 한다 — fallback 학기를 '다음 학기'로 표기하면 안 됨 (#205).
+    # fallback이면 AI가 사용자에게 기준 학기를 안내하도록 지시 문구를 덧붙임 (#205, #7 helper).
     if is_fallback_term:
-        note += (
-            f' 단, 사용자의 다음 학기는 {requested_year}-{requested_semester}학기인데 '
-            f'아직 수강신청/개설 정보가 올라오지 않았다. 그래서 작년 같은 학기인 '
-            f'{target_year}-{target_semester}학기 개설 과목을 기준으로 추천한 것이다. '
-            f'사용자에게 "다음 학기({requested_year}-{requested_semester})는 아직 개설 정보가 없어 '
-            f'{target_year}-{target_semester}학기 기준으로 추천한다"는 점을 반드시 명확히 안내할 것. '
-            f'{target_year}-{target_semester}학기를 "다음 학기"라고 부르지 말 것.'
+        note += _fallback_term_note(
+            requested_year, requested_semester, target_year, target_semester,
+            '추천한 것이다.',
         )
 
     return {
@@ -679,12 +687,11 @@ def _lookup_course(user, args: dict[str, Any]) -> dict[str, Any]:
     )
     if truncated:
         note += f' 매칭 과목이 많아 {MAX_LOOKUP_COURSES}개만 반환했다 — 더 구체적인 과목명/번호를 요청할 것.'
+    # 다음 학기 개설 정보가 아직 없어 작년 같은 학기로 조회한 경우 (#205 표기 구분, #7 helper).
     if is_fallback_term:
-        # 다음 학기 개설 정보가 아직 없어 작년 같은 학기로 조회한 경우 (#205 표기 구분).
-        note += (
-            f' 단, 사용자의 다음 학기는 {requested_year}-{requested_semester}학기인데 아직 개설 정보가 '
-            f'없어 작년 같은 학기인 {target_year}-{target_semester}학기 개설 정보로 조회했다. '
-            f'{target_year}-{target_semester}학기를 "다음 학기"라고 부르지 말 것.'
+        note += _fallback_term_note(
+            requested_year, requested_semester, target_year, target_semester,
+            '조회한 것이다.',
         )
 
     return {
