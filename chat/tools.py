@@ -178,7 +178,10 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
     note = (
         '관련도 상위 N개만 반환 (전체 결과 중 일부). '
         'category는 학칙 7분류(전공필수/전공선택/공통교양/핵심교양/'
-        '학문기초교양/일반교양/자유선택) 기반.'
+        '학문기초교양/일반교양/자유선택) 기반. '
+        '각 과목의 offerings는 교수·시간이 다른 분반(section_no) 목록임. '
+        '시간표를 짤 때는 한 과목당 분반 하나만 골라 그 분반의 schedules만 사용할 것. '
+        '서로 다른 분반의 시간을 한 과목으로 섞으면 실재하지 않는 시간표가 됨.'
     )
     # fallback이면 AI가 사용자에게 기준 학기를 안내하도록 지시 문구를 덧붙임
     if is_fallback_term:
@@ -200,16 +203,27 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
                 'name': c.name,
                 'category': c.category,
                 'credits': c.credits,
-                'professor': c.professor,
-                'schedules': [
+                # 분반(Offering) 단위로 묶는다 — 한 과목엔 교수·시간이 다른 여러 분반이 있고
+                # 학생은 그중 하나만 수강한다. course 단위로 schedule을 평탄화하면(c.schedules.all())
+                # 서로 다른 분반의 시간이 한 과목으로 섞여, 실재하지 않는 시간표가 나온다 (#199).
+                # offering 경계를 유지해 AI가 분반 하나를 통째로 고르게 한다.
+                'offerings': [
                     {
-                        'day_of_week': s.day_of_week,
-                        'start_time': s.start_time.isoformat() if s.start_time else None,
-                        'end_time': s.end_time.isoformat() if s.end_time else None,
-                        'building': s.building,
-                        'room': s.room,
+                        'section_no': o.section_no,        # 강좌번호 — 학기 안 분반 유일 식별자
+                        'professor': o.professor,          # 교수는 분반 속성 (Course.professor 아님)
+                        'schedules': [
+                            {
+                                'day_of_week': s.day_of_week,
+                                'start_time': s.start_time.isoformat() if s.start_time else None,
+                                'end_time': s.end_time.isoformat() if s.end_time else None,
+                                'building': s.building,
+                                'room': s.room,
+                            }
+                            for s in o.schedules.all()
+                        ],
                     }
-                    for s in c.schedules.all()
+                    # services가 target 학기로 필터·prefetch한 offerings (추가 쿼리 없음)
+                    for o in c.offerings.all()
                 ],
             }
             for score, c in top
