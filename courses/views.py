@@ -411,6 +411,7 @@ def _offerings_payload(course, year, semester):
             'id': off.id,
             'section_no': off.section_no,
             'professor': off.professor,
+            'is_online': off.is_online,   # 사이버강의면 schedules 빈 배열, 시간영역 "사이버강의" (#222)
             'schedules': [
                 {
                     'day_of_week': s.day_of_week,

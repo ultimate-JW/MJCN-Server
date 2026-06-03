@@ -252,6 +252,14 @@ class Command(BaseCommand):
             if created:
                 n_course_new += 1
 
+            # 사이버(원격)강의 판정 — 학교는 시간 없는 원격수업을 00:00 placeholder로 표기 (#222).
+            # 자정에 시작하는 정규 수업은 없으므로 start==00:00을 sentinel로 본다. 실제 시간이 있는
+            # 온라인 수업(라이브)은 그 시간을 그대로 두고 일반 과목처럼 처리.
+            start_t = to_time(start)
+            end_t = to_time(end)
+            day_clean = str(day or '').strip()
+            is_cyber = start_t == time(0, 0)
+
             # CourseOffering — (year, semester, section_no) unique (강좌번호는 학기 안에서 유일)
             offering, created = CourseOffering.objects.update_or_create(
                 year=year, semester=semester, section_no=str(section_no),
@@ -260,17 +268,16 @@ class Command(BaseCommand):
                     'professor': professor or '',
                     'capacity': int(capacity) if capacity else None,
                     'note': note or '',
+                    'is_online': is_cyber,
                 },
             )
             if created:
                 n_offering_new += 1
 
             # CourseSchedule — (offering, 요일) 1행. course FK도 동시 채움.
-            # 사이버/계약 강의는 요일='미입력' + 시간/강의실 빈값 → Schedule 생성 skip (Offering 만 존재)
-            start_t = to_time(start)
-            end_t = to_time(end)
-            day_clean = str(day or '').strip()
-            if day_clean not in VALID_DAYS or start_t is None or end_t is None:
+            # 사이버강의(00:00 placeholder)·계약/요일 미입력 강의는 Schedule 생성 skip → 시간 블록 없음
+            # (time_bitmap 0 → 충돌 0 → 어떤 시간표에나 자유 편입). 화면엔 is_online으로 "사이버강의" 표기.
+            if is_cyber or day_clean not in VALID_DAYS or start_t is None or end_t is None:
                 n_schedule_skipped += 1
                 continue
 

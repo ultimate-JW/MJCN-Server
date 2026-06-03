@@ -118,6 +118,9 @@ class CourseOffering(models.Model):
     professor = models.CharField(max_length=50, blank=True, default='')
     capacity = models.IntegerField(null=True, blank=True)  # 제한인원
     note = models.CharField(max_length=200, blank=True, default='')  # 비고 (예: 'IPP 우선수강')
+    # 사이버(원격)강의 — 정해진 시간이 없어 schedules가 비어 있고 시간표 충돌에서 자유롭다 (#222).
+    # 학교 강의시간표는 시간 없는 원격수업을 00:00 placeholder로 표기 → import에서 schedule 대신 이 플래그로 처리.
+    is_online = models.BooleanField(default=False)
 
     class Meta:
         db_table = 'courses_courseoffering'
