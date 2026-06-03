@@ -13,7 +13,7 @@ class InformationListSerializer(serializers.ModelSerializer):
         model = Information
         fields = [
             'id', 'title', 'organizer', 'url',
-            'start_date', 'end_date', 'categories', 'is_active',
+            'start_date', 'end_date', 'categories', 'tags', 'is_active',
             'source', 'source_id',
             'match_score',
         ]
@@ -26,7 +26,7 @@ class InformationDetailSerializer(serializers.ModelSerializer):
         model = Information
         fields = [
             'id', 'title', 'organizer', 'description', 'url',
-            'start_date', 'end_date', 'categories', 'is_active', 'created_at',
+            'start_date', 'end_date', 'categories', 'tags', 'is_active', 'created_at',
             'source', 'source_id',
         ]
 

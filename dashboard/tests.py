@@ -232,18 +232,18 @@ class DashboardAPITests(APITestCase):
         InterestArea.objects.create(
             user=self.user, category='IT/개발', custom_text='장학',
         )
-        # 매칭 정보 — 마감은 더 멀지만 점수로 1위여야
+        # 매칭 정보 — 마감은 더 멀지만 점수로 1위여야. 매칭은 tags 기준(#185)
         Information.objects.create(
             title='맞춤정보', url='https://w.com/m',
             source='wevity', source_id='m',
-            end_date=today + timedelta(days=20), categories=['장학'],
+            end_date=today + timedelta(days=20), categories=['장학'], tags=['장학'],
             is_active=True,
         )
         # 비매칭 정보 — 마감 임박
         Information.objects.create(
             title='일반정보', url='https://w.com/g',
             source='wevity', source_id='g',
-            end_date=today + timedelta(days=1), categories=['기타'],
+            end_date=today + timedelta(days=1), categories=['기타'], tags=['기타'],
             is_active=True,
         )
         res = self.client.get(self.url)

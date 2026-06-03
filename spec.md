@@ -705,7 +705,8 @@ Course 모델의 `college`, `department`, `major` 필드는 3뎁스 계층 구�
 | url | URLField | 원문 링크 (변동 query 파라미터 포함 가능) |
 | start_date | DateField(null) | 시작일 (있는 경우) |
 | end_date | DateField(null) | 마감일 |
-| categories | JSONField(default=list) | 분야 태그 (공모전/대외활동/지원사업/교육·강의/부트캠프) |
+| categories | JSONField(default=list) | 위비티 활동유형 분류 (공모전/대외활동/지원사업/교육·강의/부트캠프) — 크롤링 시 수집. `?category=` 필터용 |
+| tags | JSONField(default=list) | 관심사 매칭용 AI 자동 태깅 키워드 (직업분야 라벨 포함, spec 9.1.7). `categories`와 별개 — 맞춤형 매칭은 `tags` 기준 |
 | is_active | BooleanField(default=True) | 활성 여부 |
 | created_at | DateTimeField | 수집 시각 |
 | source | CharField(max_length=20) | 출처 식별자 (예: 'wevity', 'mju') |
@@ -1606,7 +1607,9 @@ grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스
 
 #### 5.5.2 맞춤형 보기 (기본값)
 
-목록 조회 시 사용자 관심사 ↔ `Information.categories` 매칭. notices와 동일하게 `view`로 두 화면 분리. 5.10 매칭 로직 참조.
+목록 조회 시 사용자 관심사 ↔ `Information.tags` 매칭. notices와 동일하게 `view`로 두 화면 분리. 5.10 매칭 로직 참조.
+
+> **매칭 대상이 `categories`가 아니라 `tags`인 이유**: `categories`는 위비티 활동유형(공모전/대외활동 등)이라 직업분야 관심사(IT/개발 등)와 분류축이 달라 교집합이 거의 0이었다(#185). AI 태깅(`Information.tags`, spec 9.1.7)이 제목·분류 메타데이터에서 직업분야 라벨을 뽑아주므로, 매칭은 `tags`로 한다. `categories`는 `?category=` 명시 필터 전용으로 유지.
 
 - **엔드포인트**: `GET /api/v1/information/?view=personalized` (기본값, 맞춤형) / `?view=all` (전체)
 - **정렬 기준**:
@@ -1614,7 +1617,7 @@ grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스
   - `view=all`: 전체, `end_date` 빠른 순
 - **매칭 0 제외 (personalized)**: 매칭 0인 정보는 personalized에서 제외 (관심사 미설정 시 빈 결과). 전체는 `view=all`에서 열람.
 - **사용자 데이터 출처**: notices와 동일 (User.major + InterestArea.category + custom_text)
-- **콘텐츠 매칭 대상**: `Information.categories`
+- **콘텐츠 매칭 대상**: `Information.tags` (AI 자동 태깅, spec 9.1.7)
 - **응답에 점수 노출**: `match_score` 필드 (두 view 모두 실제 계산)
 - **기존 필터와 조합 가능**: `?view=personalized&category=공모전` 같이 카테고리 필터 + 맞춤 정렬 동시 적용
 
@@ -1744,7 +1747,7 @@ grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스
 | 콘텐츠 | 출처 |
 |--------|------|
 | Notice | `Notice.tags` (JSONField, AI 자동 태깅 키워드) |
-| Information | `Information.categories` (JSONField, 크롤링 시 수집된 분류) |
+| Information | `Information.tags` (JSONField, AI 자동 태깅 키워드, spec 9.1.7) — `categories`(위비티 활동유형)는 `?category=` 명시 필터 전용 |
 | Course | `Course.tags` (현재 spec 4.x에 존재, 추천 로직에서 이미 사용 중) |
 
 → set(str)로 변환.
@@ -1914,7 +1917,7 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | POST | `/api/v1/courses/recommend/curriculum/` | O | 전체 커리큘럼 추천 (body 노브, spec 5.3.2) |
 | GET | `/api/v1/courses/status/` | O | 이수현황 분석 |
 | GET | `/api/v1/courses/` | O | 과목 검색 (쿼리 파라미터) |
-| GET | `/api/v1/courses/offerings/?query=&year=&semester=` | O | 분반 단위 강의 검색 (#149) — 카드 1개 = offering 1개. `id` 값을 그대로 `POST /accounts/current-courses/`의 `offering_id`로 전달 |
+| GET | `/api/v1/courses/offerings/?query=&year=&semester=` | O | 분반 단위 강의 검색 (#149) — 카드 1개 = offering 1개. 응답에 `offering_id`(= offering PK)를 포함하며, 그 값을 그대로 `POST /accounts/current-courses/`의 `offering_id`로 전달. (`id`도 동일 값으로 함께 제공 — 하위호환) |
 
 ### 6.7 공지사항 (notices)
 
@@ -2316,6 +2319,9 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 - 공지사항 AI 처리: 매일 06:30 KST (크롤링 완료 직후 정기 실행)
   - 1차 구현: 운영 서버 cron + `manage.py process_notices_ai` 명령
   - 미처리(`pending`) + 본문 변경 감지(`content_hash` 불일치)된 공지만 처리 (멱등)
+- 정보 AI 태깅: 매일 06:40 KST (정보 크롤링 직후)
+  - 1차 구현: 운영 서버 cron + `manage.py tag_information` 명령
+  - `tags`가 비어 있는 Information만 메타데이터(title+categories+organizer) 기반 태깅 (멱등, spec 9.1.7). 위비티 상세 본문은 크롤링하지 않음
 - FCM 푸시 송신: 매일 06:35 KST (crawl+fanout 완료 직후)
   - 1차 구현: 운영 서버 cron + `manage.py send_pending_pushes` 명령
   - `is_pushed=False`이고 최근 24시간 이내인 알림만 송신 (멱등 — 재실행 안전)
@@ -2686,6 +2692,20 @@ Notice.extracted_content에 추출 텍스트 저장
 
 설명·다른 키 절대 포함 금지.
 ```
+
+#### 9.1.7 정보(Information) 키워드 태깅 (`Information.tags` 자동 채움)
+
+`Information.tags`는 정보 맞춤형 매칭(spec 5.5.2)에 쓰이는 직업분야 키워드 배열이다. 공지의 Stage 4(`extract_tags`, 9.1.6)와 **동일한 프롬프트·함수를 재사용**한다.
+
+##### 정책
+
+- **입력 = 메타데이터만**: `title` + `categories`(위비티 활동유형) + `organizer`. **위비티 상세 페이지 본문은 크롤링하지 않는다**(위비티 요청 — `description`은 빈 채 유지). 따라서 태깅은 이미 저장된 메타데이터만으로 수행하며 추가 네트워크 요청이 없다.
+- **실행**: 별도 명령 `manage.py tag_information` (크롤 06:00 직후, ~06:40 KST cron). `Notice`처럼 본문 LLM 호출.
+- **멱등**: `tags`가 비어 있는 행만 태깅. `--reprocess`로 강제 재태깅.
+- **실패 처리**: graceful — 실패 시 `tags`만 빈 채로 두고 다음 cron 재시도. 크롤·다른 정보 처리에 영향 없음.
+- **매칭**: `score_match(user_keywords, Information.tags)` (spec 5.10). `categories`는 `?category=` 명시 필터 전용.
+
+> 제목·분류만으로 태깅하므로 공지(본문 기반)보다 신호가 얕을 수 있으나, 위비티 제목이 서술적이라 직업분야 라벨 추출에 충분하다.
 
 ### 9.2 외부 공모전 사이트 크롤링 (위비티)
 

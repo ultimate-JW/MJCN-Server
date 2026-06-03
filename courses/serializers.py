@@ -52,10 +52,12 @@ class CourseListSerializer(serializers.ModelSerializer):
 class CourseOfferingListSerializer(serializers.ModelSerializer):
     """분반 단위 검색 응답 — 한 카드 = 한 offering (spec 6.6 `/courses/offerings/`, #149).
 
-    `id` 값을 그대로 `POST /accounts/current-courses/`의 `offering_id`로 전달하면
-    서버가 CurrentCourse의 7개 평문 필드(course_name·code·요일·시간·교수·강의실)를
-    자동 hydrate.
+    `offering_id`(= `id`, offering PK) 값을 그대로 `POST /accounts/current-courses/`의
+    `offering_id`로 전달하면 서버가 CurrentCourse의 7개 평문 필드(course_name·code·
+    요일·시간·교수·강의실)를 자동 hydrate. `id`도 동일 값으로 함께 제공 (하위호환).
     """
+    # current-courses POST의 offering_id로 그대로 전달할 수 있도록 명시 필드 추가 (#187)
+    offering_id = serializers.IntegerField(source='id', read_only=True)
     course_code = serializers.CharField(source='course.course_code', read_only=True)
     name = serializers.CharField(source='course.name', read_only=True)
     college = serializers.CharField(source='course.college', read_only=True)
@@ -68,7 +70,7 @@ class CourseOfferingListSerializer(serializers.ModelSerializer):
     class Meta:
         model = CourseOffering
         fields = [
-            'id', 'year', 'semester', 'section_no',
+            'id', 'offering_id', 'year', 'semester', 'section_no',
             'course_code', 'name', 'college', 'department', 'major',
             'category', 'credits', 'professor', 'schedules',
         ]
