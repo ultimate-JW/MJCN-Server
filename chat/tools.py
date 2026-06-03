@@ -21,6 +21,7 @@ from courses.services import (
     MAX_NEXT_SEMESTER_RECOMMENDATIONS,
     _curriculum_first_slot,
     _resolve_offering_term,
+    build_completion_status,
     calc_graduation_progress,
     recommend_next_semester_courses,
 )
@@ -71,8 +72,24 @@ TOOLS_SCHEMA = [
         'function': {
             'name': 'get_graduation_progress',
             'description': (
-                '사용자의 졸업까지 진척도(%)를 반환한다. 졸업·이수율·남은 학기 류 질문에서 호출. '
-                '입학연도·졸업희망일 기반 단순 계산이며 학점 비율은 별도(추후 추가).'
+                '사용자의 졸업까지 **시간(날짜)** 진척도(%)를 반환한다. '
+                '"졸업까지 얼마나 남았어?" 처럼 입학~졸업희망일 사이 경과 비율을 묻는 질문에서만 호출. '
+                '학점 이수 현황(전공 몇 학점 등)은 이 tool이 아니라 get_completion_status를 쓴다.'
+            ),
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'get_completion_status',
+            'description': (
+                '사용자의 졸업요건 대비 **학점 이수현황**을 반환한다. '
+                '카테고리별(전공필수/전공선택/공통교양/핵심교양/학문기초교양/일반교양/자유선택) '
+                '이수·필요·잔여 학점 + 채플 회수 + 총 이수/필요/잔여 학점. '
+                '"내 이수현황", "전공 몇 학점 들었어", "졸업까지 학점 얼마나 남았어", '
+                '"필수전공 다 들었나" 류 질문에서 호출. '
+                '날짜 기준 진척도(%)는 get_graduation_progress로 별도.'
             ),
             'parameters': {'type': 'object', 'properties': {}, 'required': []},
         },
@@ -140,6 +157,8 @@ def dispatch_tool_call(user, name: str, arguments: dict[str, Any]) -> dict[str, 
             return _get_next_semester_courses(user, arguments)
         if name == 'get_graduation_progress':
             return _get_graduation_progress(user)
+        if name == 'get_completion_status':
+            return _get_completion_status(user)
         if name == 'search_notices':
             return _search_notices(arguments)
         if name == 'search_information':
@@ -191,7 +210,11 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
         '이 코드를 자연어로 풀어 과목마다 추천 이유를 설명할 것. '
         '각 과목의 offerings는 교수·시간이 다른 분반(section_no) 목록임. '
         '시간표를 짤 때는 한 과목당 분반 하나만 골라 그 분반의 schedules만 사용할 것. '
-        '서로 다른 분반의 시간을 한 과목으로 섞으면 실재하지 않는 시간표가 됨.'
+        '서로 다른 분반의 시간을 한 과목으로 섞으면 실재하지 않는 시간표가 됨. '
+        'status는 사용자의 현재 졸업요건 이수현황(카테고리별 잔여 학점·채플·총 잔여)임. '
+        '과목을 나열하기 전에 status를 근거로 현재 상황을 먼저 1~2줄 브리핑할 것 '
+        '(예: 학과·학년·학기, 이번 학기 제안 학점 합, 전공/교양 잔여 핵심). '
+        'status에 있는 값만 말하고 없는 수치는 지어내지 말 것.'
     )
     # fallback이면 AI가 사용자에게 기준 학기를 안내하도록 지시 문구를 덧붙임.
     # 핵심: 사용자의 '다음 학기'는 requested(2026-2)이고, 추천 데이터는 target(2025-2)이다.
@@ -216,6 +239,9 @@ def _get_next_semester_courses(user, args: dict[str, Any]) -> dict[str, Any]:
         'fallback_term': is_fallback_term,
         'count': len(top),
         'note': note,
+        # 현재 졸업요건 이수현황 — AI가 추천 나열 전 "현재 상황"을 브리핑하도록 동봉 (#브리핑).
+        # 추천 풀과 같은 응답에 실어, 별도 tool 호출 없이도 브리핑이 항상 가능하게 함.
+        'status': _compact_status(user),
         'courses': [
             {
                 'score': score,
@@ -260,6 +286,41 @@ def _get_graduation_progress(user) -> dict[str, Any]:
         'progress_percent': progress,
         'note': '입학년도와 졸업희망일 기반 시간 진척도. 학점 이수율은 별도.',
     }
+
+
+def _compact_status(user) -> dict[str, Any]:
+    """build_completion_status 결과를 추천 응답에 끼울 슬림 버전으로 축약.
+
+    추천 tool은 과목 풀까지 함께 실어 토큰 압박이 있으므로, 브리핑에 필요한 핵심만 남긴다 —
+    카테고리별 (completed/required/remaining) + 총계 + 채플. 영역(areas)·필수과목(required_courses)
+    상세는 제외 (그 디테일은 독립 tool get_completion_status에서 full로 제공).
+    """
+    full = build_completion_status(user)
+    return {
+        'categories': [
+            {
+                'category': c['category'],
+                'completed': c['completed'],
+                'required': c['required'],
+                'remaining': c['remaining'],
+            }
+            for c in full['categories']
+        ],
+        'chapel': full['chapel'],
+        'total_completed': full['total_completed'],
+        'total_required': full['total_required'],
+        'total_remaining': full['total_remaining'],
+    }
+
+
+def _get_completion_status(user) -> dict[str, Any]:
+    result = build_completion_status(user)
+    result['note'] = (
+        '졸업요건 대비 학점 이수현황 (학칙 7분류). categories[].remaining이 남은 학점, '
+        'areas는 공통/핵심교양 영역별 분해, required_courses는 전공필수/학문기초 필수과목 이수 여부. '
+        'chapel은 채플 이수 회수. 사용자에게 잔여 위주로 간결히 안내할 것.'
+    )
+    return result
 
 
 def serialize_tool_result(result: dict[str, Any]) -> str:
