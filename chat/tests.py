@@ -866,6 +866,22 @@ class SearchToolIntentRoutingTests(TestCase):
             self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 "{marker}" 가이드 누락')
 
 
+class NoDataGuardrailTests(TestCase):
+    """데이터 없는 영역(학식/도서관/취업 특정사실 등) 환각 금지 가드레일 (#3).
+
+    분류기 7카테고리 중 일반질문(학식/시설)·취업진로 일반상담은 백엔드 데이터가 없어,
+    프롬프트에 '지어내지 말고 모른다고 안내' 지침이 있어야 한다.
+    """
+
+    def test_system_prompt_has_no_data_guardrail(self):
+        from chat.prompts import CHAT_SYSTEM
+        # 데이터 없는 대표 영역이 명시돼야 함
+        for marker in ['학식', '도서관', '운영시간', '취업']:
+            self.assertIn(marker, CHAT_SYSTEM, f'CHAT_SYSTEM에 "{marker}" 가드레일 누락')
+        # 지어내지 말라는 환각 금지 지침
+        self.assertIn('지어내지', CHAT_SYSTEM)
+
+
 # ─── #131: 의도 질문(키워드 없는 최신 공지) fallback ─────────────────
 
 class IntentQueryFallbackTests(TestCase):
