@@ -1685,6 +1685,15 @@ class CompletionStatusDispatcherTests(TestCase):
             self.assertIn('areas', c)
             self.assertIn('required_courses', c)
 
+    def test_졸업가능_판정_feasibility_노출(self):
+        # "졸업 가능?" 답변용 feasibility가 응답 + note에 있어야 함 (#5)
+        out = dispatch_tool_call(self.user, 'get_completion_status', {})
+        self.assertIn('feasibility', out)
+        for key in ('remaining_semesters', 'on_track', 'blockers'):
+            self.assertIn(key, out['feasibility'])
+        self.assertIn('feasibility', out['note'])
+        self.assertIn('on_track', out['note'])
+
 
 class CourseHistoryDispatcherTests(TestCase):
     """챗 get_course_history — 사용자가 들은(이수 완료) 과목 목록 반환 (#211).

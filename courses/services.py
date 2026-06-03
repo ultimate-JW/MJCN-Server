@@ -336,12 +336,78 @@ def build_completion_status(user):
         'remaining': max(0, chapel_required - chapel_completed),
     }
 
-    return {
+    status = {
         'categories': categories,
         'chapel': chapel,
         'total_completed': total_completed,
         'total_required': graduation_total,
         'total_remaining': max(0, graduation_total - total_completed),
+    }
+    # 졸업 가능 판정 — 남은 학점만으로는 "졸업 가능?"을 못 답하므로 남은 학기·게이트와 결합 (#5).
+    status['feasibility'] = compute_graduation_feasibility(user, status)
+    return status
+
+
+# 졸업 가능 판정용 학기당 최대 수강학점 가정 (내부 튜닝, #25 안 B). 한국 4년제 일반 상한 수준.
+# "최대로 들으면 가능한가" 판정용이라 표준 default(18)가 아니라 상한(21)을 쓴다.
+GRAD_FEASIBILITY_SEMESTER_CAP = 21
+
+
+def compute_graduation_feasibility(user, status):
+    """이수현황(status) + 남은 학기 수로 '졸업 가능 여부'를 판정한다 (#5).
+
+    남은 학점(total_remaining)만으로는 "졸업 가능?"을 답할 수 없다. (남은 학기 × 학기당 상한)
+    으로 도달 가능 학점을 만들어 비교하고, 학점 외 게이트(미이수 전공필수/학문기초 과목, 채플)를
+    blockers로 모은다. 판정 로직/입력이 없어 LLM이 가능 여부를 지어내던 결함 해소.
+
+    남은 학기: grade/semester 기반의 '현재 학기 이후' 학기 수. 현재 수강분(CurrentCourse)은
+    이미 status.completed에 반영돼 있으므로 향후 학기만 센다. grade/semester 미입력이면
+    timeline 판정 불가 → remaining_semesters/on_track = None (게이트 blockers는 그대로 산출).
+    """
+    total_remaining = status['total_remaining']
+
+    # 남은 학기(현재 학기 이후). 초과학기(4-2 이후)는 0으로 깔림 → on_track 판정이 그걸 드러냄.
+    if user.grade is not None and user.semester is not None:
+        remaining_semesters = max((4 - user.grade) * 2 + (2 - user.semester), 0)
+        max_attainable = remaining_semesters * GRAD_FEASIBILITY_SEMESTER_CAP
+        # 남은 학점이 향후 학기 용량 안에 들어오면 (학점 기준) 일정상 졸업 가능
+        on_track = total_remaining <= max_attainable
+    else:
+        remaining_semesters = None
+        max_attainable = None
+        on_track = None
+
+    blockers = []
+    # 학점이 남은 학기 용량을 초과 — timeline 판정 가능할 때만 (R=0 & 잔여>0 케이스 포함)
+    if on_track is False:
+        blockers.append({
+            'code': 'credits_over_capacity',
+            'meta': {
+                'remaining_credits': total_remaining,
+                'remaining_semesters': remaining_semesters,
+                'max_attainable': max_attainable,
+            },
+        })
+    # 미이수 전공필수/학문기초 필수과목 — 학점 채워도 이 과목 못 들으면 졸업 불가
+    unmet = []
+    for c in status['categories']:
+        for rc in (c['required_courses'] or []):
+            if not rc['completed']:
+                unmet.append(rc['name'])
+    if unmet:
+        blockers.append({'code': 'unmet_required_courses', 'meta': {'courses': unmet}})
+    # 채플 미충족
+    chapel_remaining = status['chapel']['remaining']
+    if chapel_remaining > 0:
+        blockers.append({'code': 'chapel_short', 'meta': {'remaining': chapel_remaining}})
+
+    return {
+        'remaining_semesters': remaining_semesters,   # 현재 학기 이후 남은 학기 (None=판정불가)
+        'per_semester_cap': GRAD_FEASIBILITY_SEMESTER_CAP,
+        'max_attainable_credits': max_attainable,     # 향후 학기에 최대로 채울 수 있는 학점
+        'remaining_credits': total_remaining,
+        'on_track': on_track,                         # 학점 기준 일정상 졸업 가능 (None=판정불가)
+        'blockers': blockers,                         # 졸업을 막는 요인 머신 코드 목록
     }
 
 

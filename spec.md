@@ -1211,6 +1211,13 @@ LLM이 사용자 답변("21학점 빡세게", "교양 위주" 등)을 받아 아
     sum(max(필요학점 - 이수학점, 0))
     ```
 
+- **졸업 가능 판정** (`feasibility`) — "졸업 가능해?"를 학점만으로 답할 수 없어, 남은 학기와 게이트를 결합해 판정한다.
+  - `remaining_semesters` : 현재 학기 이후 남은 학기 수 (`(4-학년)*2 + (2-학기)`, 현재 수강분은 이미 이수에 반영되므로 향후 학기만). 학년/학기 미입력 시 `null`.
+  - `per_semester_cap` : 학기당 최대 수강학점 가정 (내부 튜닝 상수, CLAUDE.md 관리).
+  - `max_attainable_credits` : `remaining_semesters × per_semester_cap` (판정 불가 시 `null`).
+  - `on_track` : 남은 학점 ≤ `max_attainable_credits` 이면 일정상 졸업 가능 (`true`/`false`/`null`).
+  - `blockers` : 졸업을 막는 요인 머신 코드 목록 — `credits_over_capacity` / `unmet_required_courses` / `chapel_short` (각 `{code, meta}`).
+
 #### 5.3.4 졸업일 추정
 
 - 사용자의 졸업 희망 연도 및 졸업 희망 월을 기준으로 예상 졸업일을 계산한다.

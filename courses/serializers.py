@@ -133,12 +133,32 @@ class ChapelStatusSerializer(serializers.Serializer):
     remaining = serializers.IntegerField()
 
 
+class GraduationBlockerSerializer(serializers.Serializer):
+    """졸업을 막는 요인 1개 (#5). meta는 코드별로 키가 달라 DictField로 둔다.
+    code: credits_over_capacity / unmet_required_courses / chapel_short."""
+    code = serializers.CharField()
+    meta = serializers.DictField(required=False)
+
+
+class GraduationFeasibilitySerializer(serializers.Serializer):
+    """졸업 가능 판정 (#5). 남은 학점 + 남은 학기 × 학기당 상한 비교 + 게이트.
+    grade/semester 미입력 시 remaining_semesters/max_attainable_credits/on_track = null."""
+    remaining_semesters = serializers.IntegerField(allow_null=True)
+    per_semester_cap = serializers.IntegerField()
+    max_attainable_credits = serializers.IntegerField(allow_null=True)
+    remaining_credits = serializers.IntegerField()
+    on_track = serializers.BooleanField(allow_null=True)
+    blockers = GraduationBlockerSerializer(many=True)
+
+
 class CompletionStatusSerializer(serializers.Serializer):
     categories = CategoryCreditsSerializer(many=True)
     chapel = ChapelStatusSerializer()
     total_completed = serializers.IntegerField()
     total_required = serializers.IntegerField()
     total_remaining = serializers.IntegerField()
+    # 졸업 가능 판정 (#5) — 남은 학점만으로 못 답하던 "졸업 가능?" 결합 판정.
+    feasibility = GraduationFeasibilitySerializer()
 
 
 class RecommendedOfferingSerializer(serializers.Serializer):

@@ -575,7 +575,15 @@ def _get_completion_status(user) -> dict[str, Any]:
     result['note'] = (
         '졸업요건 대비 학점 이수현황 (학칙 7분류). categories[].remaining이 남은 학점, '
         'areas는 공통/핵심교양 영역별 분해, required_courses는 전공필수/학문기초 필수과목 이수 여부. '
-        'chapel은 채플 이수 회수. 사용자에게 잔여 위주로 간결히 안내할 것.'
+        'chapel은 채플 이수 회수. 사용자에게 잔여 위주로 간결히 안내할 것. '
+        # 졸업 가능 판정 (#5) — "졸업 가능해?" 류 질문은 이 feasibility로 답할 것.
+        'feasibility는 졸업 가능 판정: on_track=true면 남은 학기(remaining_semesters) 안에 '
+        '남은 학점을 채울 수 있다(학기당 최대 per_semester_cap학점 가정). on_track=false면 일정상 '
+        '추가 학기가 필요하다. on_track=null이면 학년/학기 미입력으로 일정 판정 불가. '
+        'blockers는 졸업을 막는 요인 — credits_over_capacity(남은 학기로 학점 부족), '
+        'unmet_required_courses(미이수 전공필수/학문기초 과목, meta.courses), chapel_short(채플 부족). '
+        '"졸업 가능해?"엔 on_track + blockers를 근거로 답하고, blockers의 수치/과목만 말하며 '
+        '없는 근거(남은 학기·상한 등)를 지어내지 말 것. on_track=null이면 학년·학기 입력을 권할 것.'
     )
     return result
 
