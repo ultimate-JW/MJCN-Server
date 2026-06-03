@@ -1551,7 +1551,7 @@ grounded 값으로 주입한다. 직무 도메인 지식(클라우드 기술 스
 
 - **엔드포인트**: `GET /api/v1/notices/?view=personalized` (기본값, 맞춤형) / `?view=all` (전체보기)
 - **정렬 기준**:
-  - `view=personalized`: **`match_score >= 1`인 공지만 필터**한 뒤 `match_score` 내림차순 → 동점 시 `published_at` 최신순. 관심사에 매칭된 공지만 노출하는 "맞춤형" 피드 (개수가 줄어 `all`과 명확히 구분).
+  - `view=personalized`: **`match_score >= 1`인 공지만 필터**한 뒤 **`published_at` 최신순** 정렬. 관심사에 매칭된 공지만 최신순으로 노출하는 "맞춤형" 피드 (개수가 줄어 `all`과 구분). `match_score`는 **필터 기준으로만** 쓰고 정렬 키로는 사용하지 않음(응답에는 계속 노출).
   - `view=all`: 전체 공지, `published_at` 최신순 단일 키 (비개인화).
 - **응답에 점수 노출**: `match_score` 필드 — 관심사 ↔ `Notice.tags` 매칭 점수. **두 view 모두 실제 값으로 계산**해 응답에 포함한다 (`view=all`에서도 0으로 강제하지 않음).
 - **매칭 0 제외 (personalized)**: personalized는 매칭 0인 공지를 응답에서 제외한다. 관심사 미설정 사용자는 personalized 결과가 빈다 (온보딩에서 관심사 설정 강제). 전체 공지는 `view=all`에서 열람.
