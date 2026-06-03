@@ -123,6 +123,25 @@ class ScoreMatchTests(TestCase):
         # 토큰 단위 완전 일치만 — '공기업'은 '공기업체관리'에 매칭 안 됨 (오탐 방지)
         self.assertEqual(score_match({'공기업'}, ['공기업체관리']), 0)
 
+    def test_IT개발_관심사가_AI태그_매칭_207(self):
+        # #207: 카테고리 동의어 확장 — 'it/개발' → AI 도메인으로 확장
+        self.assertEqual(score_match({'it/개발'}, ['AI']), 1)
+        self.assertEqual(score_match({'it/개발'}, ['인공지능', '공모전']), 1)
+
+    def test_카테고리_동의어_확장_전반_207(self):
+        # 12개 카테고리 전반 — IT만이 아님
+        self.assertEqual(score_match({'디자인'}, ['UX', '포스터']), 1)
+        self.assertEqual(score_match({'금융/회계'}, ['핀테크']), 1)
+        self.assertEqual(score_match({'미디어/콘텐츠'}, ['유튜브', '크리에이터']), 1)
+
+    def test_비카테고리_키워드는_확장안됨_207(self):
+        # 전공명 등 자유 텍스트는 카테고리가 아니라 확장 X (정확 토큰만)
+        self.assertEqual(score_match({'컴퓨터공학전공'}, ['ai']), 0)
+
+    def test_카테고리_동의어도_관심사당_최대_1점_207(self):
+        # 'it/개발' 하나가 여러 동의어 태그에 걸려도 1점 (인플레 방지)
+        self.assertEqual(score_match({'it/개발'}, ['ai', 'sw', '개발']), 1)
+
 
 class SortByMatchTests(TestCase):
     """sort_by_match — 점수 부여 + 정렬."""
