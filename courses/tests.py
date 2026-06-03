@@ -29,6 +29,7 @@ from courses.services import (
     PENALTY_GRADE_EXCEEDED,
     PENALTY_PREREQUISITE_MISSING,
     calculate_recommendation_score,
+    recommendation_reasons,
 )
 
 User = get_user_model()
@@ -1714,6 +1715,79 @@ class CalculateScoreTests(SimpleTestCase):
             completed_course_ids=set(),
         )
         self.assertEqual(score, 100)
+
+
+class RecommendationReasonsTests(SimpleTestCase):
+    """`recommendation_reasons` — 추천 이유 코드가 score 함수 가산 분기와 일치하는지 (#202).
+
+    점수와 무관한 표시 전용 함수. 가산(+) 신호만 코드로 반환하고 감점은 제외한다.
+    """
+
+    def _course(self, **kwargs):
+        defaults = dict(
+            course_code='TEST001', name='테스트과목',
+            category='전공선택', year_open=1, semester_open=2, major='기타전공',
+        )
+        defaults.update(kwargs)
+        return Course(**defaults)
+
+    def _reasons(self, course, **overrides):
+        # baseline: 2학년 1학기, 관심사·부족카테고리 없음 → course 기본(전공선택 1-2 타과)과 합쳐 빈 리스트
+        defaults = dict(
+            user_grade=2, user_semester=1,
+            user_interest_categories=set(), short_categories=set(), course_tags=[],
+        )
+        defaults.update(overrides)
+        return recommendation_reasons(course, **defaults)
+
+    def test_baseline은_빈_리스트(self):
+        self.assertEqual(self._reasons(self._course()), [])
+
+    def test_전공필수_major_required(self):
+        self.assertIn('major_required', self._reasons(self._course(category='전공필수')))
+
+    def test_지정영역_designated_required(self):
+        # 공통교양은 DESIGNATED_CATEGORIES — 졸업 의무 영역 가산
+        self.assertIn('designated_required', self._reasons(self._course(category='공통교양')))
+
+    def test_부족카테고리_category_short(self):
+        course = self._course(category='전공선택')
+        # 키는 (category, liberal_subtype, core_area) 트리플 — 전공은 둘 다 None
+        reasons = self._reasons(course, short_categories={('전공선택', None, None)})
+        self.assertIn('category_short', reasons)
+
+    def test_관심사_interest_match(self):
+        course = self._course(tags=['IT/개발'])
+        reasons = self._reasons(
+            course, user_interest_categories={'IT/개발'}, course_tags=['IT/개발'],
+        )
+        self.assertIn('interest_match', reasons)
+
+    def test_권장학년학기일치_grade_semester_match(self):
+        # 2학년 1학기 학생 + year_open=2/semester_open=1 과목
+        course = self._course(year_open=2, semester_open=1)
+        self.assertIn('grade_semester_match', self._reasons(course))
+
+    def test_밀린필수_backlog_required(self):
+        # 1학년 전공필수를 2학년이 아직 안 들음 → 밀린 필수
+        course = self._course(category='전공필수', year_open=1)
+        self.assertIn('backlog_required', self._reasons(course))
+
+    def test_학년초과_감점은_이유에_없음(self):
+        # year_open=3 > 사용자 2학년 → score는 -10이지만 추천 이유 아님 (감점 제외)
+        course = self._course(category='전공선택', year_open=3)
+        reasons = self._reasons(course)
+        self.assertNotIn('grade_semester_match', reasons)
+        self.assertNotIn('backlog_required', reasons)
+        self.assertEqual(reasons, [])
+
+    def test_전학년_sentinel은_학년이유_skip(self):
+        # year_open=0 (전학년) → 학년/학기 관련 이유 전부 미발동
+        course = self._course(category='전공필수', year_open=0, semester_open=1)
+        reasons = self._reasons(course)
+        self.assertIn('major_required', reasons)        # 카테고리 가산은 정상
+        self.assertNotIn('grade_semester_match', reasons)
+        self.assertNotIn('backlog_required', reasons)
 
 
 class ImportPrerequisitesFromCsvTests(TestCase):
