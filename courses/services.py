@@ -13,6 +13,7 @@ View / dashboard / chat 등 여러 곳에서 재사용 가능한 도메인 로�
 """
 
 import re
+from collections import defaultdict
 from datetime import date
 
 from django.db.models import Prefetch, Q
@@ -24,7 +25,11 @@ from .career_roadmap import (
     NOTE_UNSUPPORTED_CAREER_GOAL,
     build_career_roadmap,
 )
-from .required_courses import MAJOR_DEPT_PREFIXES, MAJOR_REQUIRED_BY_MAJOR
+from .required_courses import (
+    MAJOR_DEPT_PREFIXES,
+    MAJOR_REQUIRED_BY_MAJOR,
+    get_required_courses,
+)
 from .models import (
     AcademicCalendar,
     Course,
@@ -202,6 +207,142 @@ def calc_graduation_progress(user):
 
     pct = round((today - start_date).days / total_days * 100)
     return max(0, min(100, pct))  # 부동소수점 반올림 보정 — 0~100 범위 강제
+
+
+# ────────────────────────────────────────
+# 이수현황 집계 (spec — 졸업요건 대비 카테고리별 이수/필요/잔여)
+# ────────────────────────────────────────
+
+# 카테고리 → 응답 areas 분해 대상 (공통교양 / 핵심교양 — core_area 4영역) (#68)
+_AREA_DECOMPOSED_CATEGORIES = ('공통교양', '핵심교양')
+
+
+def build_completion_status(user):
+    """
+    졸업요건 대비 사용자의 이수현황을 집계해 dict로 반환한다.
+
+    CompletionStatusView(GET /api/v1/courses/status/)의 응답 본문 로직을 그대로
+    옮긴 순수 도메인 함수. view와 chat tool(get_completion_status)이 공유한다 —
+    챗이 "다음학기 추천 전 현재 상황 브리핑"에 쓸 학점 현황을 같은 출처에서 얻게 하기 위함.
+
+    반환 dict 구조 (CompletionStatusSerializer 입력과 동일):
+      {
+        'categories': [
+          {'category', 'completed', 'required', 'remaining', 'areas', 'required_courses'}, ...
+        ],                                   # 학칙 7분류
+        'chapel': {'completed', 'required', 'remaining'},
+        'total_completed', 'total_required', 'total_remaining',
+      }
+    """
+    from accounts.models import CourseHistory, CurrentCourse
+
+    # 카테고리별 이수학점 합산
+    completed_by_category = defaultdict(int)
+    # 카테고리 + 영역별 이수학점 (공통교양/핵심교양 영역 분해용, #68)
+    completed_by_area = defaultdict(int)  # key: (category, core_area)
+    # 학생이 이수한 과목명 set (전공필수/학문기초 과목별 충족 판정용, #68)
+    completed_course_names = set()
+
+    for h in CourseHistory.objects.filter(user=user):
+        completed_by_category[h.category] += h.credits
+        if h.core_area:
+            completed_by_area[(h.category, h.core_area)] += h.credits
+        if h.course_name:
+            completed_course_names.add(h.course_name)
+
+    # 현재 수강 중인 과목도 포함 (course_code로 Course 매칭)
+    for cc in CurrentCourse.objects.filter(user=user):
+        course = Course.objects.filter(course_code=cc.course_code).first()
+        if course:
+            completed_by_category[course.category] += course.credits
+            if course.core_area:
+                completed_by_area[(course.category, course.core_area)] += course.credits
+            completed_course_names.add(course.name)
+
+    # 졸업요건 조회
+    requirements = GraduationRequirement.objects.filter(
+        department=user.major,
+        admission_year=user.admission_year,
+    )
+
+    # 자유선택 overflow 자동 합산 (graduation_requirements.md §6) — 다른 카테고리 required 초과분이 자유선택 채움.
+    # 예) 전공 70 required인데 71학점 들으면 초과 1학점이 자유선택으로 자동 인정.
+    overflow = 0
+    for cat in ['전공필수', '전공선택', '공통교양', '핵심교양', '학문기초교양', '일반교양']:
+        cat_required = sum(r.required_credits for r in requirements.filter(category=cat))
+        cat_done = completed_by_category.get(cat, 0)
+        if cat_done > cat_required:
+            overflow += cat_done - cat_required
+    completed_by_category['자유선택'] = completed_by_category.get('자유선택', 0) + overflow
+
+    total_required = 0
+    total_completed = 0
+    categories = []
+
+    # 학칙 7분류 순회 (#47 Phase 3). 핵심교양은 GR이 4영역으로 분해돼 있어 sum 필요.
+    for cat in ['전공필수', '공통교양', '핵심교양', '학문기초교양', '전공선택', '일반교양', '자유선택']:
+        cat_reqs = requirements.filter(category=cat)
+        required = sum(r.required_credits for r in cat_reqs)
+        completed = completed_by_category.get(cat, 0)
+        remaining = max(0, required - completed)
+        total_required += required
+        total_completed += completed
+
+        # 영역 분해 (공통교양 / 핵심교양) — GR core_area row를 1:1 펼침 (#68)
+        areas = None
+        if cat in _AREA_DECOMPOSED_CATEGORIES:
+            areas = [
+                {
+                    'area': req.core_area,
+                    'completed': completed_by_area.get((cat, req.core_area), 0),
+                    'required': req.required_credits,
+                    'remaining': max(0, req.required_credits - completed_by_area.get((cat, req.core_area), 0)),
+                }
+                for req in cat_reqs if req.core_area
+            ]
+
+        # 필수 과목 분해 (전공필수 / 학문기초교양) — 학과별 강제 과목 cross-check (#68)
+        required_courses = None
+        course_names = get_required_courses(cat, user.major)
+        if course_names:
+            required_courses = [
+                {'name': name, 'completed': name in completed_course_names}
+                for name in course_names
+            ]
+
+        categories.append({
+            'category': cat,
+            'completed': completed,
+            'required': required,
+            'remaining': remaining,
+            'areas': areas,
+            'required_courses': required_courses,
+        })
+
+    # 졸업 총학점 — GR 어디서든 total_required 가져옴 (모든 row 동일값)
+    first_req = requirements.first()
+    graduation_total = first_req.total_required if first_req else 0
+
+    # 채플 이수 회수 (graduation_requirements.md §2.1)
+    # 학번별 required: 1996~1998 = 2회 / 1999학번 이후 = 4회 / 학번 미입력 시 4회 default
+    if user.admission_year and 1996 <= user.admission_year <= 1998:
+        chapel_required = 2
+    else:
+        chapel_required = 4
+    chapel_completed = user.chapel_count or 0
+    chapel = {
+        'completed': chapel_completed,
+        'required': chapel_required,
+        'remaining': max(0, chapel_required - chapel_completed),
+    }
+
+    return {
+        'categories': categories,
+        'chapel': chapel,
+        'total_completed': total_completed,
+        'total_required': graduation_total,
+        'total_remaining': max(0, graduation_total - total_completed),
+    }
 
 
 # ────────────────────────────────────────

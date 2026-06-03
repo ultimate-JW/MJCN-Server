@@ -1544,3 +1544,127 @@ class NextSemesterReasonsDispatcherTests(TestCase):
         # AI가 코드 의미를 알도록 note에 reasons 해설이 있어야 함
         self.assertIn('reasons', out['note'])
         self.assertIn('major_required', out['note'])
+
+
+# ─── 챗 추천 응답에 현재 상황 브리핑(이수현황 status) 동봉 ──────────────────
+from courses.models import GraduationRequirement as _GraduationRequirement  # noqa: E402
+from accounts.models import CourseHistory as _CourseHistory  # noqa: E402
+
+
+class NextSemesterStatusBriefingTests(TestCase):
+    """챗 get_next_semester_courses 응답에 사용자의 졸업요건 이수현황(status)이 실려야 한다.
+
+    그동안 챗 추천은 과목만 나열하고 "현재 상황"(전공 몇 학점·필수 잔여 등)을 브리핑할
+    데이터가 없었음. status를 동봉해 AI가 추천 전 브리핑할 수 있게 한다.
+    """
+
+    def setUp(self):
+        self.user = make_user('briefing@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.grade = 2
+        self.user.semester = 1
+        self.user.admission_year = 2024
+        self.user.chapel_count = 1
+        self.user.save()
+        # 졸업요건 — 전공필수 42 / 전공선택 24
+        _GraduationRequirement.objects.create(
+            department='컴퓨터공학', admission_year=2024,
+            category='전공필수', required_credits=42, total_required=130,
+        )
+        _GraduationRequirement.objects.create(
+            department='컴퓨터공학', admission_year=2024,
+            category='전공선택', required_credits=24, total_required=130,
+        )
+        # 이수이력 — 전공필수 3학점
+        _CourseHistory.objects.create(
+            user=self.user, course_name='프로그래밍기초', course_code='CSE1001',
+            year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+        )
+        # 추천 풀에 들어갈 과목 1개
+        self.course = _Course.objects.create(
+            course_code='CSE2300', name='자료구조', college='ICT융합대학',
+            department='융합소프트웨어학부', major='컴퓨터공학',
+            category='전공필수', credits=3, year_open=2, semester_open=1,
+        )
+        _CourseOffering.objects.create(
+            course=self.course, year=2026, semester=1,
+            section_no='01', professor='김교수',
+        )
+
+    def test_추천_응답에_status_블록_존재(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        self.assertIn('status', out)
+        status_blk = out['status']
+        # 7분류 카테고리 + 총계 + 채플
+        self.assertEqual(len(status_blk['categories']), 7)
+        self.assertEqual(status_blk['total_required'], 130)
+        self.assertEqual(status_blk['chapel']['required'], 4)
+        self.assertEqual(status_blk['chapel']['completed'], 1)
+
+    def test_status_카테고리에_잔여학점_반영(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        major = next(
+            c for c in out['status']['categories'] if c['category'] == '전공필수'
+        )
+        self.assertEqual(major['completed'], 3)
+        self.assertEqual(major['remaining'], 39)  # 42 - 3
+
+    def test_compact_status는_areas_상세_제외(self):
+        # 추천 응답의 status는 토큰 가드용 슬림 버전 — 영역/필수과목 상세는 빼고 학점만
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        for c in out['status']['categories']:
+            self.assertNotIn('areas', c)
+            self.assertNotIn('required_courses', c)
+
+    def test_note에_브리핑_지침_포함(self):
+        out = dispatch_tool_call(
+            self.user, 'get_next_semester_courses',
+            {'target_year': 2026, 'target_semester': 1},
+        )
+        # AI가 추천 전 status로 브리핑하도록 note에 지침이 있어야 함
+        self.assertIn('status', out['note'])
+        self.assertIn('브리핑', out['note'])
+
+
+class CompletionStatusDispatcherTests(TestCase):
+    """챗 독립 tool get_completion_status — 학점 이수현황 full 반환."""
+
+    def setUp(self):
+        self.user = make_user('status@mju.ac.kr')
+        self.user.major = '컴퓨터공학'
+        self.user.admission_year = 2024
+        self.user.save()
+        _GraduationRequirement.objects.create(
+            department='컴퓨터공학', admission_year=2024,
+            category='전공필수', required_credits=42, total_required=130,
+        )
+        _CourseHistory.objects.create(
+            user=self.user, course_name='프로그래밍기초', course_code='CSE1001',
+            year=2024, semester=1, grade_received='A', category='전공필수', credits=3,
+        )
+
+    def test_이수현황_dispatch_반환(self):
+        out = dispatch_tool_call(self.user, 'get_completion_status', {})
+        self.assertIn('categories', out)
+        self.assertIn('chapel', out)
+        self.assertEqual(out['total_required'], 130)
+        self.assertEqual(out['total_completed'], 3)
+        self.assertIn('note', out)
+        major = next(c for c in out['categories'] if c['category'] == '전공필수')
+        self.assertEqual(major['remaining'], 39)
+
+    def test_full_status는_areas_required_courses_키_포함(self):
+        # 독립 tool은 슬림 아님 — 영역/필수과목 분해 키가 있어야 함 (None이어도 키 존재)
+        out = dispatch_tool_call(self.user, 'get_completion_status', {})
+        for c in out['categories']:
+            self.assertIn('areas', c)
+            self.assertIn('required_courses', c)
