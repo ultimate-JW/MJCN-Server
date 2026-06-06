@@ -100,6 +100,11 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 ├── dashboard/               # 메인화면 데이터 집계 API
 │   ├── views.py
 │   └── urls.py
+├── msi/                     # 명지대 SSO/MSI 학사정보 연동 (§9.5) — 구현 예정
+│   ├── serializers.py       # sync payload 검증
+│   ├── views.py             # POST /msi/sync/ — 기존 모델에 트랜잭션 upsert
+│   ├── mapping.py           # MSI 이수구분 → 7분류 매핑 (모델 없음)
+│   └── urls.py
 ├── common/                  # 공통 유틸, 미들웨어, 권한 클래스
 │   ├── permissions.py       # 커스텀 DRF 권한
 │   ├── pagination.py        # 공통 페이지네이션
@@ -118,6 +123,7 @@ CapstoneDesign/              # 프로젝트 설정 (settings, urls, wsgi)
 | `information` | 정보(공모전 등) 크롤링/저장, 통합 조회 API | 4.2 |
 | `notifications` | 알림 생성, 조회 API, 읽음 처리, 스케줄링 | 2.2, 7 |
 | `dashboard` | 메인화면 데이터 집계 API (시간표, 공지, 정보 등) | 6 |
+| `msi` | 명지대 SSO/MSI 학사정보 동기화 (클라 수집 → 기존 모델 적재). 모델 없음 | 9.5 |
 | `common` | 공통 권한, 페이지네이션, mixin, 유틸 | - |
 
 ---
@@ -1916,6 +1922,66 @@ score = 콘텐츠 태그 토큰과 하나라도 겹치는 사용자 관심사의
 | POST | `/api/v1/accounts/current-courses/` | O | 현재 수강과목 추가 — body `{offering_id}` 한 개로 7개 평문 필드 자동 hydrate (#149). 분반 검색은 `/api/v1/courses/offerings/` 사용. 응답에 `offering_id` 포함 (#226) — 프론트가 PUT 재전송·분반 역추적용 |
 | PUT | `/api/v1/accounts/current-courses/<id>/` | O | 현재 수강과목 수정 |
 | DELETE | `/api/v1/accounts/current-courses/<id>/` | O | 현재 수강과목 삭제 |
+| POST | `/api/v1/msi/sync/` | O | **MSI 학사정보 일괄 동기화** (msi 앱, §9.5). 클라가 MSI에서 긁어 정규화한 프로필+이수내역+시간표를 받아 `User`/`CourseHistory`/`CurrentCourse`에 트랜잭션 upsert. 비번·세션쿠키 미포함. 위 수동 입력 API는 fallback으로 병존 |
+
+#### MSI 학사정보 동기화 (msi) — `POST /api/v1/msi/sync/`
+
+전체 아키텍처·원칙·매핑은 §9.5 참고. 클라(WebView)가 수집·파싱한 정제 JSON만 전송한다.
+
+요청:
+```json
+{
+  "profile": {
+    "student_no": "60212158",
+    "major": "융합소프트웨어학부",
+    "admission_year": 2021,
+    "grade": 4,
+    "semester": 1,
+    "chapel_count": 4
+  },
+  "course_history": [
+    {
+      "course_code": "HSS01101",
+      "course_name": "기독교와현대사회",
+      "year": 2021, "semester": 1,
+      "credits": 2,
+      "grade_received": "A+",
+      "category_raw": "교양"
+    }
+  ],
+  "current_courses": [
+    {
+      "course_code": "CSE01234",
+      "course_name": "캡스톤디자인",
+      "day_of_week": "월",
+      "start_time": "09:00", "end_time": "10:50",
+      "professor": "홍길동", "room": "S1234"
+    }
+  ]
+}
+```
+
+성공 응답 (200 OK):
+```json
+{
+  "profile_updated": true,
+  "course_history": { "created": 42, "updated": 3, "unmapped_category": 1 },
+  "current_courses": { "replaced": 6, "offering_matched": 5 },
+  "warnings": [
+    "course_code HSS01101: category_raw '교양' 7분류 매핑 실패 → 스킵",
+    "course_code CSE09999: Course 카탈로그 미존재 → liberal_subtype/core_area 미채움"
+  ]
+}
+```
+
+처리 규칙:
+- `category_raw`(MSI 원본 이수구분)는 서버가 7분류(`Course.CATEGORY_CHOICES`)로 매핑(§9.5.7). 매핑 실패 행은 스킵하고 `warnings`에 기록(전체 실패 아님 — 부분 적재).
+- `course_history`는 `(user, course_code, year, semester)` 기준 `update_or_create`. `current_courses`는 사용자 이번학기 행 full replace. 전체 `transaction.atomic`.
+- `current_courses[].offering_id`는 서버가 카탈로그 매칭으로 best-effort 채움(미매칭 null).
+
+오류 응답:
+- `400 Bad Request` — payload 스키마 오류(필수 필드 누락·타입 불일치)
+- `401 Unauthorized` — 우리 JWT 누락/만료
 
 ### 6.5 AI 채팅 (chat)
 
@@ -2789,6 +2855,96 @@ Notice.extracted_content에 추출 텍스트 저장
 ### 9.4 이메일 발송
 
 - Django `send_mail` + SMTP 설정 (Gmail SMTP 또는 운영용 메일 서버)
+
+### 9.5 명지대 통합로그인(SSO) / MSI 학사정보 연동 (msi)
+
+> 상태: **설계 확정 / 구현 예정** (별도 `msi` 앱 + 클라 스크래퍼). 사용자가 매 학기 수동으로 입력하던 수강이력·시간표·이수현황을 명지대 학사정보시스템(MSI)에서 자동으로 끌어와 채우는 것이 목적. chat·themes·courses의 기존 기능들이 이미 `CourseHistory`/`CurrentCourse`/프로필을 소비하도록 구현돼 있으므로(§4.3·§5.2·§5.3), 이 연동은 **새 기능이 아니라 그 기능들을 "데모용"에서 "실사용 가능"으로 끌어올리는 데이터 적재층**이다.
+
+#### 9.5.1 배경 — 명지대 SSO는 표준 OIDC이나 외부 client 등록이 블로커
+
+- 명지대 통합로그인(`https://sso.mju.ac.kr`)은 **표준 OpenID Connect Provider**다. `/.well-known/openid-configuration`이 공개돼 있고 Authorization Code + PKCE(S256), RS256 id_token, scope `openid/email/profile`을 지원한다. MSI는 `client_id=msi`로 이 SSO의 OIDC 클라이언트로 동작한다.
+- 따라서 **정식 경로**는 전산정보원에 `client_id`/`client_secret` + redirect_uri 등록을 받아 우리도 OIDC 클라이언트가 되는 것이다(카카오 로그인과 동일 패턴, §6.1). 이 경우 "명지대로 로그인" 1탭 + 비번 무접촉으로 인증이 끝난다.
+- 그러나 **승인 발급 여부는 기관 정책**이며 외부 학생 앱에 열어줄지 불확실하다. 또한 표준 OIDC claim은 `sub/email/name`뿐이라 **학번·학과·이수내역 등 학사 데이터는 SSO만으로 얻을 수 없다**(인증 ≠ 학사데이터 접근).
+- 결론: **승인 없이도 가치를 내기 위해 아래 "B안(클라 대리 조회)"을 1차 구현으로 채택**한다. 추후 전산정보원 OIDC client 승인을 받으면 *인증 부분*만 정식 OAuth로 교체하는 경로를 남겨둔다(데이터 적재층은 그대로 재사용).
+
+#### 9.5.2 채택안(B) vs 비채택안(C)
+
+| | **B안 — 클라 대리 조회 (채택)** | C안 — 서버 자격증명 보관 (비채택) |
+|---|---|---|
+| 로그인 위치 | 사용자 기기의 **WebView**에서 본인이 직접 | 우리 서버가 저장한 비번으로 대리 로그인 |
+| 비밀번호 | **서버·제3자에 절대 미저장·미전송** | 암호화해 vault 저장 (마스터 비번 보관) |
+| 2FA/키보드보안 | 실제 SSO 페이지라 정상 동작(사용자가 처리) | 우회 필요 → 정보통신망법 리스크 |
+| 데이터 갱신 | 세션 살아있는 동안 클라가 수집(재연동 시 갱신) | 서버가 아무때나 재로그인 → 상시 갱신 |
+| 리스크 | ToS·페이지 변경 취약성 | 비번 보관 책임(PIPA)·우회 위법성 + 위 전부 |
+
+- C안은 경쟁 서비스(예: Discord 봇 "몽몽이/mjuclaw")가 택한 방식으로, 학번/비번을 Discord 모달로 받아 vault에 저장한다. **마스터 비번을 보관·제3자(Discord) 경유**하는 구조라 리스크가 가장 크다. 우리는 B안으로 이 리스크를 구조적으로 회피하는 것을 보안 차별점으로 삼는다.
+
+#### 9.5.3 핵심 원칙
+
+1. **비밀번호·SSO 세션쿠키는 우리 서버에 저장하지도, 전송받지도 않는다.** 전적으로 사용자 기기 WebView 안에서만 존재한다.
+2. **스크래핑·HTML 파싱은 전부 클라(앱)에서** 수행한다. 서버는 정제·정규화된 JSON만 받는다.
+3. 서버의 AI(LLM)는 MSI에 직접 접근하지 않는다. **이미 DB에 적재된 데이터만** 읽고 추론한다(§9.5.6).
+4. 기존 수동 입력 API(§6.4)는 **fallback으로 유지**한다(미연동 사용자·스크래퍼 장애·비명지대 케이스).
+
+#### 9.5.4 아키텍처 흐름
+
+```
+[앱 WebView (기기, 세션 보유)]                 [백엔드 (msi 앱)]            [DB]
+  ① 사용자가 직접 SSO 로그인
+     (2FA·키보드보안 모두 기기에서)
+  ② 세션(JSESSIONID)으로 MSI 메뉴 접근
+     - 학적/장학  → 학번·학과·입학년도·이수내역·성적
+     - 교과/수강  → 수강신청내역·시간표·학점이월
+  ③ 클라에서 HTML 파싱 → 정규화 JSON
+     (세션 약 30분 안에 한 번에 수집)
+  │ ── ④ POST /api/v1/msi/sync/ (우리 JWT) ──▶ ⑤ payload 스키마 검증
+  │     body = 정제 JSON만                      ⑥ transaction.atomic:
+  │     (비번·세션쿠키 미포함)                     - User 프로필 갱신   ─▶ User
+  │                                              - CourseHistory upsert ─▶ CourseHistory
+  │                                              - CurrentCourse 교체   ─▶ CurrentCourse
+  │                                              - 이수구분 매핑(§9.5.7)
+  │ ◀──────── ⑦ 적재 결과 요약 + warnings ──────
+```
+
+#### 9.5.5 책임 분담
+
+- **클라(안드/iOS, 별도 저장소)**: WebView SSO 로그인, 세션 유지(약 30분, "연장" 처리), MSI 페이지별 파서(메뉴 = 서블릿 URL, GET/POST·`_csrf`·iframe·동적 렌더링 대응), §9.5.6 스키마로 정규화, `POST /msi/sync/` 전송.
+- **서버(`msi` 앱)**: sync ingest 엔드포인트, payload 검증 serializer, 이수구분/`course_code` 매핑, 기존 모델(`User`/`CourseHistory`/`CurrentCourse`)로의 트랜잭션 upsert. **새 모델은 두지 않는다**(기존 모델에 적재해야 chat·themes·courses가 그대로 소비). 매핑 규칙은 `courses/category_map.py`와 같은 정적 매핑 + 보강.
+
+#### 9.5.6 적재 매핑
+
+| MSI에서 수집(클라 파싱) | 적재 대상 | 키 / 방식 |
+|---|---|---|
+| 학번·학과·전공·입학년도·학년·학기 | `User` 필드(`major`,`admission_year`,`grade`,`semester`) | 본인 row update |
+| 채플 이수 회수 | `User.chapel_count` | update |
+| 이수내역(과거 수강 전부) | `CourseHistory` | `update_or_create(user, course_code, year, semester)` (기존 unique 제약 재사용) |
+| 이번학기 수강·시간표 | `CurrentCourse` | 이번학기 행 **전체 삭제 후 재삽입(full replace)**. 카탈로그 매칭 시 `offering_id` best-effort 채움(미매칭 null) |
+| 졸업요건 | (적재 안 함) | 이미 `GraduationRequirement` 시드 존재 — §5.3 계산에만 사용 |
+
+- `이수현황`·`필요학점`·`졸업 진척도`는 저장하지 않고 기존 `courses` 로직이 `CourseHistory` + `GraduationRequirement`에서 매번 도출한다.
+- **멱등성**: `course_history`는 `update_or_create`로 재동기화 중복 방지. `current_courses`는 분반 정정이 잦아 full replace가 안전. 전체를 `transaction.atomic`으로 묶어 부분 실패 시 롤백.
+
+#### 9.5.7 이수구분 매핑 / `course_code` 정합성 (구현 핵심 난관)
+
+- MSI 원본 이수구분 문자열(예: "전공필수", "교양", "선택교양"…)을 우리 7분류(`Course.CATEGORY_CHOICES`)로 **정확히 매핑**해야 한다. 임의 문자열은 silent 통과를 막아둔 정책(§4.1) 때문에 매핑 실패 시 거부/경고 처리한다.
+- `CourseHistory.save()`가 `course_code`로 `Course`를 조회해 `liberal_subtype`/`core_area`를 자동 채우므로(§5.3), **MSI 학수번호 ↔ `Course.course_code` 포맷이 일치**해야 교양 4종·핵심교양 영역 판정이 정확해진다. 미매칭 시 해당 분류는 null이 되고 졸업요건 계산이 부정확해진다 → `warnings`로 리포트.
+- 따라서 구현 1순위 산출물은 **"MSI 이수구분 표기 → 7분류" 매핑 테이블**과 **학수번호 정합성 점검**이다.
+
+#### 9.5.8 신뢰 경계 / 제약
+
+- 서버는 클라가 보낸 payload를 **스키마 검증만** 하고 신뢰한다. 본인이 본인 학사데이터를 다루는 것이라 보안 위협은 아니나, 서버가 MSI 원본을 직접 보지 않으므로 **데이터 무결성은 사용자 책임**이다(졸업판정 등).
+- **세션 약 30분 제약**: 로그인 직후 필요한 메뉴를 한 번에 수집하도록 클라를 설계한다. 갱신은 사용자가 재연동.
+- **취약성**: 학교가 페이지 구조를 바꾸면 파서가 깨진다(B안 상시 비용). 깨질 때를 대비해 수동 입력 fallback 유지.
+- **AI 접근 한계**: AI가 MSI를 실시간 탐색하려면 상시 세션이 필요한데 B안은 이를 의도적으로 포기한다. AI는 적재된 스냅샷으로 답한다.
+
+#### 9.5.9 보안 / 법적 고려
+
+- 비밀번호 미보관·미전송으로 PIPA상 마스터 자격증명 보관 책임을 지지 않는다.
+- 자동화 접근은 학교 ToS에 저촉될 수 있다. 정식 승인(OIDC client) 경로를 병행 타진하며, 승인 시 인증을 정식 OAuth로 전환한다(§9.5.1).
+
+### 9.6 (예약) 정식 OIDC 연동 — 전산정보원 승인 시
+
+- 전산정보원이 외부 client 등록을 허용하면 `accounts/login/kakao/`와 동형의 `accounts/login/mju-sso/`(Authorization Code + PKCE)를 추가한다. 학사 데이터 적재는 §9.5 구조를 그대로 재사용한다(custom claim/별도 학사 API 협의 필요).
 
 ---
 
